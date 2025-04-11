@@ -12,7 +12,7 @@ export default function DashboardPage() {
     const getUser = async () => {
       const { data } = await supabase.auth.getUser()
       if (data?.user) {
-        setUserEmail(data.user.email)
+        setUserEmail(data.user.email ?? null)
       } else {
         router.push('/login') // si no hay sesión, redirige al login
       }
