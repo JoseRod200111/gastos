@@ -83,7 +83,7 @@ export default function Reportes() {
     const doc = ventana.contentDocument || ventana.contentWindow?.document
     if (!doc) return
 
-    const fecha = new Date()
+   
     
     doc.open()
     doc.write(`
