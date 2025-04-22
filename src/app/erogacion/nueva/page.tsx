@@ -19,10 +19,16 @@ export default function NuevaErogacion() {
     cantidad: 0,
     observaciones: ''
   })
+
   const [userId, setUserId] = useState('')
 
-  // ✅ cantidad y precio_unitario como number
-  const [detalles, setDetalles] = useState([
+  const [detalles, setDetalles] = useState<Array<{
+    concepto: string
+    cantidad: number
+    precio_unitario: number
+    forma_pago_id: string
+    documento: string
+  }>>([
     { concepto: '', cantidad: 0, precio_unitario: 0, forma_pago_id: '', documento: '' }
   ])
 
@@ -58,7 +64,7 @@ export default function NuevaErogacion() {
   const handleDetalleChange = (index: number, field: string, value: any) => {
     const newDetalles = [...detalles]
     newDetalles[index][field] =
-      field === 'cantidad' || field === 'precio_unitario' ? Number(value) : value
+      field === 'cantidad' || field === 'precio_unitario' ? parseFloat(value) : value
     setDetalles(newDetalles)
   }
 
