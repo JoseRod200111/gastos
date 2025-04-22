@@ -5,16 +5,19 @@ import { supabase } from '@/lib/supabaseClient'
 
 export default function VerErogaciones() {
   const [erogaciones, setErogaciones] = useState<any[]>([])
+  const [detalles, setDetalles] = useState<{ [key: number]: any[] }>({})
   const [empresas, setEmpresas] = useState<any[]>([])
   const [divisiones, setDivisiones] = useState<any[]>([])
   const [categorias, setCategorias] = useState<any[]>([])
+  const [formasPago, setFormasPago] = useState<any[]>([])
 
   const [filtros, setFiltros] = useState({
     empresa_id: '',
     division_id: '',
     categoria_id: '',
     desde: '',
-    hasta: ''
+    hasta: '',
+    id: ''
   })
 
   const cargarDatos = async () => {
@@ -29,6 +32,7 @@ export default function VerErogaciones() {
       `)
       .eq('user_id', user_id)
 
+    if (filtros.id) query = query.eq('id', filtros.id)
     if (filtros.empresa_id) query = query.eq('empresa_id', filtros.empresa_id)
     if (filtros.division_id) query = query.eq('division_id', filtros.division_id)
     if (filtros.categoria_id) query = query.eq('categoria_id', filtros.categoria_id)
@@ -37,39 +41,47 @@ export default function VerErogaciones() {
 
     const { data, error } = await query.order('fecha', { ascending: false })
 
-    if (error) {
-      console.error(error)
+    if (!error && data) {
+      setErogaciones(data)
+      for (const erog of data) {
+        const { data: det } = await supabase
+          .from('detalle_compra')
+          .select('concepto, cantidad, precio_unitario, importe, forma_pago_id, documento')
+          .eq('erogacion_id', erog.id)
+
+        setDetalles(prev => ({ ...prev, [erog.id]: det || [] }))
+      }
     } else {
-      setErogaciones(data || [])
+      console.error(error)
     }
   }
 
   const cargarOpciones = async () => {
-    const [empresas, divisiones, categorias] = await Promise.all([
+    const [empresas, divisiones, categorias, formasPago] = await Promise.all([
       supabase.from('empresas').select('*'),
       supabase.from('divisiones').select('*'),
-      supabase.from('categorias').select('*')
+      supabase.from('categorias').select('*'),
+      supabase.from('forma_pago').select('*')
     ])
     setEmpresas(empresas.data || [])
     setDivisiones(divisiones.data || [])
     setCategorias(categorias.data || [])
+    setFormasPago(formasPago.data || [])
   }
 
   const handleDelete = async (id: number) => {
-    const confirmar = confirm('¿Estás seguro de eliminar esta erogación?')
-    if (!confirmar) return
-
-    const { error } = await supabase.from('erogaciones').delete().eq('id', id)
-    if (error) {
-      alert('Error al eliminar')
-    } else {
-      alert('Erogación eliminada')
-      cargarDatos()
-    }
+    if (!confirm('¿Estás seguro de eliminar esta erogación?')) return
+    await supabase.from('erogaciones').delete().eq('id', id)
+    cargarDatos()
   }
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     setFiltros({ ...filtros, [e.target.name]: e.target.value })
+  }
+
+  const getMetodoPago = (id: number) => {
+    const metodo = formasPago.find(f => f.id === id)
+    return metodo?.metodo || id
   }
 
   useEffect(() => {
@@ -82,7 +94,7 @@ export default function VerErogaciones() {
       <h1 className="text-2xl font-bold mb-4">📋 Erogaciones Registradas</h1>
 
       {/* Filtros */}
-      <div className="grid grid-cols-1 md:grid-cols-5 gap-4 mb-6">
+      <div className="grid grid-cols-1 md:grid-cols-6 gap-4 mb-6">
         <select name="empresa_id" value={filtros.empresa_id} onChange={handleChange} className="border p-2">
           <option value="">Todas las Empresas</option>
           {empresas.map((e) => (
@@ -104,72 +116,49 @@ export default function VerErogaciones() {
           ))}
         </select>
 
-        <input
-          type="date"
-          name="desde"
-          value={filtros.desde}
-          onChange={handleChange}
-          className="border p-2"
-          placeholder="Desde"
-        />
-
-        <input
-          type="date"
-          name="hasta"
-          value={filtros.hasta}
-          onChange={handleChange}
-          className="border p-2"
-          placeholder="Hasta"
-        />
+        <input type="date" name="desde" value={filtros.desde} onChange={handleChange} className="border p-2" />
+        <input type="date" name="hasta" value={filtros.hasta} onChange={handleChange} className="border p-2" />
+        <input type="text" name="id" placeholder="ID de Erogación" value={filtros.id} onChange={handleChange} className="border p-2" />
       </div>
 
       <div className="mb-4">
         <button onClick={cargarDatos} className="bg-blue-600 text-white px-4 py-2 rounded">
           🔍 Aplicar Filtros
         </button>
-        <button
-          onClick={() => window.location.href = '/dashboard'}
-          className="ml-4 bg-gray-700 text-white px-4 py-2 rounded"
-        >
+        <button onClick={() => window.location.href = '/dashboard'} className="ml-4 bg-gray-700 text-white px-4 py-2 rounded">
           ⬅ Volver al Menú Principal
         </button>
       </div>
 
-      {/* Tabla */}
       <div className="overflow-x-auto">
         <table className="w-full border text-sm text-left">
           <thead className="bg-gray-200 text-sm">
             <tr>
+              <th className="p-2">ID</th>
               <th className="p-2">Fecha</th>
               <th className="p-2">Empresa</th>
               <th className="p-2">División</th>
               <th className="p-2">Categoría</th>
-              <th className="p-2">Cantidad</th>
+              <th className="p-2">Total</th>
               <th className="p-2">Observaciones</th>
               <th className="p-2">Acciones</th>
             </tr>
           </thead>
           <tbody>
             {erogaciones.length === 0 ? (
-              <tr>
-                <td colSpan={7} className="text-center py-4 text-gray-500">
-                  No se encontraron erogaciones.
-                </td>
-              </tr>
+              <tr><td colSpan={8} className="text-center py-4 text-gray-500">No se encontraron erogaciones.</td></tr>
             ) : (
               erogaciones.map((e) => (
                 <tr key={e.id} className="border-t">
+                  <td className="p-2 font-mono">{e.id}</td>
                   <td className="p-2">{e.fecha}</td>
                   <td className="p-2">{e.empresas?.nombre}</td>
                   <td className="p-2">{e.divisiones?.nombre}</td>
                   <td className="p-2">{e.categorias?.nombre}</td>
-                  <td className="p-2">{e.cantidad}</td>
+                  <td className="p-2">Q{e.cantidad?.toFixed(2)}</td>
                   <td className="p-2">{e.observaciones}</td>
                   <td className="p-2">
-                    <button
-                      onClick={() => handleDelete(e.id)}
-                      className="bg-red-600 text-white px-2 py-1 rounded text-xs"
-                    >
+                    <button onClick={() => handleDelete(e.id)} className="bg-red-600 text-white px-2 py-1 rounded text-xs">
                       Eliminar
                     </button>
                   </td>
@@ -179,6 +168,37 @@ export default function VerErogaciones() {
           </tbody>
         </table>
       </div>
+
+      {/* Detalles */}
+      {erogaciones.map((e) => (
+        <div key={`detalle-${e.id}`} className="mt-2 mb-6 border p-3 rounded bg-gray-50">
+          <h3 className="font-semibold mb-2">🧾 Detalles de Erogación #{e.id}</h3>
+          <table className="w-full text-sm border">
+            <thead className="bg-gray-200">
+              <tr>
+                <th className="p-2 text-left">Concepto</th>
+                <th className="p-2 text-left">Cantidad</th>
+                <th className="p-2 text-left">Precio Unitario</th>
+                <th className="p-2 text-left">Importe</th>
+                <th className="p-2 text-left">Forma de Pago</th>
+                <th className="p-2 text-left">Documento</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(detalles[e.id] || []).map((d, i) => (
+                <tr key={i} className="border-t">
+                  <td className="p-2">{d.concepto}</td>
+                  <td className="p-2">{d.cantidad}</td>
+                  <td className="p-2">Q{d.precio_unitario?.toFixed(2)}</td>
+                  <td className="p-2">Q{d.importe?.toFixed(2)}</td>
+                  <td className="p-2">{getMetodoPago(d.forma_pago_id)}</td>
+                  <td className="p-2">{d.documento}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ))}
     </div>
   )
 }
