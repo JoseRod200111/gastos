@@ -47,9 +47,9 @@ export default function NuevaErogacion() {
 
   useEffect(() => {
     const total = detalles.reduce(
-      (sum, item) => sum + (item.precio_unitario * item.cantidad),
-      0
-    )
+      (sum, item) => sum + (Number(item.precio_unitario) * Number(item.cantidad)),
+  0
+)
     setForm((prev) => ({ ...prev, cantidad: total }))
   }, [detalles])
 
