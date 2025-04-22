@@ -20,8 +20,10 @@ export default function NuevaErogacion() {
     observaciones: ''
   })
   const [userId, setUserId] = useState('')
+
+  // ✅ cantidad y precio_unitario como number
   const [detalles, setDetalles] = useState([
-    { concepto: '', cantidad: '', precio_unitario: '', forma_pago_id: '', documento: '' }
+    { concepto: '', cantidad: 0, precio_unitario: 0, forma_pago_id: '', documento: '' }
   ])
 
   useEffect(() => {
@@ -48,15 +50,15 @@ export default function NuevaErogacion() {
   useEffect(() => {
     const total = detalles.reduce(
       (sum, item) => sum + (Number(item.precio_unitario) * Number(item.cantidad)),
-  0
-)
+      0
+    )
     setForm((prev) => ({ ...prev, cantidad: total }))
   }, [detalles])
 
   const handleDetalleChange = (index: number, field: string, value: any) => {
     const newDetalles = [...detalles]
     newDetalles[index][field] =
-      field === 'cantidad' || field === 'precio_unitario' ? parseFloat(value) : value
+      field === 'cantidad' || field === 'precio_unitario' ? Number(value) : value
     setDetalles(newDetalles)
   }
 
