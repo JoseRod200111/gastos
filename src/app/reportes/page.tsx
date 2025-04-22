@@ -84,8 +84,7 @@ export default function Reportes() {
     if (!doc) return
 
     const fecha = new Date()
-    const nombre = `reporte_erogaciones_${fecha.getFullYear()}${String(fecha.getMonth()+1).padStart(2, '0')}${String(fecha.getDate()).padStart(2, '0')}_${String(fecha.getHours()).padStart(2, '0')}${String(fecha.getMinutes()).padStart(2, '0')}${String(fecha.getSeconds()).padStart(2, '0')}`
-
+    
     doc.open()
     doc.write(`
       <html>
