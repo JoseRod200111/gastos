@@ -21,16 +21,12 @@ export default function Reportes() {
   const containerRef = useRef<HTMLDivElement>(null)
 
   const cargarDatos = async () => {
-    const user = await supabase.auth.getUser()
-    const user_id = user.data.user?.id
-
     let query = supabase
       .from('erogaciones')
       .select(`
         id, fecha, cantidad, observaciones,
         empresas(nombre), divisiones(nombre), categorias(nombre)
       `)
-      .eq('user_id', user_id)
 
     if (filtros.id) query = query.eq('id', filtros.id)
     if (filtros.empresa_id) query = query.eq('empresa_id', filtros.empresa_id)
@@ -83,8 +79,6 @@ export default function Reportes() {
     const doc = ventana.contentDocument || ventana.contentWindow?.document
     if (!doc) return
 
-   
-    
     doc.open()
     doc.write(`
       <html>
