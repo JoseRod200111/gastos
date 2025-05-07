@@ -20,17 +20,15 @@ export default function NuevaErogacion() {
     observaciones: ''
   })
 
-  const [userId, setUserId] = useState('')
-
   const [detalles, setDetalles] = useState<Array<{
     concepto: string
     cantidad: number
     precio_unitario: number
     forma_pago_id: string
     documento: string
-  }>>([
-    { concepto: '', cantidad: 0, precio_unitario: 0, forma_pago_id: '', documento: '' }
-  ])
+  }>>([{
+    concepto: '', cantidad: 0, precio_unitario: 0, forma_pago_id: '', documento: ''
+  }])
 
   useEffect(() => {
     const fetchData = async () => {
@@ -45,9 +43,6 @@ export default function NuevaErogacion() {
 
       const { data: met } = await supabase.from('forma_pago').select('*')
       setMetodosPago(met || [])
-
-      const { data } = await supabase.auth.getUser()
-      setUserId(data?.user?.id || '')
     }
 
     fetchData()
@@ -78,7 +73,7 @@ export default function NuevaErogacion() {
   const guardarErogacion = async () => {
     const { data: erogacion, error } = await supabase
       .from('erogaciones')
-      .insert([{ ...form, user_id: userId }])
+      .insert([form])
       .select()
       .single()
 
