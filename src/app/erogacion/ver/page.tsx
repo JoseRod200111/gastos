@@ -21,16 +21,12 @@ export default function VerErogaciones() {
   })
 
   const cargarDatos = async () => {
-    const { data: userData } = await supabase.auth.getUser()
-    const user_id = userData?.user?.id
-
     let query = supabase
       .from('erogaciones')
       .select(`
         id, fecha, cantidad, observaciones,
         empresas(nombre), divisiones(nombre), categorias(nombre)
       `)
-      .eq('user_id', user_id)
 
     if (filtros.id) query = query.eq('id', filtros.id)
     if (filtros.empresa_id) query = query.eq('empresa_id', filtros.empresa_id)
@@ -93,7 +89,6 @@ export default function VerErogaciones() {
     <div className="p-6 max-w-7xl mx-auto">
       <h1 className="text-2xl font-bold mb-4">📋 Erogaciones Registradas</h1>
 
-      {/* Filtros */}
       <div className="grid grid-cols-1 md:grid-cols-6 gap-4 mb-6">
         <select name="empresa_id" value={filtros.empresa_id} onChange={handleChange} className="border p-2">
           <option value="">Todas las Empresas</option>
@@ -169,7 +164,6 @@ export default function VerErogaciones() {
         </table>
       </div>
 
-      {/* Detalles */}
       {erogaciones.map((e) => (
         <div key={`detalle-${e.id}`} className="mt-2 mb-6 border p-3 rounded bg-gray-50">
           <h3 className="font-semibold mb-2">🧾 Detalles de Erogación #{e.id}</h3>
