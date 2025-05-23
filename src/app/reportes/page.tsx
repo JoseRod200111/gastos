@@ -24,7 +24,7 @@ export default function Reportes() {
     let query = supabase
       .from('erogaciones')
       .select(`
-        id, fecha, cantidad, observaciones,
+        id, fecha, cantidad, observaciones, editado_por, editado_en,
         empresas(nombre), divisiones(nombre), categorias(nombre)
       `)
 
@@ -175,6 +175,9 @@ export default function Reportes() {
                   ))}
                 </tbody>
               </table>
+              {e.editado_por && e.editado_en && (
+                `<div style="text-align:right; font-size:11px; margin-top:6px;">editado ${new Date(e.editado_en).toLocaleString()} por ${e.editado_por}</div>`
+              )}
             </div>
           ))
         )}
