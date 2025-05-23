@@ -79,7 +79,8 @@ export default function Reportes() {
     const doc = ventana.contentDocument || ventana.contentWindow?.document
     if (!doc) return
 
-    const htmlContent = `
+    // Construir HTML manualmente
+    const html = `
       <html>
         <head>
           <title>Comprobante</title>
@@ -89,7 +90,6 @@ export default function Reportes() {
             .box { border: 1px solid black; padding: 16px; margin: 10px 0; font-size: 14px; }
             .header { font-weight: bold; }
             body { font-family: Arial, sans-serif }
-            .edit-info { text-align: right; font-size: 11px; margin-top: 6px; }
           </style>
         </head>
         <body>
@@ -129,16 +129,16 @@ export default function Reportes() {
                 </tbody>
               </table>
               ${e.editado_por && e.editado_en
-                ? `<div class="edit-info">editado ${new Date(e.editado_en).toLocaleString()} por ${e.editado_por}</div>`
-                : ''}
+                ? `<div style="text-align:right; font-size:11px; margin-top:6px;">editado ${new Date(e.editado_en).toLocaleString()} por ${e.editado_por}</div>`
+                : ''
+              }
             </div>
           `).join('')}
         </body>
       </html>
     `
-
     doc.open()
-    doc.write(htmlContent)
+    doc.write(html)
     doc.close()
 
     ventana.contentWindow?.focus()
@@ -180,24 +180,25 @@ export default function Reportes() {
         <button onClick={() => window.location.href = '/dashboard'} className="ml-4 bg-gray-700 text-white px-4 py-2 rounded">⬅ Volver al Menú Principal</button>
       </div>
 
+      {/* Vista previa en pantalla */}
       <div ref={containerRef}>
         {erogaciones.length === 0 ? (
           <p className="text-center text-gray-500">No se encontraron erogaciones.</p>
         ) : (
           erogaciones.map((e) => (
-            <div key={e.id} className="box">
-              <div className="mb-2 grid grid-cols-2 gap-2">
-                <div><span className="header">ID:</span> {e.id}</div>
-                <div><span className="header">Fecha:</span> {e.fecha}</div>
-                <div><span className="header">Empresa:</span> {e.empresas?.nombre || '-'}</div>
-                <div><span className="header">División:</span> {e.divisiones?.nombre || '-'}</div>
-                <div><span className="header">Categoría:</span> {e.categorias?.nombre || '-'}</div>
-                <div><span className="header">Total:</span> Q{e.cantidad?.toFixed(2)}</div>
-                <div className="col-span-2"><span className="header">Observaciones:</span> {e.observaciones || 'N/A'}</div>
+            <div key={e.id} className="box border p-4 my-4 text-sm">
+              <div className="grid grid-cols-2 gap-2 mb-2">
+                <div><span className="font-semibold">ID:</span> {e.id}</div>
+                <div><span className="font-semibold">Fecha:</span> {e.fecha}</div>
+                <div><span className="font-semibold">Empresa:</span> {e.empresas?.nombre}</div>
+                <div><span className="font-semibold">División:</span> {e.divisiones?.nombre}</div>
+                <div><span className="font-semibold">Categoría:</span> {e.categorias?.nombre}</div>
+                <div><span className="font-semibold">Total:</span> Q{e.cantidad?.toFixed(2)}</div>
+                <div className="col-span-2"><span className="font-semibold">Observaciones:</span> {e.observaciones}</div>
               </div>
-              <table>
+              <table className="w-full border text-sm">
                 <thead>
-                  <tr>
+                  <tr className="bg-gray-200">
                     <th>Concepto</th>
                     <th>Cantidad</th>
                     <th>Precio Unitario</th>
@@ -208,7 +209,7 @@ export default function Reportes() {
                 </thead>
                 <tbody>
                   {(detalles[e.id] || []).map((d, i) => (
-                    <tr key={i}>
+                    <tr key={i} className="border-t">
                       <td>{d.concepto}</td>
                       <td>{d.cantidad}</td>
                       <td>Q{d.precio_unitario?.toFixed(2)}</td>
@@ -220,7 +221,7 @@ export default function Reportes() {
                 </tbody>
               </table>
               {e.editado_por && e.editado_en && (
-                <div style={{ textAlign: 'right', fontSize: '11px', marginTop: '6px' }}>
+                <div className="text-right text-xs mt-1 text-gray-600 italic">
                   editado {new Date(e.editado_en).toLocaleString()} por {e.editado_por}
                 </div>
               )}
