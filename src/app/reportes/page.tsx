@@ -24,7 +24,7 @@ export default function Reportes() {
     let query = supabase
       .from('erogaciones')
       .select(`
-        id, fecha, cantidad, observaciones, editado_por, editado_en,
+        id, fecha, cantidad, observaciones, editado_en, editado_por,
         empresas(nombre), divisiones(nombre), categorias(nombre)
       `)
 
@@ -79,8 +79,7 @@ export default function Reportes() {
     const doc = ventana.contentDocument || ventana.contentWindow?.document
     if (!doc) return
 
-    doc.open()
-    doc.write(`
+    const htmlContent = `
       <html>
         <head>
           <title>Comprobante</title>
@@ -89,13 +88,57 @@ export default function Reportes() {
             th, td { border: 1px solid black; padding: 4px; text-align: center }
             .box { border: 1px solid black; padding: 16px; margin: 10px 0; font-size: 14px; }
             .header { font-weight: bold; }
-            .edit-info { text-align: right; font-size: 11px; margin-top: 6px; }
             body { font-family: Arial, sans-serif }
+            .edit-info { text-align: right; font-size: 11px; margin-top: 6px; }
           </style>
         </head>
-        <body>${elemento.innerHTML}</body>
+        <body>
+          ${erogaciones.map(e => `
+            <div class="box">
+              <div class="mb-2">
+                <div><span class="header">ID:</span> ${e.id}</div>
+                <div><span class="header">Fecha:</span> ${e.fecha}</div>
+                <div><span class="header">Empresa:</span> ${e.empresas?.nombre || '-'}</div>
+                <div><span class="header">División:</span> ${e.divisiones?.nombre || '-'}</div>
+                <div><span class="header">Categoría:</span> ${e.categorias?.nombre || '-'}</div>
+                <div><span class="header">Total:</span> Q${e.cantidad?.toFixed(2)}</div>
+                <div><span class="header">Observaciones:</span> ${e.observaciones || 'N/A'}</div>
+              </div>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Concepto</th>
+                    <th>Cantidad</th>
+                    <th>Precio Unitario</th>
+                    <th>Importe</th>
+                    <th>Forma de Pago</th>
+                    <th>Documento</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${(detalles[e.id] || []).map(d => `
+                    <tr>
+                      <td>${d.concepto}</td>
+                      <td>${d.cantidad}</td>
+                      <td>Q${d.precio_unitario?.toFixed(2)}</td>
+                      <td>Q${d.importe?.toFixed(2)}</td>
+                      <td>${d.forma_pago?.metodo || '-'}</td>
+                      <td>${d.documento || 'N/A'}</td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+              ${e.editado_por && e.editado_en
+                ? `<div class="edit-info">editado ${new Date(e.editado_en).toLocaleString()} por ${e.editado_por}</div>`
+                : ''}
+            </div>
+          `).join('')}
+        </body>
       </html>
-    `)
+    `
+
+    doc.open()
+    doc.write(htmlContent)
     doc.close()
 
     ventana.contentWindow?.focus()
@@ -176,11 +219,11 @@ export default function Reportes() {
                   ))}
                 </tbody>
               </table>
-             ${e.editado_por && e.editado_en
-  ? `<div class="edit-info">editado ${new Date(e.editado_en).toLocaleString()} por ${e.editado_por}</div>`
-  : ''
-}
-
+              {e.editado_por && e.editado_en && (
+                <div style={{ textAlign: 'right', fontSize: '11px', marginTop: '6px' }}>
+                  editado {new Date(e.editado_en).toLocaleString()} por {e.editado_por}
+                </div>
+              )}
             </div>
           ))
         )}
