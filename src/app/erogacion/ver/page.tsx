@@ -5,11 +5,9 @@ import { supabase } from '@/lib/supabaseClient'
 
 export default function VerErogaciones() {
   const [erogaciones, setErogaciones] = useState<any[]>([])
-  const [detalles, setDetalles] = useState<{ [key: number]: any[] }>({})
   const [empresas, setEmpresas] = useState<any[]>([])
   const [divisiones, setDivisiones] = useState<any[]>([])
   const [categorias, setCategorias] = useState<any[]>([])
-  const [formasPago, setFormasPago] = useState<any[]>([])
   const [userEmail, setUserEmail] = useState('')
 
   const [filtros, setFiltros] = useState({
@@ -27,16 +25,14 @@ export default function VerErogaciones() {
   }, [])
 
   const cargarOpciones = async () => {
-    const [empresas, divisiones, categorias, formasPago] = await Promise.all([
+    const [empresasRes, divisionesRes, categoriasRes] = await Promise.all([
       supabase.from('empresas').select('*'),
       supabase.from('divisiones').select('*'),
-      supabase.from('categorias').select('*'),
-      supabase.from('forma_pago').select('*')
+      supabase.from('categorias').select('*')
     ])
-    setEmpresas(empresas.data || [])
-    setDivisiones(divisiones.data || [])
-    setCategorias(categorias.data || [])
-    setFormasPago(formasPago.data || [])
+    setEmpresas(empresasRes.data || [])
+    setDivisiones(divisionesRes.data || [])
+    setCategorias(categoriasRes.data || [])
 
     const { data } = await supabase.auth.getUser()
     setUserEmail(data?.user?.email || '')
@@ -56,16 +52,8 @@ export default function VerErogaciones() {
     if (filtros.hasta) query = query.lte('fecha', filtros.hasta)
 
     const { data, error } = await query
-
     if (!error && data) {
       setErogaciones(data)
-      for (const e of data) {
-        const { data: det } = await supabase
-          .from('detalle_compra')
-          .select('concepto, cantidad, precio_unitario, importe, forma_pago_id, documento')
-          .eq('erogacion_id', e.id)
-        setDetalles(prev => ({ ...prev, [e.id]: det || [] }))
-      }
     }
   }
 
