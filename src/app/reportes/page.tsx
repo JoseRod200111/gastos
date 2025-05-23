@@ -176,11 +176,11 @@ export default function Reportes() {
                   ))}
                 </tbody>
               </table>
-              {e.editado_por && e.editado_en && (
-                <div className="edit-info">
-                  editado {new Date(e.editado_en).toLocaleString()} por {e.editado_por}
-                </div>
-              )}
+             ${e.editado_por && e.editado_en
+  ? `<div class="edit-info">editado ${new Date(e.editado_en).toLocaleString()} por ${e.editado_por}</div>`
+  : ''
+}
+
             </div>
           ))
         )}
