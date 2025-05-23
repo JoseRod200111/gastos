@@ -89,6 +89,7 @@ export default function Reportes() {
             th, td { border: 1px solid black; padding: 4px; text-align: center }
             .box { border: 1px solid black; padding: 16px; margin: 10px 0; font-size: 14px; }
             .header { font-weight: bold; }
+            .edit-info { text-align: right; font-size: 11px; margin-top: 6px; }
             body { font-family: Arial, sans-serif }
           </style>
         </head>
@@ -176,7 +177,9 @@ export default function Reportes() {
                 </tbody>
               </table>
               {e.editado_por && e.editado_en && (
-                `<div style="text-align:right; font-size:11px; margin-top:6px;">editado ${new Date(e.editado_en).toLocaleString()} por ${e.editado_por}</div>`
+                <div className="edit-info">
+                  editado {new Date(e.editado_en).toLocaleString()} por {e.editado_por}
+                </div>
               )}
             </div>
           ))
