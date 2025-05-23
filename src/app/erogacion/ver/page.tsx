@@ -27,16 +27,16 @@ export default function VerErogaciones() {
   }, [])
 
   const cargarOpciones = async () => {
-    const [emp, div, cat, pago] = await Promise.all([
+    const [empresas, divisiones, categorias, formasPago] = await Promise.all([
       supabase.from('empresas').select('*'),
       supabase.from('divisiones').select('*'),
       supabase.from('categorias').select('*'),
       supabase.from('forma_pago').select('*')
     ])
-    setEmpresas(emp.data || [])
-    setDivisiones(div.data || [])
-    setCategorias(cat.data || [])
-    setFormasPago(pago.data || [])
+    setEmpresas(empresas.data || [])
+    setDivisiones(divisiones.data || [])
+    setCategorias(categorias.data || [])
+    setFormasPago(formasPago.data || [])
 
     const { data } = await supabase.auth.getUser()
     setUserEmail(data?.user?.email || '')
@@ -56,6 +56,7 @@ export default function VerErogaciones() {
     if (filtros.hasta) query = query.lte('fecha', filtros.hasta)
 
     const { data, error } = await query
+
     if (!error && data) {
       setErogaciones(data)
       for (const e of data) {
@@ -100,18 +101,18 @@ export default function VerErogaciones() {
   }
 
   const handleDelete = async (id: number) => {
-    if (!confirm('¿Eliminar esta erogación?')) return
+    if (!confirm('¿Estás seguro de eliminar esta erogación?')) return
     await supabase.from('erogaciones').delete().eq('id', id)
     cargarDatos()
+  }
+
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
+    setFiltros({ ...filtros, [e.target.name]: e.target.value })
   }
 
   const getMetodoPago = (id: number) => {
     const metodo = formasPago.find(f => f.id === id)
     return metodo?.metodo || id
-  }
-
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
-    setFiltros({ ...filtros, [e.target.name]: e.target.value })
   }
 
   return (
@@ -141,47 +142,45 @@ export default function VerErogaciones() {
         <button onClick={() => window.location.href = '/dashboard'} className="ml-4 bg-gray-700 text-white px-4 py-2 rounded">⬅ Volver al Menú Principal</button>
       </div>
 
-      <div className="overflow-x-auto">
-        <table className="w-full border text-sm text-left">
-          <thead className="bg-gray-200">
-            <tr>
-              <th>ID</th><th>Fecha</th><th>Empresa</th><th>División</th><th>Categoría</th><th>Total</th><th>Observaciones</th><th>Acciones</th>
+      <table className="w-full border text-sm text-left mb-8">
+        <thead className="bg-gray-200">
+          <tr>
+            <th>ID</th><th>Fecha</th><th>Empresa</th><th>División</th><th>Categoría</th><th>Total</th><th>Observaciones</th><th>Acciones</th>
+          </tr>
+        </thead>
+        <tbody>
+          {erogaciones.map(e => (
+            <tr key={e.id} className="border-t">
+              <td className="p-2">{e.id}</td>
+              <td className="p-2"><input type="date" className="border p-1" value={e.fecha} onChange={(ev) => handleInputChange(e.id, 'fecha', ev.target.value)} /></td>
+              <td className="p-2">
+                <select className="border p-1" value={e.empresa_id} onChange={(ev) => handleInputChange(e.id, 'empresa_id', ev.target.value)}>
+                  {empresas.map(opt => <option key={opt.id} value={opt.id}>{opt.nombre}</option>)}
+                </select>
+              </td>
+              <td className="p-2">
+                <select className="border p-1" value={e.division_id} onChange={(ev) => handleInputChange(e.id, 'division_id', ev.target.value)}>
+                  {divisiones.map(opt => <option key={opt.id} value={opt.id}>{opt.nombre}</option>)}
+                </select>
+              </td>
+              <td className="p-2">
+                <select className="border p-1" value={e.categoria_id} onChange={(ev) => handleInputChange(e.id, 'categoria_id', ev.target.value)}>
+                  {categorias.map(opt => <option key={opt.id} value={opt.id}>{opt.nombre}</option>)}
+                </select>
+              </td>
+              <td className="p-2"><input type="number" className="border p-1 w-24" value={e.cantidad} onChange={(ev) => handleInputChange(e.id, 'cantidad', ev.target.value)} /></td>
+              <td className="p-2"><input className="border p-1" value={e.observaciones} onChange={(ev) => handleInputChange(e.id, 'observaciones', ev.target.value)} /></td>
+              <td className="p-2 space-x-2">
+                <button onClick={() => guardarCambios(e)} className="bg-green-600 text-white px-2 py-1 rounded text-xs">Guardar</button>
+                <button onClick={() => handleDelete(e.id)} className="bg-red-600 text-white px-2 py-1 rounded text-xs">Eliminar</button>
+              </td>
             </tr>
-          </thead>
-          <tbody>
-            {erogaciones.map(e => (
-              <tr key={e.id} className="border-t">
-                <td className="p-2">{e.id}</td>
-                <td className="p-2"><input type="date" className="border p-1" value={e.fecha} onChange={(ev) => handleInputChange(e.id, 'fecha', ev.target.value)} /></td>
-                <td className="p-2">
-                  <select className="border p-1" value={e.empresa_id} onChange={(ev) => handleInputChange(e.id, 'empresa_id', ev.target.value)}>
-                    {empresas.map(opt => <option key={opt.id} value={opt.id}>{opt.nombre}</option>)}
-                  </select>
-                </td>
-                <td className="p-2">
-                  <select className="border p-1" value={e.division_id} onChange={(ev) => handleInputChange(e.id, 'division_id', ev.target.value)}>
-                    {divisiones.map(opt => <option key={opt.id} value={opt.id}>{opt.nombre}</option>)}
-                  </select>
-                </td>
-                <td className="p-2">
-                  <select className="border p-1" value={e.categoria_id} onChange={(ev) => handleInputChange(e.id, 'categoria_id', ev.target.value)}>
-                    {categorias.map(opt => <option key={opt.id} value={opt.id}>{opt.nombre}</option>)}
-                  </select>
-                </td>
-                <td className="p-2"><input type="number" className="border p-1 w-24" value={e.cantidad} onChange={(ev) => handleInputChange(e.id, 'cantidad', ev.target.value)} /></td>
-                <td className="p-2"><input className="border p-1" value={e.observaciones} onChange={(ev) => handleInputChange(e.id, 'observaciones', ev.target.value)} /></td>
-                <td className="p-2 space-y-1">
-                  <button onClick={() => guardarCambios(e)} className="bg-green-600 text-white px-2 py-1 rounded text-xs block">Guardar</button>
-                  <button onClick={() => handleDelete(e.id)} className="bg-red-600 text-white px-2 py-1 rounded text-xs block">Eliminar</button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+          ))}
+        </tbody>
+      </table>
 
       {erogaciones.map((e) => (
-        <div key={`detalle-${e.id}`} className="mt-2 mb-6 border p-3 rounded bg-gray-50">
+        <div key={`detalle-${e.id}`} className="mb-6 border p-3 rounded bg-gray-50">
           <h3 className="font-semibold mb-2">🧾 Detalles de Erogación #{e.id}</h3>
           <table className="w-full text-sm border">
             <thead className="bg-gray-200">
