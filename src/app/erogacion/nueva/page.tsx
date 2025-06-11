@@ -98,6 +98,10 @@ export default function NuevaErogacion() {
 
   return (
     <div className="p-6 max-w-4xl mx-auto">
+      <div className="flex justify-center mb-6">
+        <img src="/logo.png" alt="Logo" className="h-16" />
+      </div>
+
       <h1 className="text-2xl font-bold mb-4">Nueva Erogación</h1>
 
       <div className="grid grid-cols-1 gap-4">
