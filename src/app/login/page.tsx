@@ -19,19 +19,23 @@ export default function LoginPage() {
     if (error) {
       setMessage(error.message)
     } else {
-        if (!isRegister) {
-          window.location.href = '/dashboard'
-        } else {
-          setMessage('Revisa tu correo para confirmar tu cuenta.')
-        }
+      if (!isRegister) {
+        window.location.href = '/dashboard'
+      } else {
+        setMessage('Revisa tu correo para confirmar tu cuenta.')
       }
-      
+    }
+
     setLoading(false)
   }
 
   return (
-    <div className="p-6 max-w-md mx-auto">
+    <div className="p-6 max-w-md mx-auto text-center">
+      {/* LOGO */}
+      <img src="/logo.png" alt="Logo" className="mx-auto mb-4 w-32 h-auto" />
+
       <h1 className="text-2xl font-bold mb-4">Login / Registro</h1>
+
       <input
         type="email"
         placeholder="Correo"
@@ -47,7 +51,7 @@ export default function LoginPage() {
         onChange={(e) => setPassword(e.target.value)}
       />
 
-      <div className="flex gap-4">
+      <div className="flex gap-4 justify-center">
         <button
           onClick={() => handleAuth(false)}
           className="bg-blue-600 text-white px-4 py-2 rounded"
