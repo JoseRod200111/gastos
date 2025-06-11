@@ -123,7 +123,4 @@ export default function VerErogaciones() {
 
       <h1 className="text-2xl font-bold mb-4">📋 Erogaciones Registradas</h1>
 
-      {/* ... el resto del código permanece igual ... */}
-    </div>
-  )
-}
+      {/* ... resto del código sin cambios ... */}
