@@ -27,7 +27,10 @@ export default function DashboardPage() {
   }
 
   return (
-    <div className="p-6 max-w-xl mx-auto">
+    <div className="p-6 max-w-xl mx-auto text-center">
+      {/* LOGO */}
+      <img src="/logo.png" alt="Logo" className="mx-auto mb-4 w-32 h-auto" />
+
       <h1 className="text-2xl font-bold mb-4">Menú Principal</h1>
       <p className="mb-6 text-gray-700">Sesión iniciada como: {userEmail}</p>
 
