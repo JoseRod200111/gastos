@@ -53,6 +53,10 @@ export default function AdminOpciones() {
 
   return (
     <div className="p-6 max-w-3xl mx-auto">
+      <div className="flex justify-center mb-4">
+        <img src="/logo.png" alt="Logo Empresa" className="h-16" />
+      </div>
+
       <h1 className="text-2xl font-bold mb-4">⚙️ Administración de Opciones</h1>
 
       <div className="flex flex-col md:flex-row gap-4 mb-6">
