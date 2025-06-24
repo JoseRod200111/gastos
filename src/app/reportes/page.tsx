@@ -79,7 +79,6 @@ export default function Reportes() {
     const doc = ventana.contentDocument || ventana.contentWindow?.document
     if (!doc) return
 
-    // Construir HTML manualmente
     const html = `
       <html>
         <head>
@@ -90,9 +89,11 @@ export default function Reportes() {
             .box { border: 1px solid black; padding: 16px; margin: 10px 0; font-size: 14px; }
             .header { font-weight: bold; }
             body { font-family: Arial, sans-serif }
+            .logo { height: 60px; margin-bottom: 10px; display: block; margin-left: auto; margin-right: auto }
           </style>
         </head>
         <body>
+          <img src="/logo.png" class="logo" />
           ${erogaciones.map(e => `
             <div class="box">
               <div class="mb-2">
@@ -154,6 +155,10 @@ export default function Reportes() {
 
   return (
     <div className="p-6 max-w-6xl mx-auto">
+      <div className="flex justify-center mb-4">
+        <img src="/logo.png" alt="Logo Empresa" className="h-16" />
+      </div>
+
       <h1 className="text-2xl font-bold mb-4">📄 Reporte de Erogaciones</h1>
 
       <div className="grid grid-cols-1 md:grid-cols-6 gap-4 mb-6">
@@ -180,7 +185,6 @@ export default function Reportes() {
         <button onClick={() => window.location.href = '/dashboard'} className="ml-4 bg-gray-700 text-white px-4 py-2 rounded">⬅ Volver al Menú Principal</button>
       </div>
 
-      {/* Vista previa en pantalla */}
       <div ref={containerRef}>
         {erogaciones.length === 0 ? (
           <p className="text-center text-gray-500">No se encontraron erogaciones.</p>
