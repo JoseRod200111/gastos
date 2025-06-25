@@ -7,11 +7,19 @@ export default function AdminOpciones() {
   const [tipo, setTipo] = useState('empresas')
   const [items, setItems] = useState<any[]>([])
   const [nuevo, setNuevo] = useState('')
+  const [proveedor, setProveedor] = useState({
+    nombre: '',
+    nit: '',
+    direccion: '',
+    contacto_nombre: '',
+    telefono: ''
+  })
 
-  const tablaNombre = {
+  const tablaNombre: any = {
     empresas: 'Empresa',
     divisiones: 'División',
-    categorias: 'Categoría'
+    categorias: 'Categoría',
+    proveedores: 'Proveedor'
   }
 
   const cargarItems = async () => {
@@ -24,14 +32,35 @@ export default function AdminOpciones() {
   }
 
   const agregarItem = async () => {
-    if (!nuevo.trim()) return alert('El nombre no puede estar vacío')
+    if (tipo === 'proveedores') {
+      const { nombre, nit, direccion, contacto_nombre, telefono } = proveedor
+      if (!nombre.trim() || !nit.trim()) return alert('Nombre y NIT son obligatorios')
 
-    const { error } = await supabase.from(tipo).insert({ nombre: nuevo.trim().toUpperCase() })
-    if (error) {
-      alert('Error al guardar')
+      const { error } = await supabase.from('proveedores').insert({
+        nombre: nombre.trim().toUpperCase(),
+        nit: nit.trim(),
+        direccion: direccion.trim(),
+        contacto_nombre: contacto_nombre.trim(),
+        telefono: telefono.trim()
+      })
+
+      if (error) {
+        alert('Error al guardar proveedor')
+      } else {
+        setProveedor({ nombre: '', nit: '', direccion: '', contacto_nombre: '', telefono: '' })
+        cargarItems()
+      }
     } else {
-      setNuevo('')
-      cargarItems()
+      if (!nuevo.trim()) return alert('El nombre no puede estar vacío')
+
+      const { error } = await supabase.from(tipo).insert({ nombre: nuevo.trim().toUpperCase() })
+
+      if (error) {
+        alert('Error al guardar')
+      } else {
+        setNuevo('')
+        cargarItems()
+      }
     }
   }
 
@@ -64,22 +93,75 @@ export default function AdminOpciones() {
           <option value="empresas">Empresa</option>
           <option value="divisiones">División</option>
           <option value="categorias">Categoría</option>
+          <option value="proveedores">Proveedor</option>
         </select>
 
-        <input
-          type="text"
-          value={nuevo}
-          placeholder={`Nueva ${tablaNombre[tipo]}`}
-          onChange={(e) => setNuevo(e.target.value)}
-          className="border p-2 flex-grow"
-        />
-        <button
-          onClick={agregarItem}
-          className="bg-blue-600 text-white px-4 py-2 rounded"
-        >
-          ➕ Agregar
-        </button>
+        {tipo !== 'proveedores' ? (
+          <>
+            <input
+              type="text"
+              value={nuevo}
+              placeholder={`Nueva ${tablaNombre[tipo]}`}
+              onChange={(e) => setNuevo(e.target.value)}
+              className="border p-2 flex-grow"
+            />
+            <button
+              onClick={agregarItem}
+              className="bg-blue-600 text-white px-4 py-2 rounded"
+            >
+              ➕ Agregar
+            </button>
+          </>
+        ) : null}
       </div>
+
+      {tipo === 'proveedores' && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+          <input
+            type="text"
+            value={proveedor.nombre}
+            onChange={e => setProveedor(p => ({ ...p, nombre: e.target.value }))}
+            placeholder="Nombre del Proveedor *"
+            className="border p-2"
+          />
+          <input
+            type="text"
+            value={proveedor.nit}
+            onChange={e => setProveedor(p => ({ ...p, nit: e.target.value }))}
+            placeholder="NIT *"
+            className="border p-2"
+          />
+          <input
+            type="text"
+            value={proveedor.direccion}
+            onChange={e => setProveedor(p => ({ ...p, direccion: e.target.value }))}
+            placeholder="Dirección"
+            className="border p-2"
+          />
+          <input
+            type="text"
+            value={proveedor.contacto_nombre}
+            onChange={e => setProveedor(p => ({ ...p, contacto_nombre: e.target.value }))}
+            placeholder="Nombre Contacto"
+            className="border p-2"
+          />
+          <input
+            type="text"
+            value={proveedor.telefono}
+            onChange={e => setProveedor(p => ({ ...p, telefono: e.target.value }))}
+            placeholder="Teléfono"
+            className="border p-2"
+          />
+          <div className="md:col-span-2">
+            <button
+              onClick={agregarItem}
+              className="bg-blue-600 text-white px-4 py-2 rounded w-full"
+            >
+              ➕ Agregar Proveedor
+            </button>
+          </div>
+        </div>
+      )}
 
       <ul className="space-y-2 mb-4">
         {items.length === 0 ? (
@@ -87,7 +169,11 @@ export default function AdminOpciones() {
         ) : (
           items.map((item) => (
             <li key={item.id} className="flex justify-between items-center border px-4 py-2 rounded">
-              <span>{item.nombre}</span>
+              <span>
+                {tipo === 'proveedores'
+                  ? `${item.nombre} — NIT: ${item.nit}`
+                  : item.nombre}
+              </span>
               <button
                 onClick={() => eliminarItem(item.id)}
                 className="text-white bg-red-600 text-xs px-3 py-1 rounded"
