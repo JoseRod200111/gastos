@@ -139,22 +139,19 @@ export default function Reportes() {
                 </tbody>
               </table>
 
-              ${e.editado_en && e.editado_por ? `
-                <div style="text-align:right;font-size:11px;margin-top:4px">
-                  editado ${new Date(e.editado_en).toLocaleString()} por ${e.editado_por}
-                </div>` : ''}
+              ${e.editado_en && e.editado_por
+                ? `<div style="text-align:right;font-size:11px;margin-top:6px">
+                     editado ${new Date(e.editado_en).toLocaleString()} por ${e.editado_por}
+                   </div>` : ''}
             </div>
           `).join('')}
           <script>
-            /* imprimimos sólo cuando el logo terminó de cargar */
             document.getElementById('theLogo').onload = () => window.print();
           <\/script>
         </body>
       </html>
     `)
     doc.close()
-
-    // limpieza
     iframe.onload = () => setTimeout(() => document.body.removeChild(iframe), 2000)
   }
 
@@ -215,7 +212,7 @@ export default function Reportes() {
                     <span className="font-semibold">NIT:</span> {e.proveedores?.nit || '-'}
                   </div>
                   <div className="col-span-2">
-                    <span className="font-semibold">Observaciones:</span> {e.observaciones}</span>
+                    <span className="font-semibold">Observaciones:</span> {e.observaciones}
                   </div>
                 </div>
 
