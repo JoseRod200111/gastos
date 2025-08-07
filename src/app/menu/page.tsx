@@ -24,7 +24,7 @@ export default function Dashboard() {
         </Link>
 
         <Link
-          href="/erogaciones/ver"
+          href="/dashboard"
           className="block bg-blue-600 hover:bg-blue-700 text-white text-center py-4 rounded shadow"
         >
           💸 Erogaciones
@@ -40,3 +40,4 @@ export default function Dashboard() {
     </div>
   )
 }
+
