@@ -20,7 +20,7 @@ export default function LoginPage() {
       setMessage(error.message)
     } else {
       if (!isRegister) {
-        window.location.href = '/dashboard'
+        window.location.href = '/menu'
       } else {
         setMessage('Revisa tu correo para confirmar tu cuenta.')
       }
