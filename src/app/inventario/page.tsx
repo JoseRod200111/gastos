@@ -28,10 +28,7 @@ export default function InventarioPage() {
   const [nuevaUnidad, setNuevaUnidad] = useState('')
   const [nuevoCtrlInv, setNuevoCtrlInv] = useState(true)
 
-  // Movimiento manual
-  const [selProductoId, setSelProductoId] = useState<number | ''>('')
-  const [tipoMov, setTipoMov] = useState<'ENTRADA'|'SALIDA'>('ENTRADA')
-  const [cantMov, setCantMov] = useState<string>('')
+ 
 
   // Listado
   const [productos, setProductos] = useState<Producto[]>([])
@@ -318,3 +315,4 @@ export default function InventarioPage() {
     </div>
   )
 }
+
