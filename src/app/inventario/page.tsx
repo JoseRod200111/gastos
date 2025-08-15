@@ -191,7 +191,7 @@ export default function InventarioPage() {
           <input
             value={nuevoSku}
             onChange={(e) => setNuevoSku(e.target.value)}
-            placeholder="SKU / Código (opcional)"
+            placeholder="SKU / Código"
             className="border p-2 rounded"
           />
           <input
@@ -318,3 +318,4 @@ export default function InventarioPage() {
     </div>
   )
 }
+
