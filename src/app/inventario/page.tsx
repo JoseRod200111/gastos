@@ -1,27 +1,320 @@
--- VIEW de existencias por producto
-create or replace view public.inventario_existencias as
-select
-  p.id                as producto_id,
-  p.nombre,
-  p.sku,
-  p.unidad,
-  p.control_inventario,
-  coalesce(
-    sum(
-      case m.tipo
-        when 'ENTRADA' then m.cantidad
-        when 'SALIDA'  then -m.cantidad
-        else 0
-      end
-    ), 0
-  )::numeric as existencia
-from public.productos p
-left join public.inventario_movimientos m
-  on m.producto_id = p.id
-group by p.id;
+'use client'
 
--- Opcional pero recomendado: SKU único si decides usarlo como código principal
-create unique index if not exists idx_productos_sku_unique on public.productos (sku) where sku is not null;
+import { useEffect, useMemo, useState } from 'react'
+import Link from 'next/link'
+import { supabase } from '@/lib/supabaseClient'
 
--- Permisos (asumiendo que ya tienes RLS/Policies para authenticated en tablas base)
-grant select on public.inventario_existencias to anon, authenticated;
+type Producto = {
+  id: number
+  nombre: string
+  sku: string | null
+  unidad: string | null
+  control_inventario: boolean
+}
+
+type Existencia = {
+  producto_id: number
+  existencia: number
+}
+
+export default function InventarioPage() {
+  // UI state
+  const [loading, setLoading] = useState(false)
+  const [msg, setMsg] = useState<string>('')
+
+  // Nuevo producto
+  const [nuevoNombre, setNuevoNombre] = useState('')
+  const [nuevoSku, setNuevoSku] = useState('')
+  const [nuevaUnidad, setNuevaUnidad] = useState('')
+  const [nuevoCtrlInv, setNuevoCtrlInv] = useState(true)
+
+  // Movimiento manual
+  const [selProductoId, setSelProductoId] = useState<number | ''>('')
+  const [tipoMov, setTipoMov] = useState<'ENTRADA'|'SALIDA'>('ENTRADA')
+  const [cantMov, setCantMov] = useState<string>('')
+
+  // Listado
+  const [productos, setProductos] = useState<Producto[]>([])
+  const [existencias, setExistencias] = useState<Existencia[]>([])
+  const [busqueda, setBusqueda] = useState('')
+
+  const existenciaDe = (productoId: number) =>
+    existencias.find(e => e.producto_id === productoId)?.existencia ?? 0
+
+  const productosFiltrados = useMemo(() => {
+    const t = busqueda.trim().toLowerCase()
+    if (!t) return productos
+    return productos.filter(p =>
+      (p.nombre?.toLowerCase().includes(t)) ||
+      (p.sku ?? '').toLowerCase().includes(t)
+    )
+  }, [busqueda, productos])
+
+  async function cargarDatos() {
+    setLoading(true)
+    setMsg('')
+    try {
+      const { data: prods, error: e1 } = await supabase
+        .from('productos')
+        .select('id,nombre,sku,unidad,control_inventario')
+        .order('nombre', { ascending: true })
+      if (e1) throw e1
+      setProductos(prods ?? [])
+
+      const { data: exis, error: e2 } = await supabase
+        .from('inventario_existencias')
+        .select('producto_id, existencia')
+      if (e2) {
+        // Si la vista no existe o no hay permiso, mostramos un aviso
+        setMsg('Aviso: la vista public.inventario_existencias no existe o no es accesible. Ejecuta el SQL de creación de la vista.')
+        setExistencias([])
+      } else {
+        setExistencias(exis ?? [])
+      }
+    } catch (err: any) {
+      console.error(err)
+      setMsg(err.message ?? 'Error al cargar datos')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => { cargarDatos() }, [])
+
+  async function crearProducto() {
+    if (!nuevoNombre.trim()) {
+      setMsg('El nombre es obligatorio')
+      return
+    }
+    setLoading(true)
+    setMsg('')
+    try {
+      const payload: any = {
+        nombre: nuevoNombre.trim().toUpperCase(),
+        control_inventario: nuevoCtrlInv,
+      }
+      if (nuevoSku.trim()) payload.sku = nuevoSku.trim().toUpperCase()
+      if (nuevaUnidad.trim()) payload.unidad = nuevaUnidad.trim()
+
+      const { error } = await supabase.from('productos').insert(payload)
+      if (error) throw error
+
+      setNuevoNombre('')
+      setNuevoSku('')
+      setNuevaUnidad('')
+      setNuevoCtrlInv(true)
+      await cargarDatos()
+      setMsg('Producto guardado.')
+    } catch (err: any) {
+      console.error(err)
+      setMsg(err.message ?? 'Error al guardar el producto')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function registrarMovimiento() {
+    if (!selProductoId) {
+      setMsg('Selecciona un producto')
+      return
+    }
+    const cantidad = Number(cantMov)
+    if (!cantidad || cantidad <= 0) {
+      setMsg('Cantidad inválida')
+      return
+    }
+
+    const prod = productos.find(p => p.id === selProductoId)
+    if (!prod) {
+      setMsg('Producto inválido')
+      return
+    }
+    if (!prod.control_inventario) {
+      setMsg('Este producto no tiene control de inventario activado.')
+      return
+    }
+
+    setLoading(true)
+    setMsg('')
+    try {
+      const { error } = await supabase.from('inventario_movimientos').insert({
+        producto_id: selProductoId,
+        tipo: tipoMov,
+        cantidad: cantidad,
+        erogacion_detalle_id: null, // ajuste manual
+      })
+      if (error) throw error
+
+      setCantMov('')
+      await cargarDatos()
+      setMsg('Movimiento registrado.')
+    } catch (err: any) {
+      console.error(err)
+      setMsg(err.message ?? 'Error al registrar el movimiento')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="p-4 max-w-5xl mx-auto">
+      {/* Header */}
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center gap-3">
+          <img src="/logo.png" alt="Logo" className="h-10" />
+          <h1 className="text-2xl font-bold">Inventario</h1>
+        </div>
+        <Link
+          href="/menu"
+          className="inline-flex items-center gap-2 bg-gray-800 text-white px-4 py-2 rounded"
+        >
+          ⟵ Volver al Menú Principal
+        </Link>
+      </div>
+
+      {msg && (
+        <div className="mb-4 bg-yellow-100 border border-yellow-300 text-yellow-800 px-4 py-2 rounded">
+          {msg}
+        </div>
+      )}
+
+      {/* Nuevo Producto */}
+      <section className="border rounded p-4 mb-6">
+        <h2 className="font-semibold mb-3">➕ Nuevo Producto</h2>
+        <div className="grid md:grid-cols-5 gap-2">
+          <input
+            value={nuevoNombre}
+            onChange={(e) => setNuevoNombre(e.target.value)}
+            placeholder="Nombre del producto"
+            className="border p-2 rounded md:col-span-2"
+          />
+          <input
+            value={nuevoSku}
+            onChange={(e) => setNuevoSku(e.target.value)}
+            placeholder="SKU / Código (opcional)"
+            className="border p-2 rounded"
+          />
+          <input
+            value={nuevaUnidad}
+            onChange={(e) => setNuevaUnidad(e.target.value)}
+            placeholder="Unidad (ej. kg, lt, unidad)"
+            className="border p-2 rounded"
+          />
+          <label className="inline-flex items-center gap-2 border rounded p-2">
+            <input
+              type="checkbox"
+              checked={nuevoCtrlInv}
+              onChange={(e) => setNuevoCtrlInv(e.target.checked)}
+            />
+            Control de inventario
+          </label>
+        </div>
+        <div className="mt-3">
+          <button
+            onClick={crearProducto}
+            disabled={loading}
+            className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded"
+          >
+            Guardar
+          </button>
+        </div>
+      </section>
+
+      {/* Movimiento manual */}
+      <section className="border rounded p-4 mb-6">
+        <h2 className="font-semibold mb-3">⚡ Movimiento Manual</h2>
+        <div className="grid md:grid-cols-4 gap-2">
+          <select
+            value={selProductoId}
+            onChange={(e) => setSelProductoId(e.target.value ? Number(e.target.value) : '')}
+            className="border p-2 rounded"
+          >
+            <option value="">Selecciona producto</option>
+            {productos.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.nombre} {p.sku ? `(${p.sku})` : ''}
+              </option>
+            ))}
+          </select>
+
+          <select
+            value={tipoMov}
+            onChange={(e) => setTipoMov(e.target.value as 'ENTRADA' | 'SALIDA')}
+            className="border p-2 rounded"
+          >
+            <option value="ENTRADA">ENTRADA</option>
+            <option value="SALIDA">SALIDA</option>
+          </select>
+
+          <input
+            value={cantMov}
+            onChange={(e) => setCantMov(e.target.value)}
+            placeholder="Cantidad"
+            className="border p-2 rounded"
+            inputMode="decimal"
+          />
+
+          <button
+            onClick={registrarMovimiento}
+            disabled={loading}
+            className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded"
+          >
+            Registrar
+          </button>
+        </div>
+        <p className="text-xs text-gray-500 mt-2">
+          * Este movimiento se guarda en <code>inventario_movimientos</code> como ajuste manual (sin <code>erogacion_detalle_id</code>).
+        </p>
+      </section>
+
+      {/* Listado */}
+      <section className="border rounded p-4">
+        <h2 className="font-semibold mb-3">📦 Productos</h2>
+
+        <div className="flex justify-end mb-3">
+          <input
+            value={busqueda}
+            onChange={(e) => setBusqueda(e.target.value)}
+            placeholder="Buscar por nombre o SKU…"
+            className="border p-2 rounded w-full md:w-80"
+          />
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="min-w-full border text-sm">
+            <thead className="bg-gray-100">
+              <tr>
+                <th className="p-2 border">Nombre</th>
+                <th className="p-2 border">SKU</th>
+                <th className="p-2 border">Unidad</th>
+                <th className="p-2 border">Control</th>
+                <th className="p-2 border">Existencia</th>
+              </tr>
+            </thead>
+            <tbody>
+              {productosFiltrados.length === 0 ? (
+                <tr>
+                  <td className="p-3 text-center text-gray-500" colSpan={5}>
+                    No hay productos.
+                  </td>
+                </tr>
+              ) : (
+                productosFiltrados.map((p) => (
+                  <tr key={p.id}>
+                    <td className="p-2 border">{p.nombre}</td>
+                    <td className="p-2 border">{p.sku || '-'}</td>
+                    <td className="p-2 border">{p.unidad || '-'}</td>
+                    <td className="p-2 border">{p.control_inventario ? 'Sí' : 'No'}</td>
+                    <td className="p-2 border text-right">
+                      {p.control_inventario ? existenciaDe(p.id) : '—'}
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+  )
+}
