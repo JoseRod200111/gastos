@@ -315,8 +315,7 @@ export default function NuevaErogacion() {
       <h2 className="text-xl font-semibold mt-6 mb-2">Artículos de Compra</h2>
 
       <p className="text-xs text-gray-600 mb-2">
-        Si seleccionas un <b>Producto</b>, esta línea generará una <b>entrada a inventario</b> (según cantidad). Si lo dejas
-        en “— Sin producto —”, será solo un concepto libre sin afectar inventario. Puedes crear productos desde{' '}
+         Puedes crear productos desde{' '}
         <a className="underline text-blue-600" href="/inventario" target="_blank" rel="noreferrer">
           Inventario
         </a>
