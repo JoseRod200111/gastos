@@ -30,7 +30,7 @@ export default function InventarioPage() {
 
   // Movimiento manual
   const [selProductoId, setSelProductoId] = useState<number | ''>('')
-  const [tipoMov, setTipoMov] = useState<'ENTRADA'|'SALIDA'>('ENTRADA')
+  const [tipoMov, setTipoMov] = useState<'ENTRADA' | 'SALIDA'>('ENTRADA')
   const [cantMov, setCantMov] = useState<string>('')
 
   // Listado
@@ -38,15 +38,15 @@ export default function InventarioPage() {
   const [existencias, setExistencias] = useState<Existencia[]>([])
   const [busqueda, setBusqueda] = useState('')
 
+  // --- helpers
   const existenciaDe = (productoId: number) =>
-    existencias.find(e => e.producto_id === productoId)?.existencia ?? 0
+    existencias.find((e) => e.producto_id === productoId)?.existencia ?? 0
 
   const productosFiltrados = useMemo(() => {
     const t = busqueda.trim().toLowerCase()
     if (!t) return productos
-    return productos.filter(p =>
-      (p.nombre?.toLowerCase().includes(t)) ||
-      (p.sku ?? '').toLowerCase().includes(t)
+    return productos.filter(
+      (p) => p.nombre?.toLowerCase().includes(t) || (p.sku ?? '').toLowerCase().includes(t)
     )
   }, [busqueda, productos])
 
@@ -65,8 +65,9 @@ export default function InventarioPage() {
         .from('inventario_existencias')
         .select('producto_id, existencia')
       if (e2) {
-        // Si la vista no existe o no hay permiso, mostramos un aviso
-        setMsg('Aviso: la vista public.inventario_existencias no existe o no es accesible. Ejecuta el SQL de creación de la vista.')
+        setMsg(
+          'Aviso: la vista public.inventario_existencias no existe o no es accesible. Ejecuta el SQL de creación de la vista.'
+        )
         setExistencias([])
       } else {
         setExistencias(exis ?? [])
@@ -79,8 +80,11 @@ export default function InventarioPage() {
     }
   }
 
-  useEffect(() => { cargarDatos() }, [])
+  useEffect(() => {
+    cargarDatos()
+  }, [])
 
+  // ─────────── crear producto ───────────
   async function crearProducto() {
     if (!nuevoNombre.trim()) {
       setMsg('El nombre es obligatorio')
@@ -113,6 +117,7 @@ export default function InventarioPage() {
     }
   }
 
+  // ─────────── movimiento manual ───────────
   async function registrarMovimiento() {
     if (!selProductoId) {
       setMsg('Selecciona un producto')
@@ -124,7 +129,7 @@ export default function InventarioPage() {
       return
     }
 
-    const prod = productos.find(p => p.id === selProductoId)
+    const prod = productos.find((p) => p.id === selProductoId)
     if (!prod) {
       setMsg('Producto inválido')
       return
@@ -156,26 +161,71 @@ export default function InventarioPage() {
     }
   }
 
+  // ─────────── edición inline ───────────
+  const actualizarCampo = (id: number, campo: keyof Producto, valor: any) => {
+    setProductos((prev) =>
+      prev.map((p) => (p.id === id ? { ...p, [campo]: campo === 'control_inventario' ? !!valor : valor } : p))
+    )
+  }
+
+  async function guardarProducto(p: Producto) {
+    setLoading(true)
+    setMsg('')
+    try {
+      const payload = {
+        nombre: p.nombre?.trim() ? p.nombre.trim().toUpperCase() : null,
+        sku: p.sku?.trim() ? p.sku.trim().toUpperCase() : null,
+        unidad: p.unidad?.trim() ? p.unidad.trim() : null,
+        control_inventario: !!p.control_inventario,
+      }
+      const { error } = await supabase.from('productos').update(payload).eq('id', p.id)
+      if (error) throw error
+      await cargarDatos()
+      setMsg('Cambios guardados.')
+    } catch (err: any) {
+      console.error(err)
+      setMsg(err.message ?? 'Error al guardar cambios')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function eliminarProducto(id: number) {
+    if (!confirm('¿Eliminar este producto? Esta acción no se puede deshacer.')) return
+    setLoading(true)
+    setMsg('')
+    try {
+      const { error } = await supabase.from('productos').delete().eq('id', id)
+      if (error) {
+        // casi seguro que el error es por FK (en movimientos o detalle_compra)
+        setMsg('No se puede eliminar: el producto está en uso (movimientos/erogaciones).')
+      } else {
+        await cargarDatos()
+        setMsg('Producto eliminado.')
+      }
+    } catch (err: any) {
+      console.error(err)
+      setMsg(err.message ?? 'Error al eliminar')
+    } finally {
+      setLoading(false)
+    }
+  }
+
   return (
-    <div className="p-4 max-w-5xl mx-auto">
+    <div className="p-4 max-w-6xl mx-auto">
       {/* Header */}
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-3">
           <img src="/logo.png" alt="Logo" className="h-10" />
           <h1 className="text-2xl font-bold">Inventario</h1>
         </div>
-        <Link
-          href="/menu"
-          className="inline-flex items-center gap-2 bg-gray-800 text-white px-4 py-2 rounded"
-        >
+        <Link href="/menu" className="inline-flex items-center gap-2 bg-gray-800 text-white px-4 py-2 rounded">
           ⟵ Volver al Menú Principal
         </Link>
       </div>
 
       {msg && (
-        <div className="mb-4 bg-yellow-100 border border-yellow-300 text-yellow-800 px-4 py-2 rounded">
-          {msg}
-        </div>
+        <div className="mb-4 bg-yellow-100 border border-yellow-300 text-yellow-800 px-4 py-2 rounded">{msg}</div>
       )}
 
       {/* Nuevo Producto */}
@@ -201,11 +251,7 @@ export default function InventarioPage() {
             className="border p-2 rounded"
           />
           <label className="inline-flex items-center gap-2 border rounded p-2">
-            <input
-              type="checkbox"
-              checked={nuevoCtrlInv}
-              onChange={(e) => setNuevoCtrlInv(e.target.checked)}
-            />
+            <input type="checkbox" checked={nuevoCtrlInv} onChange={(e) => setNuevoCtrlInv(e.target.checked)} />
             Control de inventario
           </label>
         </div>
@@ -263,11 +309,12 @@ export default function InventarioPage() {
           </button>
         </div>
         <p className="text-xs text-gray-500 mt-2">
-          * Este movimiento se guarda en <code>inventario_movimientos</code> como ajuste manual (sin <code>erogacion_detalle_id</code>).
+          * Este movimiento se guarda en <code>inventario_movimientos</code> como ajuste manual (sin
+          <code> erogacion_detalle_id</code>).
         </p>
       </section>
 
-      {/* Listado */}
+      {/* Listado con edición/eliminación */}
       <section className="border rounded p-4">
         <h2 className="font-semibold mb-3">📦 Productos</h2>
 
@@ -289,24 +336,68 @@ export default function InventarioPage() {
                 <th className="p-2 border">Unidad</th>
                 <th className="p-2 border">Control</th>
                 <th className="p-2 border">Existencia</th>
+                <th className="p-2 border">Acciones</th>
               </tr>
             </thead>
             <tbody>
               {productosFiltrados.length === 0 ? (
                 <tr>
-                  <td className="p-3 text-center text-gray-500" colSpan={5}>
+                  <td className="p-3 text-center text-gray-500" colSpan={6}>
                     No hay productos.
                   </td>
                 </tr>
               ) : (
                 productosFiltrados.map((p) => (
-                  <tr key={p.id}>
-                    <td className="p-2 border">{p.nombre}</td>
-                    <td className="p-2 border">{p.sku || '-'}</td>
-                    <td className="p-2 border">{p.unidad || '-'}</td>
-                    <td className="p-2 border">{p.control_inventario ? 'Sí' : 'No'}</td>
+                  <tr key={p.id} className="border-t">
+                    <td className="p-2 border">
+                      <input
+                        className="border p-1 w-full"
+                        value={p.nombre || ''}
+                        onChange={(e) => actualizarCampo(p.id, 'nombre', e.target.value)}
+                      />
+                    </td>
+                    <td className="p-2 border">
+                      <input
+                        className="border p-1 w-full"
+                        value={p.sku || ''}
+                        onChange={(e) => actualizarCampo(p.id, 'sku', e.target.value)}
+                      />
+                    </td>
+                    <td className="p-2 border">
+                      <input
+                        className="border p-1 w-full"
+                        value={p.unidad || ''}
+                        onChange={(e) => actualizarCampo(p.id, 'unidad', e.target.value)}
+                      />
+                    </td>
+                    <td className="p-2 border">
+                      <label className="inline-flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={!!p.control_inventario}
+                          onChange={(e) => actualizarCampo(p.id, 'control_inventario', e.target.checked)}
+                        />
+                        <span>{p.control_inventario ? 'Sí' : 'No'}</span>
+                      </label>
+                    </td>
                     <td className="p-2 border text-right">
                       {p.control_inventario ? existenciaDe(p.id) : '—'}
+                    </td>
+                    <td className="p-2 border whitespace-nowrap">
+                      <button
+                        onClick={() => guardarProducto(p)}
+                        className="bg-green-600 text-white px-2 py-1 rounded mr-2 text-xs"
+                        disabled={loading}
+                      >
+                        Guardar
+                      </button>
+                      <button
+                        onClick={() => eliminarProducto(p.id)}
+                        className="bg-red-600 text-white px-2 py-1 rounded text-xs"
+                        disabled={loading}
+                      >
+                        Eliminar
+                      </button>
                     </td>
                   </tr>
                 ))
@@ -318,4 +409,3 @@ export default function InventarioPage() {
     </div>
   )
 }
-
