@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
+import Image from 'next/image'
 import { supabase } from '@/lib/supabaseClient'
 
 type Catalogo   = { id: number; nombre: string }
@@ -9,7 +10,7 @@ type MetodoPago = { id: number; metodo: string }
 type Cliente    = { id: number; nombre: string; nit?: string|null; telefono?: string|null }
 type Producto   = { id: number; nombre: string; sku: string|null; unidad: string|null; control_inventario: boolean }
 
-const DETALLE_VENTA_TABLE = 'detalle_venta' // <— nombre real en tu BD
+const DETALLE_VENTA_TABLE = 'detalle_venta' // nombre real en tu BD
 
 export default function NuevaVenta() {
   const router = useRouter()
@@ -24,7 +25,7 @@ export default function NuevaVenta() {
   /* cabecera */
   const [form, setForm] = useState({
     empresa_id: '', division_id: '',
-    cliente_id: '', fecha: '', total: 0, // total en UI; en BD se guarda en ventas.cantidad
+    cliente_id: '', fecha: '', total: 0, // se guarda en ventas.cantidad
     observaciones: ''
   })
 
@@ -87,7 +88,7 @@ export default function NuevaVenta() {
     producto_id:'', concepto:'', cantidad:0, precio_unitario:0, forma_pago_id:'', documento:''
   }])
 
-  /* guardar cliente */
+  /* guardar cliente (se usa en el botón de "Guardar Cliente") */
   const guardarNuevoCliente = async () => {
     if (!nuevoCli.nombre.trim()) return alert('El nombre del cliente es obligatorio')
     const { data, error } = await supabase
@@ -178,7 +179,7 @@ export default function NuevaVenta() {
   return (
     <div className="p-6 max-w-5xl mx-auto">
       <div className="flex justify-center mb-6">
-        <img src="/logo.png" alt="Logo" className="h-16" />
+        <Image src="/logo.png" alt="Logo" width={160} height={64} />
       </div>
 
       <h1 className="text-2xl font-bold mb-4">Nueva Venta</h1>
@@ -204,11 +205,28 @@ export default function NuevaVenta() {
             <option value="">Selecciona Cliente</option>
             {clientes.map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}
           </select>
-          <button onClick={()=>setShowNuevoCli(!showNuevoCli)}
-                  className="px-3 bg-green-600 text-white rounded text-sm whitespace-nowrap">
+          <button
+            onClick={()=>setShowNuevoCli(!showNuevoCli)}
+            className="px-3 bg-green-600 text-white rounded text-sm whitespace-nowrap"
+          >
             {showNuevoCli ? 'Cancelar' : '➕ Nuevo'}
           </button>
         </div>
+
+        {showNuevoCli && (
+          <div className="border p-3 rounded bg-gray-50 space-y-2">
+            <h3 className="font-semibold text-sm">Nuevo Cliente</h3>
+            <input className="border p-2 w-full" placeholder="Nombre"
+                   value={nuevoCli.nombre} onChange={e=>setNuevoCli({...nuevoCli,nombre:e.target.value})}/>
+            <input className="border p-2 w-full" placeholder="NIT"
+                   value={nuevoCli.nit} onChange={e=>setNuevoCli({...nuevoCli,nit:e.target.value})}/>
+            <input className="border p-2 w-full" placeholder="Teléfono"
+                   value={nuevoCli.telefono} onChange={e=>setNuevoCli({...nuevoCli,telefono:e.target.value})}/>
+            <button onClick={guardarNuevoCliente} className="w-full bg-blue-600 text-white py-2 rounded">
+              Guardar Cliente
+            </button>
+          </div>
+        )}
 
         <input type="date" className="border p-2"
                value={form.fecha} onChange={e=>setForm(f=>({...f,fecha:e.target.value}))}/>
