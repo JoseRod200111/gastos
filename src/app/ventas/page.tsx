@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabaseClient'
 import { useRouter } from 'next/navigation'
 
-export default function DashboardPage() {
+export default function VentasMenuPage() {
   const [userEmail, setUserEmail] = useState<string | null>(null)
   const router = useRouter()
 
@@ -14,10 +14,9 @@ export default function DashboardPage() {
       if (data?.user) {
         setUserEmail(data.user.email ?? null)
       } else {
-        router.push('/login') // si no hay sesión, redirige al login
+        router.push('/login') // sin sesión -> login
       }
     }
-
     getUser()
   }, [router])
 
@@ -31,27 +30,47 @@ export default function DashboardPage() {
       {/* LOGO */}
       <img src="/logo.png" alt="Logo" className="mx-auto mb-4 w-32 h-auto" />
 
-      <h1 className="text-2xl font-bold mb-4">Menú Principal</h1>
+      <h1 className="text-2xl font-bold mb-2">Ventas</h1>
       <p className="mb-6 text-gray-700">Sesión iniciada como: {userEmail}</p>
 
       <div className="space-y-3">
-        <button onClick={() => router.push('/erogacion/nueva')} className="w-full p-3 bg-blue-600 text-white rounded">
-          ➕ Nueva Erogación
+        {/* Nueva venta */}
+        <button
+          onClick={() => router.push('/ventas/nueva')}
+          className="w-full p-3 bg-orange-600 hover:bg-orange-700 text-white rounded"
+        >
+          🧾 Nueva Venta
         </button>
 
-        <button onClick={() => router.push('/erogacion/ver')} className="w-full p-3 bg-green-600 text-white rounded">
-          📋 Ver Erogaciones
+        {/* Ver ventas */}
+        <button
+          onClick={() => router.push('/ventas/ver')}
+          className="w-full p-3 bg-amber-600 hover:bg-amber-700 text-white rounded"
+        >
+          📑 Ver Ventas
         </button>
 
-        <button onClick={() => router.push('/reportes')} className="w-full p-3 bg-purple-600 text-white rounded">
-          📊 Reportes
+        {/* Reportes de ventas (PDF) - lo implementamos después */}
+        <button
+          onClick={() => router.push('/ventas/reportes')}
+          className="w-full p-3 bg-purple-600 hover:bg-purple-700 text-white rounded"
+        >
+          📊 Reportes de Ventas (PDF)
         </button>
 
-        <button onClick={() => router.push('/empresas')} className="w-full p-3 bg-gray-600 text-white rounded">
-          🏢 Agregar/Eliminar Empresa, Categoría, División
+        {/* Volver al menú principal */}
+        <button
+          onClick={() => router.push('/menu')}
+          className="w-full p-3 bg-gray-600 hover:bg-gray-700 text-white rounded"
+        >
+          ⬅ Volver al Menú Principal
         </button>
 
-        <button onClick={handleLogout} className="w-full p-3 bg-red-600 text-white rounded mt-4">
+        {/* Logout */}
+        <button
+          onClick={handleLogout}
+          className="w-full p-3 bg-red-600 hover:bg-red-700 text-white rounded mt-4"
+        >
           🔒 Cerrar sesión
         </button>
       </div>
