@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import Image from 'next/image'
 import { supabase } from '@/lib/supabaseClient'
 import { useRouter } from 'next/navigation'
 
@@ -27,8 +28,10 @@ export default function VentasMenuPage() {
 
   return (
     <div className="p-6 max-w-xl mx-auto text-center">
-      {/* LOGO */}
-      <img src="/logo.png" alt="Logo" className="mx-auto mb-4 w-32 h-auto" />
+      {/* LOGO (next/image para evitar warnings) */}
+      <div className="mx-auto mb-4 w-32">
+        <Image src="/logo.png" alt="Logo" width={128} height={64} className="mx-auto h-auto w-auto" />
+      </div>
 
       <h1 className="text-2xl font-bold mb-2">Ventas</h1>
       <p className="mb-6 text-gray-700">Sesión iniciada como: {userEmail}</p>
@@ -50,12 +53,20 @@ export default function VentasMenuPage() {
           📑 Ver Ventas
         </button>
 
-        {/* Reportes de ventas (PDF) - lo implementamos después */}
+        {/* Reportes de ventas (PDF) */}
         <button
           onClick={() => router.push('/ventas/reportes')}
           className="w-full p-3 bg-purple-600 hover:bg-purple-700 text-white rounded"
         >
           📊 Reportes de Ventas (PDF)
+        </button>
+
+        {/* Administración de catálogos (empresas/divisiones/categorías/clientes/proveedores/forma de pago) */}
+        <button
+          onClick={() => router.push('/empresas')}
+          className="w-full p-3 bg-slate-700 hover:bg-slate-800 text-white rounded"
+        >
+          🏢 Agregar/Eliminar Empresa, Categoría, División, Cliente, Proveedor y Pago
         </button>
 
         {/* Volver al menú principal */}
