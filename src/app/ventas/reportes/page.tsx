@@ -4,6 +4,10 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import Image from 'next/image'
 import { supabase } from '@/lib/supabaseClient'
 
+type EmpresaRel = { nombre: string } | null
+type DivisionRel = { nombre: string } | null
+type ClienteRel = { nombre: string | null; nit: string | null } | null
+
 type Venta = {
   id: number
   fecha: string
@@ -12,9 +16,9 @@ type Venta = {
   empresa_id: number | null
   division_id: number | null
   cliente_id: number | null
-  empresas?: { nombre: string } | null
-  divisiones?: { nombre: string } | null
-  clientes?: { nombre: string | null; nit: string | null } | null
+  empresas?: EmpresaRel
+  divisiones?: DivisionRel
+  clientes?: ClienteRel
 }
 
 type Detalle = {
@@ -26,6 +30,25 @@ type Detalle = {
   documento?: string | null
 }
 
+/** Normaliza una fila devuelta por Supabase (que puede traer relaciones como arrays) */
+function normalizeVenta(row: any): Venta {
+  const asObj = (rel: any): any =>
+    rel == null ? null : Array.isArray(rel) ? rel[0] ?? null : rel
+
+  return {
+    id: Number(row.id),
+    fecha: row.fecha,
+    cantidad: Number(row.cantidad ?? 0),
+    observaciones: row.observaciones ?? null,
+    empresa_id: row.empresa_id ?? null,
+    division_id: row.division_id ?? null,
+    cliente_id: row.cliente_id ?? null,
+    empresas: asObj(row.empresas) as EmpresaRel,
+    divisiones: asObj(row.divisiones) as DivisionRel,
+    clientes: asObj(row.clientes) as ClienteRel,
+  }
+}
+
 export default function ReportesVentas() {
   /* ────────────────────────────── state ────────────────────────────── */
   const [ventas, setVentas] = useState<Venta[]>([])
@@ -33,6 +56,9 @@ export default function ReportesVentas() {
 
   const [empresas, setEmpresas] = useState<any[]>([])
   const [divisiones, setDivisiones] = useState<any[]>([])
+
+  // Si quisieras ver también ventas incompletas (sin detalle), pon true
+  const [mostrarIncompletas] = useState(false)
 
   const [filtros, setFiltros] = useState({
     empresa_id: '',
@@ -44,14 +70,11 @@ export default function ReportesVentas() {
     cliente_nit: '',
   })
 
-  // Si en algún momento quieres ver también “intentos fallidos”, cambia a true
-  const [mostrarIncompletas] = useState(false)
-
   const containerRef = useRef<HTMLDivElement>(null)
 
   /* ──────────────────────────── data loaders ─────────────────────────── */
   useEffect(() => {
-    (async () => {
+    ;(async () => {
       const [emp, div] = await Promise.all([
         supabase.from('empresas').select('*'),
         supabase.from('divisiones').select('*'),
@@ -75,7 +98,7 @@ export default function ReportesVentas() {
       )
       .order('fecha', { ascending: false })
 
-    /* filtros */
+    // Filtros (con cast a número donde corresponde)
     if (filtros.id.trim()) query = query.eq('id', Number(filtros.id))
     if (filtros.empresa_id.trim()) query = query.eq('empresa_id', Number(filtros.empresa_id))
     if (filtros.division_id.trim()) query = query.eq('division_id', Number(filtros.division_id))
@@ -92,7 +115,11 @@ export default function ReportesVentas() {
       return
     }
 
-    const ids = (cabeceras || []).map((v: any) => v.id)
+    // Normalizamos las relaciones a objeto (no arrays)
+    const norm = (cabeceras || []).map(normalizeVenta)
+
+    // Recoger ids para detalles
+    const ids = norm.map(v => v.id)
     if (ids.length === 0) {
       setVentas([])
       setDetalles({})
@@ -112,30 +139,30 @@ export default function ReportesVentas() {
 
     if (detErr) {
       console.error('Error cargando detalles:', detErr)
-      setVentas(cabeceras as Venta[])
+      // Aun si falla el detalle, mostramos cabeceras normalizadas
+      setVentas(norm)
       setDetalles({})
       return
     }
 
-    // Agrupar detalles por venta_id
+    // Agrupar detalles
     const grouped: Record<number, Detalle[]> = {}
-    for (const d of (detAll || []) as any[]) {
-      (grouped[d.venta_id] ||= []).push({
-        concepto: d.concepto,
-        cantidad: d.cantidad,
-        precio_unitario: d.precio_unitario,
-        importe: d.importe,
-        forma_pago: d.forma_pago,
-        documento: d.documento,
-      })
+    for (const d of detAll || []) {
+      const item: Detalle = {
+        concepto: (d as any).concepto,
+        cantidad: Number((d as any).cantidad ?? 0),
+        precio_unitario: Number((d as any).precio_unitario ?? 0),
+        importe: Number((d as any).importe ?? 0),
+        forma_pago: (d as any).forma_pago ?? null,
+        documento: (d as any).documento ?? null,
+      }
+      const key = Number((d as any).venta_id)
+      ;(grouped[key] ||= []).push(item)
     }
     setDetalles(grouped)
 
-    // Filtrar ventas sin detalle (intentos fallidos), salvo que mostrarIncompletas=true
-    const filtradas = (cabeceras || []).filter(v =>
-      mostrarIncompletas ? true : (grouped[v.id]?.length ?? 0) > 0
-    ) as Venta[]
-
+    // Filtrar ventas sin detalle (intentos fallidos) si corresponde
+    const filtradas = norm.filter(v => (mostrarIncompletas ? true : (grouped[v.id]?.length ?? 0) > 0))
     setVentas(filtradas)
   }, [filtros, mostrarIncompletas])
 
@@ -183,7 +210,7 @@ export default function ReportesVentas() {
         </head>
         <body>
           <img src="/logo.png" class="logo"/>
-          ${(ventas || [])
+          ${ventas
             .map(
               v => `
             <div class="box">
@@ -227,7 +254,8 @@ export default function ReportesVentas() {
                     .join('')}
                 </tbody>
               </table>
-            </div>`
+            </div>
+          `
             )
             .join('')}
         </body>
@@ -242,7 +270,7 @@ export default function ReportesVentas() {
 
   /* ───────────────────────────── Render ───────────────────────────── */
   return (
-    <div className="p-6 max-w-6xl mx-auto">
+    <div className="p-6 max-w-6xl mx-auto" ref={containerRef}>
       <div className="flex justify-center mb-4">
         <Image src="/logo.png" alt="Logo" width={160} height={64} />
       </div>
@@ -251,12 +279,7 @@ export default function ReportesVentas() {
 
       {/* filtros */}
       <div className="grid grid-cols-1 md:grid-cols-8 gap-4 mb-6">
-        <select
-          name="empresa_id"
-          value={filtros.empresa_id}
-          onChange={handleChange}
-          className="border p-2"
-        >
+        <select name="empresa_id" value={filtros.empresa_id} onChange={handleChange} className="border p-2">
           <option value="">Todas las Empresas</option>
           {empresas.map(e => (
             <option key={e.id} value={e.id}>
@@ -264,13 +287,7 @@ export default function ReportesVentas() {
             </option>
           ))}
         </select>
-
-        <select
-          name="division_id"
-          value={filtros.division_id}
-          onChange={handleChange}
-          className="border p-2"
-        >
+        <select name="division_id" value={filtros.division_id} onChange={handleChange} className="border p-2">
           <option value="">Todas las Divisiones</option>
           {divisiones.map(d => (
             <option key={d.id} value={d.id}>
@@ -278,10 +295,8 @@ export default function ReportesVentas() {
             </option>
           ))}
         </select>
-
         <input type="date" name="desde" value={filtros.desde} onChange={handleChange} className="border p-2" />
         <input type="date" name="hasta" value={filtros.hasta} onChange={handleChange} className="border p-2" />
-
         <input
           type="text"
           name="cliente_nombre"
@@ -298,7 +313,6 @@ export default function ReportesVentas() {
           onChange={handleChange}
           className="border p-2"
         />
-
         <input type="text" name="id" placeholder="ID" value={filtros.id} onChange={handleChange} className="border p-2" />
       </div>
 
@@ -307,80 +321,88 @@ export default function ReportesVentas() {
         <button onClick={cargarDatos} className="bg-blue-600 text-white px-4 py-2 rounded">
           🔍 Aplicar Filtros
         </button>
-        <button onClick={limpiarFiltros} className="ml-2 bg-gray-500 text-white px-4 py-2 rounded">
+        <button
+          onClick={() =>
+            setFiltros({
+              empresa_id: '',
+              division_id: '',
+              desde: '',
+              hasta: '',
+              id: '',
+              cliente_nombre: '',
+              cliente_nit: '',
+            })
+          }
+          className="ml-2 bg-gray-500 text-white px-4 py-2 rounded"
+        >
           Limpiar filtros
         </button>
         <button onClick={descargarPDF} className="ml-4 bg-green-600 text-white px-4 py-2 rounded">
           📄 Imprimir / PDF
         </button>
-        <button
-          onClick={() => (window.location.href = '/menu')}
-          className="ml-4 bg-gray-700 text-white px-4 py-2 rounded"
-        >
+        <a href="/menu" className="ml-4 inline-block bg-gray-700 text-white px-4 py-2 rounded">
           ⬅ Volver al Menú de Ventas
-        </button>
+        </a>
       </div>
 
       {/* vista previa */}
-      <div ref={containerRef}>
-        {ventas.length === 0 ? (
-          <p className="text-center text-gray-500">No se encontraron ventas.</p>
-        ) : (
-          ventas.map(v => (
-            <div key={v.id} className="box border p-4 my-4 text-sm">
-              <div className="grid grid-cols-2 gap-2 mb-2">
-                <div>
-                  <span className="font-semibold">ID:</span> {v.id}
-                </div>
-                <div>
-                  <span className="font-semibold">Fecha:</span> {v.fecha}
-                </div>
-                <div>
-                  <span className="font-semibold">Empresa:</span> {v.empresas?.nombre}
-                </div>
-                <div>
-                  <span className="font-semibold">División:</span> {v.divisiones?.nombre}
-                </div>
-                <div className="col-span-2">
-                  <span className="font-semibold">Cliente:</span> {v.clientes?.nombre || '-'} &nbsp;
-                  <span className="font-semibold">NIT:</span> {v.clientes?.nit || '-'}
-                </div>
-                <div>
-                  <span className="font-semibold">Total:</span> Q{Number(v.cantidad || 0).toFixed(2)}
-                </div>
-                <div className="col-span-2">
-                  <span className="font-semibold">Observaciones:</span> {v.observaciones || 'N/A'}
-                </div>
+      {ventas.length === 0 ? (
+        <p className="text-center text-gray-500">No se encontraron ventas.</p>
+      ) : (
+        ventas.map(v => (
+          <div key={v.id} className="box border p-4 my-4 text-sm">
+            <div className="grid grid-cols-2 gap-2 mb-2">
+              <div>
+                <span className="font-semibold">ID:</span> {v.id}
               </div>
-
-              <table className="w-full border text-sm">
-                <thead>
-                  <tr className="bg-gray-200">
-                    <th>Concepto</th>
-                    <th>Cant.</th>
-                    <th>P.Unit</th>
-                    <th>Importe</th>
-                    <th>Pago</th>
-                    <th>Doc.</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(detalles[v.id] || []).map((d, i) => (
-                    <tr key={i} className="border-t">
-                      <td>{d.concepto}</td>
-                      <td>{d.cantidad}</td>
-                      <td>Q{Number(d.precio_unitario || 0).toFixed(2)}</td>
-                      <td>Q{Number(d.importe || 0).toFixed(2)}</td>
-                      <td>{d.forma_pago?.metodo || '-'}</td>
-                      <td>{d.documento || 'N/A'}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              <div>
+                <span className="font-semibold">Fecha:</span> {v.fecha}
+              </div>
+              <div>
+                <span className="font-semibold">Empresa:</span> {v.empresas?.nombre || '-'}
+              </div>
+              <div>
+                <span className="font-semibold">División:</span> {v.divisiones?.nombre || '-'}
+              </div>
+              <div className="col-span-2">
+                <span className="font-semibold">Cliente:</span> {v.clientes?.nombre || '-'} &nbsp;
+                <span className="font-semibold">NIT:</span> {v.clientes?.nit || '-'}
+              </div>
+              <div>
+                <span className="font-semibold">Total:</span> Q{Number(v.cantidad || 0).toFixed(2)}
+              </div>
+              <div className="col-span-2">
+                <span className="font-semibold">Observaciones:</span> {v.observaciones || 'N/A'}
+              </div>
             </div>
-          ))
-        )}
-      </div>
+
+            <table className="w-full border text-sm">
+              <thead>
+                <tr className="bg-gray-200">
+                  <th>Concepto</th>
+                  <th>Cant.</th>
+                  <th>P.Unit</th>
+                  <th>Importe</th>
+                  <th>Pago</th>
+                  <th>Doc.</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(detalles[v.id] || []).map((d, i) => (
+                  <tr key={i} className="border-t">
+                    <td>{d.concepto}</td>
+                    <td>{d.cantidad}</td>
+                    <td>Q{Number(d.precio_unitario || 0).toFixed(2)}</td>
+                    <td>Q{Number(d.importe || 0).toFixed(2)}</td>
+                    <td>{d.forma_pago?.metodo || '-'}</td>
+                    <td>{d.documento || 'N/A'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ))
+      )}
     </div>
   )
 }
