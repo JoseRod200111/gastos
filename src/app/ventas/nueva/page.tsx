@@ -153,16 +153,20 @@ export default function NuevaVenta() {
         .single()
       if (vErr) throw new Error(`cabecera: ${vErr.message}`)
 
-      // 2) insertar detalle (detalle_venta)
-      const payload = lineas.map(d => ({
-        venta_id       : (venta as any).id,
-        producto_id    : d.producto_id ? Number(d.producto_id) : null,
-        concepto       : d.concepto.trim(),
-        cantidad       : d.cantidad,
-        precio_unitario: d.precio_unitario,
-        forma_pago_id  : d.forma_pago_id ? Number(d.forma_pago_id) : null,
-        documento      : d.documento || null
-      }))
+      // 2) insertar detalle (detalle_venta) — AQUI VA IMPORTE
+      const payload = lineas.map(d => {
+        const importe = Number((d.cantidad * d.precio_unitario).toFixed(2))
+        return {
+          venta_id       : (venta as any).id,
+          producto_id    : d.producto_id ? Number(d.producto_id) : null,
+          concepto       : d.concepto.trim(),
+          cantidad       : d.cantidad,
+          precio_unitario: d.precio_unitario,
+          importe, // <- requerido NOT NULL en tu tabla
+          forma_pago_id  : d.forma_pago_id ? Number(d.forma_pago_id) : null,
+          documento      : d.documento || null
+        }
+      })
 
       const { error: detErr } = await supabase.from(DETALLE_VENTA_TABLE).insert(payload)
       if (detErr) throw new Error(`detalle: ${detErr.message || detErr.code || 'error'}`)
