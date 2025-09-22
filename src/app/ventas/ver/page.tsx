@@ -35,6 +35,9 @@ export default function VerVentas() {
     cliente_nit: '',
   })
 
+  // Mostrar/ocultar ventas sin renglones en detalle_venta
+  const [mostrarIncompletas, setMostrarIncompletas] = useState(false)
+
   /* ─────────────────────── catálogos ─────────────────────── */
   useEffect(() => {
     ;(async () => {
@@ -54,6 +57,7 @@ export default function VerVentas() {
 
   /* ─────────────────────── datos ─────────────────────── */
   const cargarDatos = useCallback(async () => {
+    // 1) Traer cabeceras
     let query = supabase
       .from('ventas')
       .select(
@@ -74,7 +78,7 @@ export default function VerVentas() {
     if (filtros.desde) query = query.gte('fecha', filtros.desde)
     if (filtros.hasta) query = query.lte('fecha', filtros.hasta)
 
-    // filtros por cliente (si la RLS lo permite sobre relaciones)
+    // filtros por cliente (si RLS lo permite sobre relaciones)
     if (filtros.cliente_nombre) {
       query = query.ilike('clientes.nombre', `%${filtros.cliente_nombre.trim()}%`)
     }
@@ -82,21 +86,20 @@ export default function VerVentas() {
       query = query.ilike('clientes.nit', `%${filtros.cliente_nit.trim()}%`)
     }
 
-    const { data, error } = await query
+    const { data: cabeceras, error } = await query
     if (error) {
       console.error('Error cargando ventas', error)
       return
     }
 
-    setVentas(data || [])
-
-    // ── Detalles para todas las ventas en un solo query ──
-    const ids = (data || []).map((v: any) => v.id)
+    const ids = (cabeceras || []).map((v: any) => v.id)
     if (ids.length === 0) {
+      setVentas([])
       setDetalles({})
       return
     }
 
+    // 2) Traer detalles en lote
     const { data: detAll, error: detErr } = await supabase
       .from('detalle_venta')
       .select(
@@ -120,14 +123,19 @@ export default function VerVentas() {
       return
     }
 
+    // 3) Agrupar
     const grouped: Record<number, any[]> = {}
     for (const row of detAll || []) {
-      const key = row.venta_id as number
-      if (!grouped[key]) grouped[key] = []
-      grouped[key].push(row)
+      (grouped[row.venta_id] ||= []).push(row)
     }
     setDetalles(grouped)
-  }, [filtros])
+
+    // 4) Filtrar cabeceras sin detalle (salvo que el toggle lo permita)
+    const filtradas = (cabeceras || []).filter(v =>
+      mostrarIncompletas ? true : (grouped[v.id]?.length ?? 0) > 0
+    )
+    setVentas(filtradas)
+  }, [filtros, mostrarIncompletas])
 
   useEffect(() => {
     cargarDatos()
@@ -245,7 +253,7 @@ export default function VerVentas() {
       <h1 className="text-2xl font-bold mb-4">🧾 Ventas Registradas</h1>
 
       {/* Filtros */}
-      <div className="grid grid-cols-1 md:grid-cols-8 gap-4 mb-6">
+      <div className="grid grid-cols-1 md:grid-cols-8 gap-4 mb-4">
         <select name="empresa_id" value={filtros.empresa_id} onChange={handleChange} className="border p-2">
           <option value="">Todas las Empresas</option>
           {empresas.map(e => (
@@ -287,11 +295,21 @@ export default function VerVentas() {
         <input type="text" name="id" placeholder="ID" value={filtros.id} onChange={handleChange} className="border p-2" />
       </div>
 
-      <div className="mb-4">
+      <div className="mb-6 flex items-center gap-4">
         <button onClick={cargarDatos} className="bg-blue-600 text-white px-4 py-2 rounded">
           🔍 Aplicar Filtros
         </button>
-        <a href="/menu" className="ml-4 inline-block bg-gray-700 text-white px-4 py-2 rounded">
+
+        <label className="inline-flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={mostrarIncompletas}
+            onChange={e => setMostrarIncompletas(e.target.checked)}
+          />
+          Mostrar ventas sin detalle
+        </label>
+
+        <a href="/menu" className="ml-auto inline-block bg-gray-700 text-white px-4 py-2 rounded">
           ⬅ Volver al Menú Principal
         </a>
       </div>
