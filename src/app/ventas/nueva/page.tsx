@@ -7,11 +7,9 @@ import { supabase } from '@/lib/supabaseClient'
 type Catalogo   = { id: number; nombre: string }
 type MetodoPago = { id: number; metodo: string }
 type Cliente    = { id: number; nombre: string; nit?: string|null; telefono?: string|null }
-type Producto   = {
-  id: number; nombre: string; sku: string|null; unidad: string|null; control_inventario: boolean
-}
+type Producto   = { id: number; nombre: string; sku: string|null; unidad: string|null; control_inventario: boolean }
 
-const DETALLE_VENTA_TABLE = 'venta_detalle' // cambia a 'detalle_venta' o 'ventas_detalle' si aplica en tu BD
+const DETALLE_VENTA_TABLE = 'detalle_venta' // <— nombre real en tu BD
 
 export default function NuevaVenta() {
   const router = useRouter()
@@ -26,11 +24,11 @@ export default function NuevaVenta() {
   /* cabecera */
   const [form, setForm] = useState({
     empresa_id: '', division_id: '',
-    cliente_id: '', fecha: '', cantidad: 0, // si tu columna en ventas se llama 'total', cámbiala aquí
+    cliente_id: '', fecha: '', total: 0, // total en UI; en BD se guarda en ventas.cantidad
     observaciones: ''
   })
 
-  /* líneas de venta */
+  /* líneas */
   const [detalles, setDetalles] = useState<Array<{
     producto_id?: string
     concepto: string
@@ -42,7 +40,7 @@ export default function NuevaVenta() {
     { producto_id:'', concepto:'', cantidad:0, precio_unitario:0, forma_pago_id:'', documento:'' }
   ])
 
-  /* crear cliente rápido */
+  /* alta rápida de cliente */
   const [showNuevoCli, setShowNuevoCli] = useState(false)
   const [nuevoCli, setNuevoCli] = useState({ nombre:'', nit:'', telefono:'' })
 
@@ -53,7 +51,7 @@ export default function NuevaVenta() {
         supabase.from('empresas').select('*'),
         supabase.from('divisiones').select('*'),
         supabase.from('forma_pago').select('*'),
-        supabase.from('clientes').select('*').order('nombre', { ascending: true }), // si no existe, simplemente oculta el combo de clientes
+        supabase.from('clientes').select('*').order('nombre', { ascending: true }),
         supabase.from('productos').select('id,nombre,sku,unidad,control_inventario').order('nombre', { ascending: true }),
       ])
       setEmpresas(emp.data || [])
@@ -64,11 +62,11 @@ export default function NuevaVenta() {
     })()
   }, [])
 
-  /* recalcula total */
+  /* recálculo total */
   useEffect(() => {
     const total = detalles.reduce((sum, d) =>
       sum + Number(d.cantidad || 0) * Number(d.precio_unitario || 0), 0)
-    setForm(f => ({ ...f, cantidad: total })) // si tu columna en ventas es 'total', mantén el nombre en el insert
+    setForm(f => ({ ...f, total }))
   }, [detalles])
 
   /* helpers detalle */
@@ -115,10 +113,18 @@ export default function NuevaVenta() {
       const user_id = auth?.user?.id || null
 
       if (!form.fecha) return alert('Selecciona la fecha')
-      const lineas = detalles.filter(d => Number(d.cantidad) > 0 && Number(d.precio_unitario) >= 0)
+
+      const lineas = detalles
+        .map(d => ({
+          ...d,
+          cantidad: Number(d.cantidad || 0),
+          precio_unitario: Number(d.precio_unitario || 0),
+        }))
+        .filter(d => d.concepto.trim() && d.cantidad > 0)
+
       if (lineas.length === 0) return alert('Agrega al menos una línea válida')
 
-      // (opcional) advertir si un producto no maneja inventario
+      // aviso si el producto no controla inventario
       for (const it of lineas) {
         if (!it.producto_id) continue
         const p = productos.find(x => String(x.id) === String(it.producto_id))
@@ -128,49 +134,47 @@ export default function NuevaVenta() {
         }
       }
 
-      // 1) cabecera ventas
+      // 1) insertar cabecera (ventas)
       const cabecera: any = {
         empresa_id : form.empresa_id ? Number(form.empresa_id) : null,
         division_id: form.division_id ? Number(form.division_id) : null,
         cliente_id : form.cliente_id ? Number(form.cliente_id) : null,
         fecha      : form.fecha,
-        // IMPORTANTE: si tu columna se llama 'total' en ventas, cambia 'cantidad' -> 'total'
-        cantidad   : Number(form.cantidad || 0),
         observaciones: form.observaciones || null,
+        cantidad   : Number(form.total || 0), // en tu tabla "ventas" se llama cantidad
         user_id
       }
 
-      const { data: venta, error } = await supabase
+      const { data: venta, error: vErr } = await supabase
         .from('ventas')
         .insert([cabecera])
         .select()
         .single()
-      if (error) throw new Error(`cabecera: ${error.message}`)
+      if (vErr) throw new Error(`cabecera: ${vErr.message}`)
 
-      // 2) detalle de venta (no mandamos 'importe', lo puedes calcular en vistas/reportes)
+      // 2) insertar detalle (detalle_venta)
       const payload = lineas.map(d => ({
         venta_id       : (venta as any).id,
         producto_id    : d.producto_id ? Number(d.producto_id) : null,
-        concepto       : d.concepto,
-        cantidad       : Number(d.cantidad || 0),
-        precio_unitario: Number(d.precio_unitario || 0),
+        concepto       : d.concepto.trim(),
+        cantidad       : d.cantidad,
+        precio_unitario: d.precio_unitario,
         forma_pago_id  : d.forma_pago_id ? Number(d.forma_pago_id) : null,
         documento      : d.documento || null
       }))
 
       const { error: detErr } = await supabase.from(DETALLE_VENTA_TABLE).insert(payload)
-      if (detErr) throw new Error(`detalle: ${detErr.message}`)
-
-      /* Si tienes el trigger AFTER INSERT en detalle de venta, las líneas con producto_id
-         crearán automáticamente SALIDAS en inventario_movimientos. :contentReference[oaicite:3]{index=3} */
+      if (detErr) throw new Error(`detalle: ${detErr.message || detErr.code || 'error'}`)
 
       alert('Venta guardada correctamente')
       router.push('/menu')
     } catch (e: any) {
-      alert(`Error al guardar venta: ${e.message ?? e}`)
+      console.error(e)
+      alert(`Error al guardar venta: ${e?.message ?? e}`)
     }
   }
 
+  /* UI */
   return (
     <div className="p-6 max-w-5xl mx-auto">
       <div className="flex justify-center mb-6">
@@ -193,7 +197,7 @@ export default function NuevaVenta() {
           {divisiones.map(x => <option key={x.id} value={x.id}>{x.nombre}</option>)}
         </select>
 
-        {/* Cliente (si no existe la tabla, puedes ocultar este bloque) */}
+        {/* Cliente */}
         <div className="flex gap-2">
           <select className="border p-2 flex-grow" value={form.cliente_id}
                   onChange={e=>setForm(f=>({...f,cliente_id:e.target.value}))}>
@@ -205,21 +209,6 @@ export default function NuevaVenta() {
             {showNuevoCli ? 'Cancelar' : '➕ Nuevo'}
           </button>
         </div>
-
-        {showNuevoCli && (
-          <div className="border p-3 rounded bg-gray-50 space-y-2">
-            <h3 className="font-semibold text-sm">Nuevo Cliente</h3>
-            <input className="border p-2 w-full" placeholder="Nombre"
-                   value={nuevoCli.nombre} onChange={e=>setNuevoCli({...nuevoCli,nombre:e.target.value})}/>
-            <input className="border p-2 w-full" placeholder="NIT"
-                   value={nuevoCli.nit} onChange={e=>setNuevoCli({...nuevoCli,nit:e.target.value})}/>
-            <input className="border p-2 w-full" placeholder="Teléfono"
-                   value={nuevoCli.telefono} onChange={e=>setNuevoCli({...nuevoCli,telefono:e.target.value})}/>
-            <button onClick={guardarNuevoCliente} className="w-full bg-blue-600 text-white py-2 rounded">
-              Guardar Cliente
-            </button>
-          </div>
-        )}
 
         <input type="date" className="border p-2"
                value={form.fecha} onChange={e=>setForm(f=>({...f,fecha:e.target.value}))}/>
@@ -269,7 +258,7 @@ export default function NuevaVenta() {
         + Agregar otra línea
       </button>
 
-      <div className="text-lg font-semibold mb-4">Total Calculado: Q{form.cantidad.toFixed(2)}</div>
+      <div className="text-lg font-semibold mb-4">Total Calculado: Q{form.total.toFixed(2)}</div>
 
       <div className="flex justify-between">
         <button onClick={guardarVenta} className="bg-orange-600 text-white px-4 py-2 rounded">
