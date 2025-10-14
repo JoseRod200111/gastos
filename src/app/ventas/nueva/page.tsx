@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Image from 'next/image'
 import { supabase } from '@/lib/supabaseClient'
@@ -10,7 +10,7 @@ type MetodoPago = { id: number; metodo: string }
 type Cliente    = { id: number; nombre: string; nit?: string|null; telefono?: string|null }
 type Producto   = { id: number; nombre: string; sku: string|null; unidad: string|null; control_inventario: boolean }
 
-const DETALLE_VENTA_TABLE = 'detalle_venta' // nombre real en tu BD
+const DETALLE_VENTA_TABLE = 'detalle_venta'
 
 export default function NuevaVenta() {
   const router = useRouter()
@@ -22,14 +22,17 @@ export default function NuevaVenta() {
   const [clientes, setClientes]       = useState<Cliente[]>([])
   const [productos, setProductos]     = useState<Producto[]>([])
 
+  /* id del método “Pendiente de pago” */
+  const [pendientePagoId, setPendientePagoId] = useState<number | null>(null)
+
   /* cabecera */
   const [form, setForm] = useState({
     empresa_id: '', division_id: '',
-    cliente_id: '', fecha: '', total: 0, // se guarda en ventas.cantidad
+    cliente_id: '', fecha: '', total: 0, // ventas.cantidad
     observaciones: ''
   })
 
-  /* líneas */
+  /* líneas de venta */
   const [detalles, setDetalles] = useState<Array<{
     producto_id?: string
     concepto: string
@@ -45,9 +48,20 @@ export default function NuevaVenta() {
   const [showNuevoCli, setShowNuevoCli] = useState(false)
   const [nuevoCli, setNuevoCli] = useState({ nombre:'', nit:'', telefono:'' })
 
+  /* abono inicial (opcional) */
+  const [abono, setAbono] = useState({
+    monto: 0,
+    metodo_pago_id: '',
+    documento: '',
+    observaciones: ''
+  })
+
+  /* saldo actual del cliente y proyectado */
+  const [saldoActual, setSaldoActual] = useState<number | null>(null)
+
   /* carga inicial */
   useEffect(() => {
-    (async () => {
+    ;(async () => {
       const [emp, div, met, cli, prods] = await Promise.all([
         supabase.from('empresas').select('*'),
         supabase.from('divisiones').select('*'),
@@ -60,15 +74,32 @@ export default function NuevaVenta() {
       setMetodosPago(met.data || [])
       setClientes(cli.data || [])
       setProductos((prods.data as Producto[]) || [])
+
+      // buscar el id del método "Pendiente de pago"
+      const mp = (met.data as MetodoPago[] | null)?.find(m => m.metodo?.toLowerCase().startsWith('pendiente de pago'))
+      setPendientePagoId(mp?.id ?? null)
     })()
   }, [])
 
-  /* recálculo total */
+  /* recálculo de total */
   useEffect(() => {
     const total = detalles.reduce((sum, d) =>
       sum + Number(d.cantidad || 0) * Number(d.precio_unitario || 0), 0)
     setForm(f => ({ ...f, total }))
   }, [detalles])
+
+  /* saldo actual del cliente (desde vista v_saldos_clientes) */
+  useEffect(() => {
+    ;(async () => {
+      if (!form.cliente_id) { setSaldoActual(null); return }
+      const { data } = await supabase
+        .from('v_saldos_clientes')
+        .select('saldo')
+        .eq('cliente_id', Number(form.cliente_id))
+        .maybeSingle()
+      setSaldoActual(data?.saldo ?? 0)
+    })()
+  }, [form.cliente_id])
 
   /* helpers detalle */
   const handleDetalleChange = (i: number, field: string, val: any) => {
@@ -84,11 +115,12 @@ export default function NuevaVenta() {
       return copy
     })
   }
+
   const addDetalle = () => setDetalles(d => [...d, {
     producto_id:'', concepto:'', cantidad:0, precio_unitario:0, forma_pago_id:'', documento:''
   }])
 
-  /* guardar cliente (se usa en el botón de "Guardar Cliente") */
+  /* guardar cliente */
   const guardarNuevoCliente = async () => {
     if (!nuevoCli.nombre.trim()) return alert('El nombre del cliente es obligatorio')
     const { data, error } = await supabase
@@ -106,6 +138,21 @@ export default function NuevaVenta() {
     setShowNuevoCli(false)
     setNuevoCli({ nombre:'', nit:'', telefono:'' })
   }
+
+  /* totales auxiliares */
+  const totalPendiente = useMemo(() => {
+    if (!pendientePagoId) return 0
+    return detalles.reduce((acc, d) => {
+      const importe = Number(d.cantidad || 0) * Number(d.precio_unitario || 0)
+      return acc + (String(d.forma_pago_id) === String(pendientePagoId) ? importe : 0)
+    }, 0)
+  }, [detalles, pendientePagoId])
+
+  const saldoProyectado = useMemo(() => {
+    const sActual = Number(saldoActual || 0)
+    const ab = Number(abono.monto || 0)
+    return sActual + totalPendiente - ab
+  }, [saldoActual, totalPendiente, abono.monto])
 
   /* guardar venta */
   const guardarVenta = async () => {
@@ -135,6 +182,16 @@ export default function NuevaVenta() {
         }
       }
 
+      // Validación del abono
+      const pendiente = totalPendiente
+      const ab = Number(abono.monto || 0)
+      if (ab > 0 && ab > pendiente) {
+        return alert(`El abono (Q${ab.toFixed(2)}) no puede ser mayor al total a crédito (Q${pendiente.toFixed(2)}).`)
+      }
+      if (ab > 0 && !abono.metodo_pago_id) {
+        return alert('Selecciona el método de pago del abono inicial')
+      }
+
       // 1) insertar cabecera (ventas)
       const cabecera: any = {
         empresa_id : form.empresa_id ? Number(form.empresa_id) : null,
@@ -142,7 +199,7 @@ export default function NuevaVenta() {
         cliente_id : form.cliente_id ? Number(form.cliente_id) : null,
         fecha      : form.fecha,
         observaciones: form.observaciones || null,
-        cantidad   : Number(form.total || 0), // en tu tabla "ventas" se llama cantidad
+        cantidad   : Number(form.total || 0),
         user_id
       }
 
@@ -153,7 +210,7 @@ export default function NuevaVenta() {
         .single()
       if (vErr) throw new Error(`cabecera: ${vErr.message}`)
 
-      // 2) insertar detalle (detalle_venta) — AQUI VA IMPORTE
+      // 2) insertar detalle (detalle_venta)
       const payload = lineas.map(d => {
         const importe = Number((d.cantidad * d.precio_unitario).toFixed(2))
         return {
@@ -162,7 +219,7 @@ export default function NuevaVenta() {
           concepto       : d.concepto.trim(),
           cantidad       : d.cantidad,
           precio_unitario: d.precio_unitario,
-          importe, // <- requerido NOT NULL en tu tabla
+          importe, // NOT NULL
           forma_pago_id  : d.forma_pago_id ? Number(d.forma_pago_id) : null,
           documento      : d.documento || null
         }
@@ -170,6 +227,22 @@ export default function NuevaVenta() {
 
       const { error: detErr } = await supabase.from(DETALLE_VENTA_TABLE).insert(payload)
       if (detErr) throw new Error(`detalle: ${detErr.message || detErr.code || 'error'}`)
+
+      // 3) si hay abono inicial, registrarlo en pagos_venta
+      if (ab > 0) {
+        const pago = {
+          cliente_id: form.cliente_id ? Number(form.cliente_id) : null,
+          venta_id  : (venta as any).id,
+          fecha     : form.fecha,
+          monto     : ab,
+          metodo_pago_id: Number(abono.metodo_pago_id),
+          documento : abono.documento || null,
+          observaciones: abono.observaciones || null,
+          user_id
+        }
+        const { error: pErr } = await supabase.from('pagos_venta').insert(pago)
+        if (pErr) throw new Error(`abono: ${pErr.message}`)
+      }
 
       alert('Venta guardada correctamente')
       router.push('/menu')
@@ -280,7 +353,39 @@ export default function NuevaVenta() {
         + Agregar otra línea
       </button>
 
-      <div className="text-lg font-semibold mb-4">Total Calculado: Q{form.total.toFixed(2)}</div>
+      {/* resumen / crédito / abono */}
+      <div className="border rounded p-3 mb-4 bg-gray-50">
+        <div className="flex flex-col md:flex-row md:items-end gap-3">
+          <div className="flex-1">
+            <div className="text-lg font-semibold">Total Calculado: Q{form.total.toFixed(2)}</div>
+            <div className="text-sm">Total a crédito (pendiente): <b>Q{totalPendiente.toFixed(2)}</b></div>
+            <div className="text-sm">Saldo actual del cliente: <b>{saldoActual === null ? '—' : `Q${Number(saldoActual).toFixed(2)}`}</b></div>
+          </div>
+
+          <div className="flex-1">
+            <label className="block text-sm font-semibold mb-1">Abono inicial (opcional)</label>
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
+              <input type="number" min="0" step="0.01" className="border p-2" placeholder="Q 0.00"
+                     value={abono.monto}
+                     onChange={e=>setAbono(a=>({...a, monto: parseFloat(e.target.value||'0')}))}/>
+              <select className="border p-2" value={abono.metodo_pago_id}
+                      onChange={e=>setAbono(a=>({...a,metodo_pago_id:e.target.value}))}>
+                <option value="">Método de pago</option>
+                {metodosPago.map(m=><option key={m.id} value={m.id}>{m.metodo}</option>)}
+              </select>
+              <input className="border p-2" placeholder="Documento"
+                     value={abono.documento}
+                     onChange={e=>setAbono(a=>({...a,documento:e.target.value}))}/>
+              <input className="border p-2" placeholder="Observaciones del abono"
+                     value={abono.observaciones}
+                     onChange={e=>setAbono(a=>({...a,observaciones:e.target.value}))}/>
+            </div>
+            <div className="mt-2 text-sm">
+              Saldo proyectado luego de guardar: <b>{saldoActual === null ? '—' : `Q${saldoProyectado.toFixed(2)}`}</b>
+            </div>
+          </div>
+        </div>
+      </div>
 
       <div className="flex justify-between">
         <button onClick={guardarVenta} className="bg-orange-600 text-white px-4 py-2 rounded">
