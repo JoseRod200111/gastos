@@ -1,10 +1,12 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useRouter } from 'next/navigation'
 import Image from 'next/image'
 import { supabase } from '@/lib/supabaseClient'
 
-type SaldoRow = {
+type Cliente = { id: number; nombre: string; nit?: string | null }
+type SaldoItem = {
   cliente_id: number
   nombre: string
   nit: string | null
@@ -13,78 +15,138 @@ type SaldoRow = {
   saldo: number
 }
 
-export default function SaldosDeClientes() {
-  const [rows, setRows] = useState<SaldoRow[]>([])
-  const [filtros, setFiltros] = useState({ q: '' })
+export default function SaldosPorClientePage() {
+  const router = useRouter()
 
-  const cargar = useCallback(async () => {
-    // Traemos todo y filtramos en cliente (si tu vista crece mucho, podemos pasar filtros con RPC)
+  // catálogo para el <select>
+  const [clientes, setClientes] = useState<Cliente[]>([])
+  const [selectedClienteId, setSelectedClienteId] = useState<number | null>(null)
+
+  // datos de la vista de saldos
+  const [rows, setRows] = useState<SaldoItem[]>([])
+
+  // totales
+  const totals = useMemo(() => {
+    const tCredito = rows.reduce((s, r) => s + Number(r.credito || 0), 0)
+    const tAbonado = rows.reduce((s, r) => s + Number(r.abonado || 0), 0)
+    const tSaldo = rows.reduce((s, r) => s + Number(r.saldo || 0), 0)
+    return { tCredito, tAbonado, tSaldo }
+  }, [rows])
+
+  // Cargar lista de clientes para la drop list
+  const cargarClientes = useCallback(async () => {
     const { data, error } = await supabase
-      .from('v_saldos_clientes')
-      .select('cliente_id, nombre, nit, credito, abonado, saldo')
+      .from('clientes')
+      .select('id, nombre, nit')
       .order('nombre', { ascending: true })
 
     if (error) {
-      console.error(error)
+      console.error('Error cargando clientes:', error)
+      setClientes([])
+      return
+    }
+    setClientes((data as Cliente[]) || [])
+  }, [])
+
+  // Cargar saldos (vista v_saldos_clientes)
+  const cargar = useCallback(async () => {
+    let q = supabase.from('v_saldos_clientes').select('*')
+
+    if (selectedClienteId) {
+      q = q.eq('cliente_id', selectedClienteId)
+    }
+
+    const { data, error } = await q.order('nombre', { ascending: true })
+
+    if (error) {
+      console.error('Error cargando saldos:', error)
       setRows([])
       return
     }
 
-    const q = filtros.q.trim().toLowerCase()
-    const filtradas = (data || []).filter(r => {
-      if (!q) return true
-      const hay = `${r.nombre ?? ''} ${r.nit ?? ''}`.toLowerCase()
-      return hay.includes(q)
-    }) as SaldoRow[]
+    setRows((data as SaldoItem[]) || [])
+  }, [selectedClienteId])
 
-    setRows(filtradas)
-  }, [filtros.q])
+  useEffect(() => {
+    cargarClientes()
+  }, [cargarClientes])
 
   useEffect(() => {
     cargar()
   }, [cargar])
 
-  const totales = useMemo(() => {
-    return rows.reduce(
-      (acc, r) => {
-        acc.credito += Number(r.credito || 0)
-        acc.abonado += Number(r.abonado || 0)
-        acc.saldo += Number(r.saldo || 0)
-        return acc
-      },
-      { credito: 0, abonado: 0, saldo: 0 }
-    )
-  }, [rows])
+  // acciones
+  const verDetalleVentas = (clienteId: number) => {
+    router.push(`/ventas/ver?cliente_id=${clienteId}`)
+  }
+
+  const verHistorialPagos = (clienteId: number) => {
+    // si tienes una página de historial: /ventas/pagos?cliente_id=...
+    router.push(`/ventas/ver?cliente_id=${clienteId}&tab=pagos`)
+  }
+
+  const registrarPago = (clienteId: number) => {
+    // navegar a nueva venta con intención de registrar pago (puedes leer este query en /ventas/nueva)
+    router.push(`/ventas/nueva?registrarPago=1&cliente_id=${clienteId}`)
+  }
 
   return (
     <div className="p-6 max-w-6xl mx-auto">
+      {/* Logo con next/image para evitar warnings */}
       <div className="flex justify-center mb-4">
         <Image src="/logo.png" alt="Logo" width={160} height={64} />
       </div>
 
       <h1 className="text-2xl font-bold mb-4">💰 Saldos por Cliente</h1>
 
-      {/* Filtro */}
-      <div className="flex items-center gap-3 mb-4">
-        <input
-          className="border p-2 w-full md:w-96"
-          placeholder="Buscar por nombre o NIT…"
-          value={filtros.q}
-          onChange={(e) => setFiltros({ q: e.target.value })}
-        />
+      {/* Buscador con lista desplegable */}
+      <div className="flex flex-col md:flex-row items-center gap-2 mb-4">
+        <select
+          className="border p-2 w-full md:w-[28rem]"
+          value={selectedClienteId ?? ''}
+          onChange={(e) => {
+            const val = e.target.value ? Number(e.target.value) : null
+            setSelectedClienteId(val)
+          }}
+        >
+          <option value="">— Selecciona un cliente —</option>
+          {clientes.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.nombre}
+              {c.nit ? ` • NIT: ${c.nit}` : ''}
+            </option>
+          ))}
+        </select>
+
         <button onClick={cargar} className="bg-blue-600 text-white px-4 py-2 rounded">
-          🔍 Buscar
+          🔎 Buscar
         </button>
-        <a href="/ventas" className="ml-auto inline-block bg-gray-700 text-white px-4 py-2 rounded">
+
+        {selectedClienteId && (
+          <button
+            onClick={() => {
+              setSelectedClienteId(null)
+              cargar()
+            }}
+            className="bg-slate-600 text-white px-4 py-2 rounded"
+          >
+            ✖ Limpiar selección
+          </button>
+        )}
+
+        <button
+          onClick={() => router.push('/ventas')}
+          className="ml-auto bg-gray-700 text-white px-4 py-2 rounded"
+        >
           ⬅ Volver al Menú de Ventas
-        </a>
+        </button>
       </div>
 
-      {/* Totales */}
-      <div className="border rounded p-3 bg-gray-50 mb-4 text-sm">
-        <div><b>Total a crédito:</b> Q{totales.credito.toFixed(2)}</div>
-        <div><b>Total abonado:</b> Q{totales.abonado.toFixed(2)}</div>
-        <div><b>Saldo total:</b> Q{totales.saldo.toFixed(2)}</div>
+      {/* Resumen */}
+      <div className="border rounded p-3 mb-3 text-sm bg-gray-50">
+        <div> <span className="font-semibold">Total a crédito:</span> Q{totals.tCredito.toFixed(2)}</div>
+        <div> <span className="font-semibold">Total abonado:</span> Q{totals.tAbonado.toFixed(2)}</div>
+        <div> <span className="font-semibold">Saldo total:</span> Q{totals.tSaldo.toFixed(2)}</div>
       </div>
 
       {/* Tabla */}
@@ -102,7 +164,7 @@ export default function SaldosDeClientes() {
         <tbody>
           {rows.length === 0 ? (
             <tr>
-              <td className="p-4 text-center text-gray-500" colSpan={6}>
+              <td colSpan={6} className="text-center py-6 text-gray-500">
                 No hay registros.
               </td>
             </tr>
@@ -117,13 +179,26 @@ export default function SaldosDeClientes() {
                   Q{Number(r.saldo || 0).toFixed(2)}
                 </td>
                 <td className="p-2 text-center">
-                  {/* Enlaza a ver ventas filtrando por cliente (si lo implementaste) */}
-                  <a
-                    href={`/ventas/ver?cliente=${encodeURIComponent(r.nombre)}`}
-                    className="text-blue-700 underline"
-                  >
-                    Ver ventas
-                  </a>
+                  <div className="flex flex-wrap gap-2 justify-center">
+                    <button
+                      onClick={() => verDetalleVentas(r.cliente_id)}
+                      className="px-2 py-1 rounded text-xs bg-amber-600 text-white"
+                    >
+                      Ver ventas
+                    </button>
+                    <button
+                      onClick={() => verHistorialPagos(r.cliente_id)}
+                      className="px-2 py-1 rounded text-xs bg-sky-600 text-white"
+                    >
+                      Historial
+                    </button>
+                    <button
+                      onClick={() => registrarPago(r.cliente_id)}
+                      className="px-2 py-1 rounded text-xs bg-emerald-600 text-white"
+                    >
+                      Registrar pago
+                    </button>
+                  </div>
                 </td>
               </tr>
             ))
