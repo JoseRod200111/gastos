@@ -53,6 +53,14 @@ export default function VentasMenuPage() {
           📑 Ver Ventas
         </button>
 
+        {/* Saldos de clientes */}
+        <button
+          onClick={() => router.push('/ventas/saldos')}
+          className="w-full p-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded"
+        >
+          💰 Saldos de Clientes
+        </button>
+
         {/* Reportes de ventas (PDF) */}
         <button
           onClick={() => router.push('/ventas/reportes')}
@@ -61,7 +69,7 @@ export default function VentasMenuPage() {
           📊 Reportes de Ventas (PDF)
         </button>
 
-        {/* Administración de catálogos (empresas/divisiones/categorías/clientes/proveedores/forma de pago) */}
+        {/* Administración de catálogos */}
         <button
           onClick={() => router.push('/empresas')}
           className="w-full p-3 bg-slate-700 hover:bg-slate-800 text-white rounded"
