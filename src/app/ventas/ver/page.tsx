@@ -66,7 +66,7 @@ export default function VerVentas() {
         empresa_id, division_id, cliente_id,
         empresas ( nombre ),
         divisiones ( nombre ),
-        clientes ( nombre, nit )
+        clientes ( id, nombre, nit )
       `
       )
       .order('fecha', { ascending: false })
@@ -134,7 +134,15 @@ export default function VerVentas() {
     const filtradas = (cabeceras || []).filter(v =>
       mostrarIncompletas ? true : (grouped[v.id]?.length ?? 0) > 0
     )
-    setVentas(filtradas)
+
+    // 5) Prellenar campos editables de cliente
+    const withClientFields = filtradas.map((v: any) => ({
+      ...v,
+      cliente_nombre: v.clientes?.nombre || '',
+      cliente_nit: v.clientes?.nit || '',
+    }))
+
+    setVentas(withClientFields)
   }, [filtros, mostrarIncompletas])
 
   useEffect(() => {
@@ -148,27 +156,86 @@ export default function VerVentas() {
     )
   }
 
-  const guardarCambios = async (venta: any) => {
-    const { error } = await supabase
-      .from('ventas')
-      .update({
-        fecha: venta.fecha,
-        cantidad: venta.cantidad,
-        observaciones: venta.observaciones,
-        empresa_id: venta.empresa_id,
-        division_id: venta.division_id,
-        cliente_id: venta.cliente_id,
-        editado_por: userEmail,
-        editado_en: new Date().toISOString(),
-      })
-      .eq('id', venta.id)
+  // Asegura que exista (o devuelve) un cliente según nombre/nit
+  const ensureCliente = async (nombre?: string, nit?: string): Promise<number | null> => {
+    const nom = (nombre || '').trim()
+    const nitVal = (nit || '').trim()
 
-    if (error) {
-      alert('Error al guardar')
-      console.error(error)
-    } else {
+    if (!nom && !nitVal) return null
+
+    // Buscar por NIT si viene (más confiable)
+    if (nitVal) {
+      const { data: found, error } = await supabase
+        .from('clientes')
+        .select('id')
+        .eq('nit', nitVal)
+        .maybeSingle()
+      if (error) {
+        console.error('Error buscando cliente por NIT', error)
+      }
+      if (found?.id) return found.id
+    } else if (nom) {
+      // Buscar por nombre exacto (en mayúsculas para consistencia)
+      const { data: foundByName, error: errByName } = await supabase
+        .from('clientes')
+        .select('id')
+        .eq('nombre', nom.toUpperCase())
+        .maybeSingle()
+      if (errByName) console.error('Error buscando cliente por nombre', errByName)
+      if (foundByName?.id) return foundByName.id
+    }
+
+    // No existe → crear
+    const { data: created, error: createErr } = await supabase
+      .from('clientes')
+      .insert({
+        nombre: nom ? nom.toUpperCase() : 'SIN NOMBRE',
+        nit: nitVal || null,
+      })
+      .select('id')
+      .single()
+
+    if (createErr) {
+      console.error('Error creando cliente', createErr)
+      return null
+    }
+    return created?.id ?? null
+  }
+
+  const guardarCambios = async (venta: any) => {
+    try {
+      // 1) Resolver cliente (nuevo o existente) si se editó nombre/NIT
+      let clienteId: number | null = venta.cliente_id ?? null
+      const nombreTxt = (venta.cliente_nombre || '').trim()
+      const nitTxt = (venta.cliente_nit || '').trim()
+
+      if (nombreTxt || nitTxt) {
+        const ensuredId = await ensureCliente(nombreTxt, nitTxt)
+        if (ensuredId) clienteId = ensuredId
+      }
+
+      // 2) Actualizar la venta
+      const { error } = await supabase
+        .from('ventas')
+        .update({
+          fecha: venta.fecha,
+          cantidad: venta.cantidad,
+          observaciones: venta.observaciones,
+          empresa_id: venta.empresa_id,
+          division_id: venta.division_id,
+          cliente_id: clienteId,
+          editado_por: userEmail,
+          editado_en: new Date().toISOString(),
+        })
+        .eq('id', venta.id)
+
+      if (error) throw error
+
       alert('Guardado')
       cargarDatos()
+    } catch (e: any) {
+      console.error(e)
+      alert('Error al guardar')
     }
   }
 
@@ -371,8 +438,25 @@ export default function VerVentas() {
                 </select>
               </td>
 
-              <td className="p-2">{v.clientes?.nombre || '—'}</td>
-              <td className="p-2">{v.clientes?.nit || '—'}</td>
+              {/* Cliente editable */}
+              <td className="p-2">
+                <input
+                  className="border p-1 w-56"
+                  value={v.cliente_nombre || ''}
+                  onChange={ev => handleInputChange(v.id, 'cliente_nombre', ev.target.value)}
+                  placeholder="Nombre del cliente"
+                />
+              </td>
+
+              {/* NIT editable */}
+              <td className="p-2">
+                <input
+                  className="border p-1 w-32"
+                  value={v.cliente_nit || ''}
+                  onChange={ev => handleInputChange(v.id, 'cliente_nit', ev.target.value)}
+                  placeholder="NIT"
+                />
+              </td>
 
               <td className="p-2">
                 <input
