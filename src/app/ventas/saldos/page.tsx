@@ -51,10 +51,7 @@ export default function SaldosPorClientePage() {
   // Cargar saldos (vista v_saldos_clientes)
   const cargar = useCallback(async () => {
     let q = supabase.from('v_saldos_clientes').select('*')
-
-    if (selectedClienteId) {
-      q = q.eq('cliente_id', selectedClienteId)
-    }
+    if (selectedClienteId) q = q.eq('cliente_id', selectedClienteId)
 
     const { data, error } = await q.order('nombre', { ascending: true })
 
@@ -63,7 +60,6 @@ export default function SaldosPorClientePage() {
       setRows([])
       return
     }
-
     setRows((data as SaldoItem[]) || [])
   }, [selectedClienteId])
 
@@ -81,13 +77,16 @@ export default function SaldosPorClientePage() {
   }
 
   const verHistorialPagos = (clienteId: number) => {
-    // si tienes una página de historial: /ventas/pagos?cliente_id=...
     router.push(`/ventas/ver?cliente_id=${clienteId}&tab=pagos`)
   }
 
   const registrarPago = (clienteId: number) => {
-    // navegar a nueva venta con intención de registrar pago (puedes leer este query en /ventas/nueva)
     router.push(`/ventas/nueva?registrarPago=1&cliente_id=${clienteId}`)
+  }
+
+  // 👉 nuevo: abre tu página /ventas/saldos/vista
+  const verVistaDetalleCliente = (clienteId: number) => {
+    router.push(`/ventas/saldos/vista?cliente_id=${clienteId}`)
   }
 
   return (
@@ -197,6 +196,14 @@ export default function SaldosPorClientePage() {
                       className="px-2 py-1 rounded text-xs bg-emerald-600 text-white"
                     >
                       Registrar pago
+                    </button>
+
+                    {/* 👉 botón nuevo que lleva a /ventas/saldos/vista */}
+                    <button
+                      onClick={() => verVistaDetalleCliente(r.cliente_id)}
+                      className="px-2 py-1 rounded text-xs bg-indigo-600 text-white"
+                    >
+                      Detalle
                     </button>
                   </div>
                 </td>
