@@ -1,12 +1,17 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
-import { useRouter, useParams } from 'next/navigation'
+import { useRouter, useSearchParams } from 'next/navigation'
 import Image from 'next/image'
 import { supabase } from '@/lib/supabaseClient'
 
-type VentaSaldo = {
-  cliente_id: number
+type VentaDetalleCredito = {
+  venta_id: number
+  fecha: string
+  credito: number
+}
+
+type VentaLinea = {
   venta_id: number
   fecha: string
   credito: number
@@ -14,177 +19,179 @@ type VentaSaldo = {
   saldo: number
 }
 
-type Renglon = {
-  venta_id: number
-  concepto: string
-  cantidad: number
-  precio_unitario: number
-  importe: number
-}
-
-export default function DetalleSaldosClientePage() {
+export default function VistaSaldosCliente() {
   const router = useRouter()
-  const params = useParams() as { clienteId?: string }
+  const sp = useSearchParams()
 
-  const clienteId = useMemo(
-    () => (params?.clienteId ? Number(params.clienteId) : NaN),
-    [params]
-  )
+  const clienteId = useMemo(() => {
+    const v = sp.get('cliente_id')
+    const n = Number(v)
+    return Number.isFinite(n) ? n : null
+  }, [sp])
 
-  const [ventas, setVentas] = useState<VentaSaldo[]>([])
-  const [renglones, setRenglones] = useState<Renglon[]>([])
-  const [cargando, setCargando] = useState(false)
-  const [clienteNombre, setClienteNombre] = useState('')
+  const clienteNombre = sp.get('nombre') || ''
+
+  const [rows, setRows] = useState<VentaLinea[]>([])
+  const [loading, setLoading] = useState(false)
+
+  const totals = useMemo(() => {
+    const credito = rows.reduce((s, r) => s + (r.credito || 0), 0)
+    const abonado = rows.reduce((s, r) => s + (r.abonado || 0), 0)
+    const saldo = rows.reduce((s, r) => s + (r.saldo || 0), 0)
+    return { credito, abonado, saldo }
+  }, [rows])
 
   useEffect(() => {
-    if (!clienteId || Number.isNaN(clienteId)) return
-
-    const cargar = async () => {
-      setCargando(true)
-
-      // 1) Nombre del cliente (opcional, para el encabezado)
-      const { data: cli } = await supabase
-        .from('clientes')
-        .select('nombre')
-        .eq('id', clienteId)
-        .single()
-      setClienteNombre(cli?.nombre || `Cliente #${clienteId}`)
-
-      // 2) Ventas con saldo (vista v_saldos_por_venta)
-      const { data: vs, error: errVs } = await supabase
-        .from('v_saldos_por_venta')
-        .select('*')
-        .eq('cliente_id', clienteId)
-        .order('fecha', { ascending: false })
-        .order('venta_id', { ascending: false })
-
-      if (errVs) {
-        console.error(errVs)
-        alert('No se pudieron cargar las ventas del cliente')
-        setCargando(false)
+    (async () => {
+      if (!clienteId) {
+        setRows([])
         return
       }
-
-      setVentas(vs || [])
-
-      // 3) Renglones a crédito de esas ventas
-      const ventaIds = (vs || []).map(v => v.venta_id)
-      if (ventaIds.length > 0) {
-        // obtener mp.id de “Pendiente de pago”
-        const { data: mp } = await supabase
+      setLoading(true)
+      try {
+        // 1) ID del método "Pendiente de pago"
+        const { data: mpRow, error: mpErr } = await supabase
           .from('forma_pago')
           .select('id')
           .ilike('metodo', '%pendiente de pago%')
           .limit(1)
-          .single()
+          .maybeSingle()
 
-        const mpId = mp?.id
-        if (!mpId) {
-          setRenglones([])
-          setCargando(false)
+        if (mpErr) throw mpErr
+        const pendienteId = mpRow?.id
+        if (!pendienteId) {
+          setRows([])
+          setLoading(false)
           return
         }
 
-        const { data: det, error: errDet } = await supabase
+        // 2) Traer líneas de crédito (detalle_venta) de este cliente
+        //    Nos traemos venta_id, importe, y la fecha desde ventas
+        const { data: det, error: detErr } = await supabase
           .from('detalle_venta')
-          .select('venta_id, concepto, cantidad, precio_unitario, importe')
-          .in('venta_id', ventaIds)
-          .eq('forma_pago_id', mpId)
-          .order('venta_id', { ascending: true })
-          .order('id', { ascending: true })
+          .select(`
+            venta_id,
+            importe,
+            ventas!inner (
+              id,
+              fecha,
+              cliente_id
+            )
+          `)
+          .eq('forma_pago_id', pendienteId)
+          .eq('ventas.cliente_id', clienteId)
 
-        if (errDet) {
-          console.error(errDet)
-          alert('No se pudieron cargar los renglones de las ventas')
+        if (detErr) throw detErr
+
+        // Agrupar en JS por venta_id
+        const creditoPorVenta = new Map<number, VentaDetalleCredito>()
+        for (const r of det as any[]) {
+          const vid = Number(r.venta_id)
+          const fecha = r.ventas?.fecha as string
+          const imp = Number(r.importe || 0)
+          const prev = creditoPorVenta.get(vid)
+          if (!prev) {
+            creditoPorVenta.set(vid, { venta_id: vid, fecha, credito: imp })
+          } else {
+            prev.credito += imp
+          }
         }
 
-        setRenglones(det || [])
-      } else {
-        setRenglones([])
+        const ventasBase = Array.from(creditoPorVenta.values())
+
+        // 3) (Opcional) Traer abonos si tienes tabla pagos_venta
+        let abonosPorVenta = new Map<number, number>()
+        const ventaIds = ventasBase.map(v => v.venta_id)
+        if (ventaIds.length > 0) {
+          const { data: ab, error: abErr } = await supabase
+            .from('pagos_venta')
+            .select('venta_id, monto')
+            .in('venta_id', ventaIds)
+
+          if (!abErr && Array.isArray(ab)) {
+            abonosPorVenta = ab.reduce((map, r: any) => {
+              const vid = Number(r.venta_id)
+              const monto = Number(r.monto || 0)
+              map.set(vid, (map.get(vid) || 0) + monto)
+              return map
+            }, new Map<number, number>())
+          }
+          // si hay error/tabla no existe, se deja en 0 sin romper
+        }
+
+        // 4) Construir filas finales
+        const filas: VentaLinea[] = ventasBase.map(v => {
+          const abonado = abonosPorVenta.get(v.venta_id) || 0
+          return {
+            venta_id: v.venta_id,
+            fecha: v.fecha,
+            credito: Number(v.credito.toFixed(2)),
+            abonado: Number(abonado.toFixed(2)),
+            saldo: Number((v.credito - abonado).toFixed(2)),
+          }
+        }).sort((a, b) => (a.fecha < b.fecha ? 1 : -1)) // más reciente primero
+
+        setRows(filas)
+      } catch (e) {
+        console.error(e)
+        setRows([])
+      } finally {
+        setLoading(false)
       }
-
-      setCargando(false)
-    }
-
-    cargar()
+    })()
   }, [clienteId])
-
-  const totalCredito = ventas.reduce((s, v) => s + Number(v.credito || 0), 0)
-  const totalAbonado = ventas.reduce((s, v) => s + Number(v.abonado || 0), 0)
-  const totalSaldo = ventas.reduce((s, v) => s + Number(v.saldo || 0), 0)
 
   return (
     <div className="p-6 max-w-6xl mx-auto">
-      {/* Logo */}
       <div className="flex justify-center mb-4">
         <Image src="/logo.png" alt="Logo" width={160} height={64} />
       </div>
 
-      <h1 className="text-2xl font-bold mb-1">🧾 Deudas por Venta</h1>
-      <p className="text-gray-600 mb-4">
-        Cliente: <span className="font-semibold">{clienteNombre}</span> (ID {clienteId})
+      <h1 className="text-2xl font-bold mb-2">🧾 Deudas por Venta</h1>
+      <p className="mb-4 text-gray-700">
+        Cliente: <span className="font-semibold">{clienteNombre || `(ID ${clienteId ?? '—'})`}</span>
       </p>
 
-      <div className="mb-4 flex gap-2">
-        <button
-          onClick={() => router.push('/ventas/saldos')}
-          className="bg-slate-700 text-white px-4 py-2 rounded"
-        >
-          ⬅ Volver a Saldos
-        </button>
+      <button
+        onClick={() => router.push('/ventas/saldos')}
+        className="mb-4 bg-slate-700 text-white px-4 py-2 rounded"
+      >
+        ⬅ Volver a Saldos
+      </button>
+
+      <div className="border rounded p-3 mb-3 text-sm bg-gray-50">
+        <div><span className="font-semibold">Total crédito:</span> Q{totals.credito.toFixed(2)}</div>
+        <div><span className="font-semibold">Total abonado:</span> Q{totals.abonado.toFixed(2)}</div>
+        <div><span className="font-semibold">Total saldo:</span> Q{totals.saldo.toFixed(2)}</div>
       </div>
 
-      {/* Totales */}
-      <div className="border p-3 rounded mb-4 text-sm bg-gray-50">
-        <div><strong>Total crédito:</strong> Q{totalCredito.toFixed(2)}</div>
-        <div><strong>Total abonado:</strong> Q{totalAbonado.toFixed(2)}</div>
-        <div><strong>Total saldo:</strong> Q{totalSaldo.toFixed(2)}</div>
-      </div>
-
-      {cargando ? (
-        <div className="text-gray-500">Cargando…</div>
-      ) : ventas.length === 0 ? (
-        <div className="text-gray-500">Este cliente no tiene ventas a crédito.</div>
+      {loading ? (
+        <p className="text-gray-600">Cargando…</p>
+      ) : rows.length === 0 ? (
+        <p className="text-gray-600">Este cliente no tiene ventas a crédito.</p>
       ) : (
-        ventas.map(v => (
-          <div key={v.venta_id} className="mb-6 border rounded">
-            <div className="px-3 py-2 bg-gray-100 flex flex-wrap gap-4 items-center">
-              <div><span className="font-semibold">Venta:</span> #{v.venta_id}</div>
-              <div><span className="font-semibold">Fecha:</span> {v.fecha}</div>
-              <div><span className="font-semibold">Crédito:</span> Q{Number(v.credito).toFixed(2)}</div>
-              <div><span className="font-semibold">Abonado:</span> Q{Number(v.abonado).toFixed(2)}</div>
-              <div><span className="font-semibold">Saldo:</span> Q{Number(v.saldo).toFixed(2)}</div>
-            </div>
-
-            {/* Renglones de esa venta */}
-            <div className="p-3">
-              <h3 className="font-semibold mb-2">Renglones a crédito</h3>
-              <table className="w-full text-sm border">
-                <thead className="bg-gray-200">
-                  <tr>
-                    <th className="p-2 text-left">Concepto</th>
-                    <th className="p-2 text-right">Cantidad</th>
-                    <th className="p-2 text-right">P. Unit</th>
-                    <th className="p-2 text-right">Importe</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(renglones.filter(r => r.venta_id === v.venta_id) || []).map((r, i) => (
-                    <tr key={i} className="border-t">
-                      <td className="p-2">{r.concepto}</td>
-                      <td className="p-2 text-right">{Number(r.cantidad).toFixed(2)}</td>
-                      <td className="p-2 text-right">Q{Number(r.precio_unitario).toFixed(2)}</td>
-                      <td className="p-2 text-right">Q{Number(r.importe).toFixed(2)}</td>
-                    </tr>
-                  ))}
-                  {renglones.filter(r => r.venta_id === v.venta_id).length === 0 && (
-                    <tr><td colSpan={4} className="p-2 text-gray-500">Sin renglones a crédito en esta venta.</td></tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        ))
+        <table className="w-full border text-sm">
+          <thead className="bg-gray-200">
+            <tr>
+              <th className="p-2 text-left">Venta</th>
+              <th className="p-2 text-left">Fecha</th>
+              <th className="p-2 text-right">Crédito</th>
+              <th className="p-2 text-right">Abonado</th>
+              <th className="p-2 text-right">Saldo</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.venta_id} className="border-t">
+                <td className="p-2">#{r.venta_id}</td>
+                <td className="p-2">{r.fecha}</td>
+                <td className="p-2 text-right">Q{r.credito.toFixed(2)}</td>
+                <td className="p-2 text-right">Q{r.abonado.toFixed(2)}</td>
+                <td className="p-2 text-right font-semibold">Q{r.saldo.toFixed(2)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       )}
     </div>
   )
