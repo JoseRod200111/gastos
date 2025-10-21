@@ -13,6 +13,13 @@ type VentaRow = {
   saldo: number
 }
 
+// Relación: a veces llega como objeto, a veces como array
+type ProductoRel =
+  | { nombre: string | null; sku: string | null; unidad: string | null; control_inventario: boolean | null }
+  | null
+  | ProductoRel[]
+type FormaPagoRel = { metodo: string | null } | null | FormaPagoRel[]
+
 type Detalle = {
   id: number
   venta_id: number
@@ -22,16 +29,8 @@ type Detalle = {
   precio_unitario: number
   importe: number
   documento: string | null
-  // relaciones
-  productos?: {
-    nombre: string | null
-    sku: string | null
-    unidad: string | null
-    control_inventario: boolean | null
-  } | null
-  forma_pago?: {
-    metodo: string | null
-  } | null
+  productos?: ProductoRel
+  forma_pago?: FormaPagoRel
 }
 
 export default function VistaDeudasCliente() {
@@ -40,32 +39,24 @@ export default function VistaDeudasCliente() {
   const [clienteId, setClienteId] = useState<number | null>(null)
   const [clienteNombre, setClienteNombre] = useState<string>('')
 
-  // filas de ventas a crédito (una por venta, con crédito/abonado/saldo)
   const [ventas, setVentas] = useState<VentaRow[]>([])
-
-  // detalles por venta
   const [detalles, setDetalles] = useState<Record<number, Detalle[]>>({})
 
-  // ───────────────────────────── utils ─────────────────────────────
-  const formatoQ = (n: number | null | undefined) =>
-    `Q${Number(n || 0).toFixed(2)}`
+  const formatoQ = (n: number | null | undefined) => `Q${Number(n || 0).toFixed(2)}`
 
   const totales = useMemo(() => {
     const tCred = ventas.reduce((s, v) => s + Number(v.credito || 0), 0)
-    const tAbo  = ventas.reduce((s, v) => s + Number(v.abonado || 0), 0)
-    const tSal  = ventas.reduce((s, v) => s + Number(v.saldo || 0), 0)
+    const tAbo = ventas.reduce((s, v) => s + Number(v.abonado || 0), 0)
+    const tSal = ventas.reduce((s, v) => s + Number(v.saldo || 0), 0)
     return { tCred, tAbo, tSal }
   }, [ventas])
 
-  // ────────────────────── cargar cliente_id ───────────────────────
   useEffect(() => {
-    // evitar useSearchParams para no requerir Suspense
     const params = new URLSearchParams(window.location.search)
     const cid = params.get('cliente_id')
     if (cid) setClienteId(Number(cid))
   }, [])
 
-  // ───────────────────────── cargas ─────────────────────────
   const cargarCliente = useCallback(async (id: number) => {
     const { data, error } = await supabase
       .from('clientes')
@@ -75,114 +66,65 @@ export default function VistaDeudasCliente() {
     if (!error && data) setClienteNombre(data.nombre || '')
   }, [])
 
-  // ventas a crédito (una fila por venta)
   const cargarVentasCredito = useCallback(async (id: number) => {
-    // 1) detectar id de método "Pendiente de pago"
     const { data: mp } = await supabase
       .from('forma_pago')
       .select('id')
       .ilike('metodo', '%pendiente de pago%')
       .limit(1)
       .single()
-
     const metodoPendienteId = mp?.id as number | undefined
 
-    // 2) crédito por venta (suma de importes en detalle_venta con ese método)
-    const { data: creditoRows, error: cErr } = await supabase
-      .rpc('sum_credito_por_venta', { p_cliente_id: id, p_metodo_id: metodoPendienteId ?? null })
+    const { data: rowsDV, error: dvErr } = await supabase
+      .from('detalle_venta')
+      .select('venta_id, importe, forma_pago_id, ventas!inner(id, cliente_id, fecha)')
+      .eq('ventas.cliente_id', id)
 
-    // La función RPC anterior es opcional; si no la tienes, puedes usar este
-    // fallback en SQL con views. Si NO tienes la RPC, coméntala y usa el
-    // approach de dos queries (sumas agrupadas) igual que hicimos antes.
-    if (cErr || !Array.isArray(creditoRows)) {
-      // fallback “manual” si no existe la RPC:
-      // sumas agrupadas de detalle_venta por venta_id
-      const { data: rowsDV, error: dvErr } = await supabase
-        .from('detalle_venta')
-        .select('venta_id, importe, forma_pago_id, ventas!inner(id, cliente_id, fecha)')
-        .eq('ventas.cliente_id', id)
-
-      if (dvErr) {
-        console.error(dvErr)
-        setVentas([])
-        return
-      }
-
-      type Tmp = { [k: number]: { fecha: string; credito: number; abonado: number } }
-      const agg: Tmp = {}
-      for (const r of rowsDV || []) {
-        const vId = (r as any).venta_id as number
-        const fecha = (r as any).ventas?.fecha as string
-        const fpId = (r as any).forma_pago_id as number | null
-        const imp  = Number((r as any).importe || 0)
-
-        if (!agg[vId]) agg[vId] = { fecha, credito: 0, abonado: 0 }
-        if (metodoPendienteId && fpId === metodoPendienteId) {
-          agg[vId].credito += imp
-        } else {
-          // si en tu esquema los pagos no están en detalle_venta, este bloque
-          // no suma “abonado”; lo manejaremos por pagos_venta abajo
-        }
-      }
-
-      // 3) pagos (abonado) por venta
-      const { data: pagosRows, error: pErr } = await supabase
-        .from('pagos_venta')
-        .select('venta_id, monto')
-        .in('venta_id', Object.keys(agg).map(Number))
-
-      if (!pErr && Array.isArray(pagosRows)) {
-        for (const pr of pagosRows) {
-          const vId = pr.venta_id as number
-          const m   = Number(pr.monto || 0)
-          if (!agg[vId]) continue
-          agg[vId].abonado += m
-        }
-      }
-
-      const final: VentaRow[] = Object.entries(agg).map(([venta_id, val]) => ({
-        venta_id: Number(venta_id),
-        fecha: val.fecha,
-        credito: val.credito,
-        abonado: val.abonado,
-        saldo: Number(val.credito) - Number(val.abonado),
-      }))
-      final.sort((a,b)=> (new Date(b.fecha).getTime() - new Date(a.fecha).getTime()))
-      setVentas(final)
+    if (dvErr) {
+      console.error(dvErr)
+      setVentas([])
       return
     }
 
-    // 3) pagos (abonado) por venta con RPC existente
-    const ventaIds = (creditoRows as any[]).map(r => r.venta_id)
-    const { data: pagosRows, error: pErr } = await supabase
-      .from('pagos_venta')
-      .select('venta_id, monto')
-      .in('venta_id', ventaIds)
+    type Tmp = { [k: number]: { fecha: string; credito: number; abonado: number } }
+    const agg: Tmp = {}
+    for (const r of (rowsDV || []) as any[]) {
+      const vId = r.venta_id as number
+      const fecha = r.ventas?.fecha as string
+      const fpId = r.forma_pago_id as number | null
+      const imp = Number(r.importe || 0)
 
-    // mezclar crédito y abono
-    const map = new Map<number, { fecha: string; credito: number; abonado: number }>()
-    for (const r of (creditoRows || []) as any[]) {
-      map.set(r.venta_id, { fecha: r.fecha, credito: Number(r.credito || 0), abonado: 0 })
-    }
-    if (!pErr) {
-      for (const pr of pagosRows || []) {
-        const v = map.get(pr.venta_id)
-        if (v) v.abonado += Number(pr.monto || 0)
+      if (!agg[vId]) agg[vId] = { fecha, credito: 0, abonado: 0 }
+      if (metodoPendienteId && fpId === metodoPendienteId) {
+        agg[vId].credito += imp
       }
     }
 
-    const salida: VentaRow[] = Array.from(map.entries()).map(([venta_id, v]) => ({
-      venta_id,
+    const vIds = Object.keys(agg).map(Number)
+    if (vIds.length > 0) {
+      const { data: pagosRows, error: pErr } = await supabase
+        .from('pagos_venta')
+        .select('venta_id, monto')
+        .in('venta_id', vIds)
+      if (!pErr) {
+        for (const pr of pagosRows || []) {
+          const m = Number(pr.monto || 0)
+          if (agg[pr.venta_id]) agg[pr.venta_id].abonado += m
+        }
+      }
+    }
+
+    const final: VentaRow[] = Object.entries(agg).map(([venta_id, v]) => ({
+      venta_id: Number(venta_id),
       fecha: v.fecha,
       credito: v.credito,
       abonado: v.abonado,
       saldo: v.credito - v.abonado,
     }))
-    salida.sort((a,b)=> (new Date(b.fecha).getTime() - new Date(a.fecha).getTime()))
-    setVentas(salida)
+    final.sort((a, b) => new Date(b.fecha).getTime() - new Date(a.fecha).getTime())
+    setVentas(final)
   }, [])
 
-  // detalles de esas ventas
   const cargarDetalles = useCallback(async (ids: number[]) => {
     if (ids.length === 0) {
       setDetalles({})
@@ -204,16 +146,32 @@ export default function VistaDeudasCliente() {
       return
     }
 
-    const byVenta: Record<number, Detalle[]> = {}
-    for (const d of (data || []) as Detalle[]) {
-      (byVenta[d.venta_id] ||= []).push(d)
+    // Normalizar: si productos/forma_pago vienen como array, me quedo con el primer elemento
+    const normalizeRel = <T,>(r: T | T[] | null | undefined): T | null => {
+      if (!r) return null
+      return Array.isArray(r) ? (r[0] ?? null) : r
     }
-    // orden opcional por producto/concepto
-    Object.values(byVenta).forEach(arr => arr.sort((a,b)=> a.id - b.id))
+
+    const byVenta: Record<number, Detalle[]> = {}
+    for (const raw of (data || []) as any[]) {
+      const d: Detalle = {
+        id: raw.id,
+        venta_id: raw.venta_id,
+        producto_id: raw.producto_id,
+        concepto: raw.concepto,
+        cantidad: Number(raw.cantidad || 0),
+        precio_unitario: Number(raw.precio_unitario || 0),
+        importe: Number(raw.importe || 0),
+        documento: raw.documento || null,
+        productos: normalizeRel(raw.productos),
+        forma_pago: normalizeRel(raw.forma_pago),
+      }
+      ;(byVenta[d.venta_id] ||= []).push(d)
+    }
+    Object.values(byVenta).forEach(arr => arr.sort((a, b) => a.id - b.id))
     setDetalles(byVenta)
   }, [])
 
-  // ───────────────────────── efectos ─────────────────────────
   useEffect(() => {
     if (!clienteId) return
     cargarCliente(clienteId)
@@ -225,7 +183,6 @@ export default function VistaDeudasCliente() {
     cargarDetalles(ids)
   }, [ventas, cargarDetalles])
 
-  // ────────────────────────── UI ───────────────────────────
   return (
     <div className="p-6 max-w-6xl mx-auto">
       <div className="flex justify-center mb-4">
@@ -244,7 +201,6 @@ export default function VistaDeudasCliente() {
         ⬅ Volver a Saldos
       </button>
 
-      {/* Resumen */}
       <div className="border rounded p-3 mb-4 bg-gray-50">
         <div><span className="font-semibold">Total crédito:</span> {formatoQ(totales.tCred)}</div>
         <div><span className="font-semibold">Total abonado:</span> {formatoQ(totales.tAbo)}</div>
@@ -274,7 +230,7 @@ export default function VistaDeudasCliente() {
                 <td className="p-2 text-right font-semibold">{formatoQ(v.saldo)}</td>
               </tr>
             ))}
-            {/* Sección de detalles por venta */}
+
             {ventas.map(v => (
               <tr key={`det-${v.venta_id}`} className="border-b">
                 <td colSpan={5} className="p-0">
@@ -294,10 +250,12 @@ export default function VistaDeudasCliente() {
                       </thead>
                       <tbody>
                         {(detalles[v.venta_id] || []).map((d) => {
-                          const prod = d.productos
+                          const prod = (Array.isArray(d.productos) ? d.productos[0] : d.productos) || null
                           const invBadge = prod?.control_inventario
                             ? <span className="ml-2 text-[10px] bg-emerald-600 text-white px-1.5 py-0.5 rounded">inv</span>
                             : null
+                          const fp = (Array.isArray(d.forma_pago) ? d.forma_pago[0] : d.forma_pago) || null
+
                           return (
                             <tr key={d.id} className="border-t">
                               <td className="p-2">
@@ -319,7 +277,7 @@ export default function VistaDeudasCliente() {
                               <td className="p-2 text-right">{Number(d.cantidad || 0)}</td>
                               <td className="p-2 text-right">{formatoQ(d.precio_unitario)}</td>
                               <td className="p-2 text-right">{formatoQ(d.importe)}</td>
-                              <td className="p-2">{d.forma_pago?.metodo || '—'}</td>
+                              <td className="p-2">{fp?.metodo || '—'}</td>
                               <td className="p-2">{d.documento || '—'}</td>
                             </tr>
                           )
