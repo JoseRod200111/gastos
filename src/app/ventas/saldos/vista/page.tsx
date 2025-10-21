@@ -51,7 +51,7 @@ export default function VistaDeudasCliente() {
 
   // catálogo de métodos de pago (excluimos el método "pendiente de pago")
   const [metodos, setMetodos] = useState<MetodoPago[]>([])
-  const [pendienteId, setPendienteId] = useState<number | null>(null)
+ 
 
   // formulario de abono
   const [pago, setPago] = useState({
@@ -100,7 +100,7 @@ export default function VistaDeudasCliente() {
 
     // detectar el método "pendiente de pago"
     const pend = all.find(m => m.metodo.toLowerCase().includes('pendiente de pago'))
-    setPendienteId(pend?.id ?? null)
+
 
     // catálogo para abonos: excluir el método pendiente
     setMetodos(all.filter(m => m.id !== pend?.id))
@@ -115,7 +115,7 @@ export default function VistaDeudasCliente() {
       .limit(1)
       .single()
     const metodoPendienteId = mp?.id as number | undefined
-    setPendienteId(metodoPendienteId ?? null)
+ 
 
     const { data: rowsDV, error: dvErr } = await supabase
       .from('detalle_venta')
@@ -561,3 +561,4 @@ export default function VistaDeudasCliente() {
     </div>
   )
 }
+
