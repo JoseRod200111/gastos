@@ -34,11 +34,11 @@ type Detalle = {
   precio_unitario: number
   importe: number
   documento: string | null
-  /** ya normalizado a objeto o null */
   productos?: ProductoObj
-  /** ya normalizado a objeto o null */
   forma_pago?: FormaPagoObj
 }
+
+type MetodoPago = { id: number; metodo: string }
 
 export default function VistaDeudasCliente() {
   const router = useRouter()
@@ -48,6 +48,22 @@ export default function VistaDeudasCliente() {
 
   const [ventas, setVentas] = useState<VentaRow[]>([])
   const [detalles, setDetalles] = useState<Record<number, Detalle[]>>({})
+
+  // catálogo de métodos de pago (excluimos el método "pendiente de pago")
+  const [metodos, setMetodos] = useState<MetodoPago[]>([])
+  const [pendienteId, setPendienteId] = useState<number | null>(null)
+
+  // formulario de abono
+  const [pago, setPago] = useState({
+    modo: 'auto' as 'auto' | 'venta',
+    venta_id: '' as string | number,
+    fecha: new Date().toISOString().slice(0, 10),
+    metodo_pago_id: '' as string | number,
+    monto: '' as string,
+    documento: '',
+    observaciones: ''
+  })
+  const [loadingPago, setLoadingPago] = useState(false)
 
   const formatoQ = (n: number | null | undefined) => `Q${Number(n || 0).toFixed(2)}`
 
@@ -73,7 +89,25 @@ export default function VistaDeudasCliente() {
     if (!error && data) setClienteNombre(data.nombre || '')
   }, [])
 
+  const cargarMetodosPago = useCallback(async () => {
+    const { data, error } = await supabase
+      .from('forma_pago')
+      .select('id, metodo')
+      .order('metodo', { ascending: true })
+    if (error) return
+
+    const all = (data || []) as MetodoPago[]
+
+    // detectar el método "pendiente de pago"
+    const pend = all.find(m => m.metodo.toLowerCase().includes('pendiente de pago'))
+    setPendienteId(pend?.id ?? null)
+
+    // catálogo para abonos: excluir el método pendiente
+    setMetodos(all.filter(m => m.id !== pend?.id))
+  }, [])
+
   const cargarVentasCredito = useCallback(async (id: number) => {
+    // detectar "pendiente de pago"
     const { data: mp } = await supabase
       .from('forma_pago')
       .select('id')
@@ -81,6 +115,7 @@ export default function VistaDeudasCliente() {
       .limit(1)
       .single()
     const metodoPendienteId = mp?.id as number | undefined
+    setPendienteId(metodoPendienteId ?? null)
 
     const { data: rowsDV, error: dvErr } = await supabase
       .from('detalle_venta')
@@ -128,7 +163,7 @@ export default function VistaDeudasCliente() {
       abonado: v.abonado,
       saldo: v.credito - v.abonado,
     }))
-    final.sort((a, b) => new Date(b.fecha).getTime() - new Date(a.fecha).getTime())
+    final.sort((a, b) => new Date(a.fecha).getTime() - new Date(b.fecha).getTime()) // asc para aplicar pagos de más antiguo a nuevo
     setVentas(final)
   }, [])
 
@@ -153,7 +188,6 @@ export default function VistaDeudasCliente() {
       return
     }
 
-    // Helper: normaliza objeto o primer elemento del array
     const normalizeRel = <T,>(r: T | T[] | null | undefined): T | null => {
       if (!r) return null
       return Array.isArray(r) ? (r[0] ?? null) : r
@@ -170,7 +204,6 @@ export default function VistaDeudasCliente() {
         precio_unitario: Number(raw.precio_unitario || 0),
         importe: Number(raw.importe || 0),
         documento: raw.documento || null,
-        /** aquí ya quedan normalizados a objeto o null */
         productos: normalizeRel(raw.productos) as ProductoObj,
         forma_pago: normalizeRel(raw.forma_pago) as FormaPagoObj,
       }
@@ -183,13 +216,114 @@ export default function VistaDeudasCliente() {
   useEffect(() => {
     if (!clienteId) return
     cargarCliente(clienteId)
+    cargarMetodosPago()
     cargarVentasCredito(clienteId)
-  }, [clienteId, cargarCliente, cargarVentasCredito])
+  }, [clienteId, cargarCliente, cargarMetodosPago, cargarVentasCredito])
 
   useEffect(() => {
     const ids = ventas.map(v => v.venta_id)
     cargarDetalles(ids)
   }, [ventas, cargarDetalles])
+
+  // -------------------- Registrar abono --------------------
+  const registrarPago = async () => {
+    if (!clienteId) return
+    const monto = Number(pago.monto || 0)
+    if (!monto || monto <= 0) {
+      alert('Ingresa un monto válido.')
+      return
+    }
+    if (!pago.metodo_pago_id) {
+      alert('Selecciona un método de pago.')
+      return
+    }
+
+    setLoadingPago(true)
+    try {
+      const { data: auth } = await supabase.auth.getUser()
+      const user_id = auth?.user?.id || null
+
+      const fecha = pago.fecha
+      const metodo_pago_id = Number(pago.metodo_pago_id)
+      const documento = pago.documento || null
+      const observaciones = pago.observaciones || null
+
+      // ventas con saldo > 0
+      const ventasConSaldo = ventas.filter(v => v.saldo > 0)
+
+      if (ventasConSaldo.length === 0) {
+        alert('No hay ventas con saldo para este cliente.')
+        setLoadingPago(false)
+        return
+      }
+
+      const inserts: any[] = []
+      let restante = monto
+
+      if (pago.modo === 'venta') {
+        const vId = Number(pago.venta_id)
+        if (!vId) {
+          alert('Selecciona una venta para aplicar el abono.')
+          setLoadingPago(false)
+          return
+        }
+        const v = ventasConSaldo.find(x => x.venta_id === vId)
+        if (!v) {
+          alert('La venta seleccionada no tiene saldo.')
+          setLoadingPago(false)
+          return
+        }
+        const aplicar = Math.min(v.saldo, restante)
+        inserts.push({
+          cliente_id: clienteId,
+          venta_id: v.venta_id,
+          fecha,
+          metodo_pago_id,
+          monto: aplicar,
+          documento,
+          observaciones,
+          user_id
+        })
+      } else {
+        // modo automático: del más antiguo al más nuevo
+        for (const v of ventasConSaldo) {
+          if (restante <= 0) break
+          const aplicar = Math.min(v.saldo, restante)
+          inserts.push({
+            cliente_id: clienteId,
+            venta_id: v.venta_id,
+            fecha,
+            metodo_pago_id,
+            monto: aplicar,
+            documento,
+            observaciones,
+            user_id
+          })
+          restante -= aplicar
+        }
+      }
+
+      if (inserts.length === 0) {
+        alert('No fue posible aplicar el abono al saldo.')
+        setLoadingPago(false)
+        return
+      }
+
+      const { error: insErr } = await supabase.from('pagos_venta').insert(inserts)
+      if (insErr) throw insErr
+
+      alert('Pago registrado correctamente.')
+      // reset parcial
+      setPago(p => ({ ...p, monto: '', documento: '', observaciones: '' }))
+      // recargar datos
+      await cargarVentasCredito(clienteId)
+    } catch (e: any) {
+      console.error(e)
+      alert(`Error al registrar el pago: ${e?.message ?? e}`)
+    } finally {
+      setLoadingPago(false)
+    }
+  }
 
   return (
     <div className="p-6 max-w-6xl mx-auto">
@@ -209,6 +343,124 @@ export default function VistaDeudasCliente() {
         ⬅ Volver a Saldos
       </button>
 
+      {/* -------- Formulario de abono -------- */}
+      <div className="border rounded p-4 mb-6 bg-white">
+        <h2 className="font-semibold mb-3">➕ Registrar abono</h2>
+
+        <div className="grid grid-cols-1 md:grid-cols-6 gap-3 items-end">
+          <div className="md:col-span-2">
+            <label className="text-sm font-medium">Modo</label>
+            <div className="mt-1 flex gap-4">
+              <label className="text-sm inline-flex items-center gap-2">
+                <input
+                  type="radio"
+                  name="modo"
+                  value="auto"
+                  checked={pago.modo === 'auto'}
+                  onChange={() => setPago(p => ({ ...p, modo: 'auto' }))}
+                />
+                Automático (deuda más antigua primero)
+              </label>
+              <label className="text-sm inline-flex items-center gap-2">
+                <input
+                  type="radio"
+                  name="modo"
+                  value="venta"
+                  checked={pago.modo === 'venta'}
+                  onChange={() => setPago(p => ({ ...p, modo: 'venta' }))}
+                />
+                Sólo una venta
+              </label>
+            </div>
+          </div>
+
+          {pago.modo === 'venta' && (
+            <div className="md:col-span-2">
+              <label className="text-sm font-medium">Venta</label>
+              <select
+                className="border p-2 w-full"
+                value={pago.venta_id}
+                onChange={e => setPago(p => ({ ...p, venta_id: e.target.value }))}
+              >
+                <option value="">— Selecciona —</option>
+                {ventas.filter(v => v.saldo > 0).map(v => (
+                  <option key={v.venta_id} value={v.venta_id}>
+                    #{v.venta_id} · {v.fecha} · Saldo {formatoQ(v.saldo)}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          <div>
+            <label className="text-sm font-medium">Fecha</label>
+            <input
+              type="date"
+              className="border p-2 w-full"
+              value={pago.fecha}
+              onChange={e => setPago(p => ({ ...p, fecha: e.target.value }))}
+            />
+          </div>
+
+          <div>
+            <label className="text-sm font-medium">Método</label>
+            <select
+              className="border p-2 w-full"
+              value={pago.metodo_pago_id}
+              onChange={e => setPago(p => ({ ...p, metodo_pago_id: e.target.value }))}
+            >
+              <option value="">— Selecciona —</option>
+              {metodos.map(m => (
+                <option key={m.id} value={m.id}>{m.metodo}</option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="text-sm font-medium">Monto</label>
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              className="border p-2 w-full"
+              value={pago.monto}
+              onChange={e => setPago(p => ({ ...p, monto: e.target.value }))}
+              placeholder="0.00"
+            />
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mt-3">
+          <div>
+            <label className="text-sm font-medium">Documento</label>
+            <input
+              className="border p-2 w-full"
+              value={pago.documento}
+              onChange={e => setPago(p => ({ ...p, documento: e.target.value }))}
+            />
+          </div>
+          <div className="md:col-span-2">
+            <label className="text-sm font-medium">Observaciones</label>
+            <input
+              className="border p-2 w-full"
+              value={pago.observaciones}
+              onChange={e => setPago(p => ({ ...p, observaciones: e.target.value }))}
+            />
+          </div>
+        </div>
+
+        <div className="mt-4">
+          <button
+            disabled={loadingPago}
+            onClick={registrarPago}
+            className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded disabled:opacity-60"
+          >
+            {loadingPago ? 'Guardando…' : '💾 Registrar abono'}
+          </button>
+        </div>
+      </div>
+
+      {/* -------- Resumen de totales -------- */}
       <div className="border rounded p-3 mb-4 bg-gray-50">
         <div><span className="font-semibold">Total crédito:</span> {formatoQ(totales.tCred)}</div>
         <div><span className="font-semibold">Total abonado:</span> {formatoQ(totales.tAbo)}</div>
@@ -258,11 +510,11 @@ export default function VistaDeudasCliente() {
                       </thead>
                       <tbody>
                         {(detalles[v.venta_id] || []).map((d) => {
-                          const prod = d.productos // ya tipado como objeto o null
+                          const prod = d.productos
                           const invBadge = prod?.control_inventario
                             ? <span className="ml-2 text-[10px] bg-emerald-600 text-white px-1.5 py-0.5 rounded">inv</span>
                             : null
-                          const fp = d.forma_pago // ya tipado como objeto o null
+                          const fp = d.forma_pago
 
                           return (
                             <tr key={d.id} className="border-t">
