@@ -67,6 +67,7 @@ export default function VistaDeudasCliente() {
   }, [])
 
   const cargarVentasCredito = useCallback(async (id: number) => {
+    // id del método "Pendiente de pago"
     const { data: mp } = await supabase
       .from('forma_pago')
       .select('id')
@@ -75,6 +76,7 @@ export default function VistaDeudasCliente() {
       .single()
     const metodoPendienteId = mp?.id as number | undefined
 
+    // totales por venta a partir del detalle
     const { data: rowsDV, error: dvErr } = await supabase
       .from('detalle_venta')
       .select('venta_id, importe, forma_pago_id, ventas!inner(id, cliente_id, fecha)')
@@ -100,6 +102,7 @@ export default function VistaDeudasCliente() {
       }
     }
 
+    // abonos de pagos_venta
     const vIds = Object.keys(agg).map(Number)
     if (vIds.length > 0) {
       const { data: pagosRows, error: pErr } = await supabase
@@ -146,7 +149,7 @@ export default function VistaDeudasCliente() {
       return
     }
 
-    // Normalizar: si productos/forma_pago vienen como array, me quedo con el primer elemento
+    // Normalizar: si productos/forma_pago vienen como array, tomo el primer elemento
     const normalizeRel = <T,>(r: T | T[] | null | undefined): T | null => {
       if (!r) return null
       return Array.isArray(r) ? (r[0] ?? null) : r
