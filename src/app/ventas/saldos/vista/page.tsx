@@ -1,20 +1,11 @@
 'use client'
 
-import { Suspense, useEffect, useMemo, useState } from 'react'
-import { useRouter, useSearchParams } from 'next/navigation'
+import { useEffect, useMemo, useState, useCallback } from 'react'
 import Image from 'next/image'
+import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabaseClient'
 
-/** Fuerza render dinámico para evitar prerender estático en Vercel */
-export const dynamic = 'force-dynamic'
-
-type VentaDetalleCredito = {
-  venta_id: number
-  fecha: string
-  credito: number
-}
-
-type VentaLinea = {
+type VentaRow = {
   venta_id: number
   fecha: string
   credito: number
@@ -22,146 +13,227 @@ type VentaLinea = {
   saldo: number
 }
 
-/** Wrapper con Suspense para que useSearchParams funcione en build */
-export default function VistaSaldosClientePage() {
-  return (
-    <Suspense fallback={<div className="p-6 max-w-6xl mx-auto">Cargando…</div>}>
-      <VistaSaldosClienteInner />
-    </Suspense>
-  )
+type Detalle = {
+  id: number
+  venta_id: number
+  producto_id: number | null
+  concepto: string
+  cantidad: number
+  precio_unitario: number
+  importe: number
+  documento: string | null
+  // relaciones
+  productos?: {
+    nombre: string | null
+    sku: string | null
+    unidad: string | null
+    control_inventario: boolean | null
+  } | null
+  forma_pago?: {
+    metodo: string | null
+  } | null
 }
 
-function VistaSaldosClienteInner() {
+export default function VistaDeudasCliente() {
   const router = useRouter()
-  const sp = useSearchParams()
 
-  const clienteId = useMemo(() => {
-    const v = sp.get('cliente_id')
-    const n = Number(v)
-    return Number.isFinite(n) ? n : null
-  }, [sp])
+  const [clienteId, setClienteId] = useState<number | null>(null)
+  const [clienteNombre, setClienteNombre] = useState<string>('')
 
-  const clienteNombre = sp.get('nombre') || ''
+  // filas de ventas a crédito (una por venta, con crédito/abonado/saldo)
+  const [ventas, setVentas] = useState<VentaRow[]>([])
 
-  const [rows, setRows] = useState<VentaLinea[]>([])
-  const [loading, setLoading] = useState(false)
+  // detalles por venta
+  const [detalles, setDetalles] = useState<Record<number, Detalle[]>>({})
 
-  const totals = useMemo(() => {
-    const credito = rows.reduce((s, r) => s + (r.credito || 0), 0)
-    const abonado = rows.reduce((s, r) => s + (r.abonado || 0), 0)
-    const saldo = rows.reduce((s, r) => s + (r.saldo || 0), 0)
-    return { credito, abonado, saldo }
-  }, [rows])
+  // ───────────────────────────── utils ─────────────────────────────
+  const formatoQ = (n: number | null | undefined) =>
+    `Q${Number(n || 0).toFixed(2)}`
 
+  const totales = useMemo(() => {
+    const tCred = ventas.reduce((s, v) => s + Number(v.credito || 0), 0)
+    const tAbo  = ventas.reduce((s, v) => s + Number(v.abonado || 0), 0)
+    const tSal  = ventas.reduce((s, v) => s + Number(v.saldo || 0), 0)
+    return { tCred, tAbo, tSal }
+  }, [ventas])
+
+  // ────────────────────── cargar cliente_id ───────────────────────
   useEffect(() => {
-    ;(async () => {
-      if (!clienteId) {
-        setRows([])
+    // evitar useSearchParams para no requerir Suspense
+    const params = new URLSearchParams(window.location.search)
+    const cid = params.get('cliente_id')
+    if (cid) setClienteId(Number(cid))
+  }, [])
+
+  // ───────────────────────── cargas ─────────────────────────
+  const cargarCliente = useCallback(async (id: number) => {
+    const { data, error } = await supabase
+      .from('clientes')
+      .select('nombre')
+      .eq('id', id)
+      .single()
+    if (!error && data) setClienteNombre(data.nombre || '')
+  }, [])
+
+  // ventas a crédito (una fila por venta)
+  const cargarVentasCredito = useCallback(async (id: number) => {
+    // 1) detectar id de método "Pendiente de pago"
+    const { data: mp } = await supabase
+      .from('forma_pago')
+      .select('id')
+      .ilike('metodo', '%pendiente de pago%')
+      .limit(1)
+      .single()
+
+    const metodoPendienteId = mp?.id as number | undefined
+
+    // 2) crédito por venta (suma de importes en detalle_venta con ese método)
+    const { data: creditoRows, error: cErr } = await supabase
+      .rpc('sum_credito_por_venta', { p_cliente_id: id, p_metodo_id: metodoPendienteId ?? null })
+
+    // La función RPC anterior es opcional; si no la tienes, puedes usar este
+    // fallback en SQL con views. Si NO tienes la RPC, coméntala y usa el
+    // approach de dos queries (sumas agrupadas) igual que hicimos antes.
+    if (cErr || !Array.isArray(creditoRows)) {
+      // fallback “manual” si no existe la RPC:
+      // sumas agrupadas de detalle_venta por venta_id
+      const { data: rowsDV, error: dvErr } = await supabase
+        .from('detalle_venta')
+        .select('venta_id, importe, forma_pago_id, ventas!inner(id, cliente_id, fecha)')
+        .eq('ventas.cliente_id', id)
+
+      if (dvErr) {
+        console.error(dvErr)
+        setVentas([])
         return
       }
-      setLoading(true)
-      try {
-        // 1) ID del método "Pendiente de pago"
-        const { data: mpRow, error: mpErr } = await supabase
-          .from('forma_pago')
-          .select('id')
-          .ilike('metodo', '%pendiente de pago%')
-          .limit(1)
-          .maybeSingle()
 
-        if (mpErr) throw mpErr
-        const pendienteId = mpRow?.id
-        if (!pendienteId) {
-          setRows([])
-          setLoading(false)
-          return
+      type Tmp = { [k: number]: { fecha: string; credito: number; abonado: number } }
+      const agg: Tmp = {}
+      for (const r of rowsDV || []) {
+        const vId = (r as any).venta_id as number
+        const fecha = (r as any).ventas?.fecha as string
+        const fpId = (r as any).forma_pago_id as number | null
+        const imp  = Number((r as any).importe || 0)
+
+        if (!agg[vId]) agg[vId] = { fecha, credito: 0, abonado: 0 }
+        if (metodoPendienteId && fpId === metodoPendienteId) {
+          agg[vId].credito += imp
+        } else {
+          // si en tu esquema los pagos no están en detalle_venta, este bloque
+          // no suma “abonado”; lo manejaremos por pagos_venta abajo
         }
-
-        // 2) Traer líneas de crédito del cliente
-        const { data: det, error: detErr } = await supabase
-          .from('detalle_venta')
-          .select(`
-            venta_id,
-            importe,
-            ventas!inner (
-              id,
-              fecha,
-              cliente_id
-            )
-          `)
-          .eq('forma_pago_id', pendienteId)
-          .eq('ventas.cliente_id', clienteId)
-
-        if (detErr) throw detErr
-
-        // Agrupamos por venta_id
-        const creditoPorVenta = new Map<number, VentaDetalleCredito>()
-        for (const r of (det as any[]) || []) {
-          const vid = Number(r.venta_id)
-          const fecha = r.ventas?.fecha as string
-          const imp = Number(r.importe || 0)
-          const prev = creditoPorVenta.get(vid)
-          if (!prev) {
-            creditoPorVenta.set(vid, { venta_id: vid, fecha, credito: imp })
-          } else {
-            prev.credito += imp
-          }
-        }
-
-        const ventasBase = Array.from(creditoPorVenta.values())
-
-        // 3) (Opcional) Abonos por venta si existe pagos_venta
-        let abonosPorVenta = new Map<number, number>()
-        const ventaIds = ventasBase.map(v => v.venta_id)
-        if (ventaIds.length > 0) {
-          const { data: ab, error: abErr } = await supabase
-            .from('pagos_venta')
-            .select('venta_id, monto')
-            .in('venta_id', ventaIds)
-
-          if (!abErr && Array.isArray(ab)) {
-            abonosPorVenta = ab.reduce((map, r: any) => {
-              const vid = Number(r.venta_id)
-              const monto = Number(r.monto || 0)
-              map.set(vid, (map.get(vid) || 0) + monto)
-              return map
-            }, new Map<number, number>())
-          }
-          // si no existe/da error, lo dejamos en 0 sin romper
-        }
-
-        // 4) Construimos filas finales
-        const filas: VentaLinea[] = ventasBase
-          .map(v => {
-            const abonado = abonosPorVenta.get(v.venta_id) || 0
-            return {
-              venta_id: v.venta_id,
-              fecha: v.fecha,
-              credito: Number(v.credito.toFixed(2)),
-              abonado: Number(abonado.toFixed(2)),
-              saldo: Number((v.credito - abonado).toFixed(2)),
-            }
-          })
-          .sort((a, b) => (a.fecha < b.fecha ? 1 : -1)) // más reciente primero
-
-        setRows(filas)
-      } catch (e) {
-        console.error(e)
-        setRows([])
-      } finally {
-        setLoading(false)
       }
-    })()
-  }, [clienteId])
 
+      // 3) pagos (abonado) por venta
+      const { data: pagosRows, error: pErr } = await supabase
+        .from('pagos_venta')
+        .select('venta_id, monto')
+        .in('venta_id', Object.keys(agg).map(Number))
+
+      if (!pErr && Array.isArray(pagosRows)) {
+        for (const pr of pagosRows) {
+          const vId = pr.venta_id as number
+          const m   = Number(pr.monto || 0)
+          if (!agg[vId]) continue
+          agg[vId].abonado += m
+        }
+      }
+
+      const final: VentaRow[] = Object.entries(agg).map(([venta_id, val]) => ({
+        venta_id: Number(venta_id),
+        fecha: val.fecha,
+        credito: val.credito,
+        abonado: val.abonado,
+        saldo: Number(val.credito) - Number(val.abonado),
+      }))
+      final.sort((a,b)=> (new Date(b.fecha).getTime() - new Date(a.fecha).getTime()))
+      setVentas(final)
+      return
+    }
+
+    // 3) pagos (abonado) por venta con RPC existente
+    const ventaIds = (creditoRows as any[]).map(r => r.venta_id)
+    const { data: pagosRows, error: pErr } = await supabase
+      .from('pagos_venta')
+      .select('venta_id, monto')
+      .in('venta_id', ventaIds)
+
+    // mezclar crédito y abono
+    const map = new Map<number, { fecha: string; credito: number; abonado: number }>()
+    for (const r of (creditoRows || []) as any[]) {
+      map.set(r.venta_id, { fecha: r.fecha, credito: Number(r.credito || 0), abonado: 0 })
+    }
+    if (!pErr) {
+      for (const pr of pagosRows || []) {
+        const v = map.get(pr.venta_id)
+        if (v) v.abonado += Number(pr.monto || 0)
+      }
+    }
+
+    const salida: VentaRow[] = Array.from(map.entries()).map(([venta_id, v]) => ({
+      venta_id,
+      fecha: v.fecha,
+      credito: v.credito,
+      abonado: v.abonado,
+      saldo: v.credito - v.abonado,
+    }))
+    salida.sort((a,b)=> (new Date(b.fecha).getTime() - new Date(a.fecha).getTime()))
+    setVentas(salida)
+  }, [])
+
+  // detalles de esas ventas
+  const cargarDetalles = useCallback(async (ids: number[]) => {
+    if (ids.length === 0) {
+      setDetalles({})
+      return
+    }
+
+    const { data, error } = await supabase
+      .from('detalle_venta')
+      .select(`
+        id, venta_id, producto_id, concepto, cantidad, precio_unitario, importe, documento,
+        productos ( nombre, sku, unidad, control_inventario ),
+        forma_pago ( metodo )
+      `)
+      .in('venta_id', ids)
+
+    if (error) {
+      console.error('Error cargando detalles:', error)
+      setDetalles({})
+      return
+    }
+
+    const byVenta: Record<number, Detalle[]> = {}
+    for (const d of (data || []) as Detalle[]) {
+      (byVenta[d.venta_id] ||= []).push(d)
+    }
+    // orden opcional por producto/concepto
+    Object.values(byVenta).forEach(arr => arr.sort((a,b)=> a.id - b.id))
+    setDetalles(byVenta)
+  }, [])
+
+  // ───────────────────────── efectos ─────────────────────────
+  useEffect(() => {
+    if (!clienteId) return
+    cargarCliente(clienteId)
+    cargarVentasCredito(clienteId)
+  }, [clienteId, cargarCliente, cargarVentasCredito])
+
+  useEffect(() => {
+    const ids = ventas.map(v => v.venta_id)
+    cargarDetalles(ids)
+  }, [ventas, cargarDetalles])
+
+  // ────────────────────────── UI ───────────────────────────
   return (
     <div className="p-6 max-w-6xl mx-auto">
       <div className="flex justify-center mb-4">
         <Image src="/logo.png" alt="Logo" width={160} height={64} />
       </div>
 
-      <h1 className="text-2xl font-bold mb-2">🧾 Deudas por Venta</h1>
-      <p className="mb-4 text-gray-700">
+      <h1 className="text-2xl font-bold mb-1">🧾 Deudas por Venta</h1>
+      <p className="mb-4">
         Cliente: <span className="font-semibold">{clienteNombre || `(ID ${clienteId ?? '—'})`}</span>
       </p>
 
@@ -172,15 +244,14 @@ function VistaSaldosClienteInner() {
         ⬅ Volver a Saldos
       </button>
 
-      <div className="border rounded p-3 mb-3 text-sm bg-gray-50">
-        <div><span className="font-semibold">Total crédito:</span> Q{totals.credito.toFixed(2)}</div>
-        <div><span className="font-semibold">Total abonado:</span> Q{totals.abonado.toFixed(2)}</div>
-        <div><span className="font-semibold">Total saldo:</span> Q{totals.saldo.toFixed(2)}</div>
+      {/* Resumen */}
+      <div className="border rounded p-3 mb-4 bg-gray-50">
+        <div><span className="font-semibold">Total crédito:</span> {formatoQ(totales.tCred)}</div>
+        <div><span className="font-semibold">Total abonado:</span> {formatoQ(totales.tAbo)}</div>
+        <div><span className="font-semibold">Total saldo:</span> {formatoQ(totales.tSal)}</div>
       </div>
 
-      {loading ? (
-        <p className="text-gray-600">Cargando…</p>
-      ) : rows.length === 0 ? (
+      {ventas.length === 0 ? (
         <p className="text-gray-600">Este cliente no tiene ventas a crédito.</p>
       ) : (
         <table className="w-full border text-sm">
@@ -194,13 +265,76 @@ function VistaSaldosClienteInner() {
             </tr>
           </thead>
           <tbody>
-            {rows.map((r) => (
-              <tr key={r.venta_id} className="border-t">
-                <td className="p-2">#{r.venta_id}</td>
-                <td className="p-2">{r.fecha}</td>
-                <td className="p-2 text-right">Q{r.credito.toFixed(2)}</td>
-                <td className="p-2 text-right">Q{r.abonado.toFixed(2)}</td>
-                <td className="p-2 text-right font-semibold">Q{r.saldo.toFixed(2)}</td>
+            {ventas.map(v => (
+              <tr key={v.venta_id} className="border-t">
+                <td className="p-2">#{v.venta_id}</td>
+                <td className="p-2">{v.fecha}</td>
+                <td className="p-2 text-right">{formatoQ(v.credito)}</td>
+                <td className="p-2 text-right">{formatoQ(v.abonado)}</td>
+                <td className="p-2 text-right font-semibold">{formatoQ(v.saldo)}</td>
+              </tr>
+            ))}
+            {/* Sección de detalles por venta */}
+            {ventas.map(v => (
+              <tr key={`det-${v.venta_id}`} className="border-b">
+                <td colSpan={5} className="p-0">
+                  <div className="bg-gray-50 p-3">
+                    <h3 className="font-semibold mb-2">Detalles de la venta #{v.venta_id}</h3>
+                    <table className="w-full text-xs border">
+                      <thead className="bg-gray-100">
+                        <tr>
+                          <th className="p-2 text-left">Producto</th>
+                          <th className="p-2 text-left">Concepto</th>
+                          <th className="p-2 text-right">Cant.</th>
+                          <th className="p-2 text-right">P. Unit</th>
+                          <th className="p-2 text-right">Importe</th>
+                          <th className="p-2 text-left">Pago</th>
+                          <th className="p-2 text-left">Doc.</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(detalles[v.venta_id] || []).map((d) => {
+                          const prod = d.productos
+                          const invBadge = prod?.control_inventario
+                            ? <span className="ml-2 text-[10px] bg-emerald-600 text-white px-1.5 py-0.5 rounded">inv</span>
+                            : null
+                          return (
+                            <tr key={d.id} className="border-t">
+                              <td className="p-2">
+                                {prod?.nombre ? (
+                                  <>
+                                    <div className="font-medium inline-flex items-center">
+                                      {prod.nombre}
+                                      {invBadge}
+                                    </div>
+                                    <div className="text-[11px] text-gray-600">
+                                      {(prod.sku ? `SKU: ${prod.sku}` : '') +
+                                        (prod.sku && prod.unidad ? ' · ' : '') +
+                                        (prod.unidad ? `Unidad: ${prod.unidad}` : '')}
+                                    </div>
+                                  </>
+                                ) : <span className="text-gray-400">—</span>}
+                              </td>
+                              <td className="p-2">{d.concepto || '—'}</td>
+                              <td className="p-2 text-right">{Number(d.cantidad || 0)}</td>
+                              <td className="p-2 text-right">{formatoQ(d.precio_unitario)}</td>
+                              <td className="p-2 text-right">{formatoQ(d.importe)}</td>
+                              <td className="p-2">{d.forma_pago?.metodo || '—'}</td>
+                              <td className="p-2">{d.documento || '—'}</td>
+                            </tr>
+                          )
+                        })}
+                        {(!detalles[v.venta_id] || detalles[v.venta_id].length === 0) && (
+                          <tr>
+                            <td className="p-2 text-center text-gray-500" colSpan={7}>
+                              No hay renglones de detalle para esta venta.
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </td>
               </tr>
             ))}
           </tbody>
