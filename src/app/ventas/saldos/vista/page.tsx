@@ -13,12 +13,17 @@ type VentaRow = {
   saldo: number
 }
 
-// Relación: a veces llega como objeto, a veces como array
-type ProductoRel =
-  | { nombre: string | null; sku: string | null; unidad: string | null; control_inventario: boolean | null }
-  | null
-  | ProductoRel[]
-type FormaPagoRel = { metodo: string | null } | null | FormaPagoRel[]
+/** Relaciones normalizadas (objeto o null; nunca array) */
+type ProductoObj = {
+  nombre: string | null
+  sku: string | null
+  unidad: string | null
+  control_inventario: boolean | null
+} | null
+
+type FormaPagoObj = {
+  metodo: string | null
+} | null
 
 type Detalle = {
   id: number
@@ -29,8 +34,10 @@ type Detalle = {
   precio_unitario: number
   importe: number
   documento: string | null
-  productos?: ProductoRel
-  forma_pago?: FormaPagoRel
+  /** ya normalizado a objeto o null */
+  productos?: ProductoObj
+  /** ya normalizado a objeto o null */
+  forma_pago?: FormaPagoObj
 }
 
 export default function VistaDeudasCliente() {
@@ -67,7 +74,6 @@ export default function VistaDeudasCliente() {
   }, [])
 
   const cargarVentasCredito = useCallback(async (id: number) => {
-    // id del método "Pendiente de pago"
     const { data: mp } = await supabase
       .from('forma_pago')
       .select('id')
@@ -76,7 +82,6 @@ export default function VistaDeudasCliente() {
       .single()
     const metodoPendienteId = mp?.id as number | undefined
 
-    // totales por venta a partir del detalle
     const { data: rowsDV, error: dvErr } = await supabase
       .from('detalle_venta')
       .select('venta_id, importe, forma_pago_id, ventas!inner(id, cliente_id, fecha)')
@@ -102,7 +107,6 @@ export default function VistaDeudasCliente() {
       }
     }
 
-    // abonos de pagos_venta
     const vIds = Object.keys(agg).map(Number)
     if (vIds.length > 0) {
       const { data: pagosRows, error: pErr } = await supabase
@@ -149,7 +153,7 @@ export default function VistaDeudasCliente() {
       return
     }
 
-    // Normalizar: si productos/forma_pago vienen como array, tomo el primer elemento
+    // Helper: normaliza objeto o primer elemento del array
     const normalizeRel = <T,>(r: T | T[] | null | undefined): T | null => {
       if (!r) return null
       return Array.isArray(r) ? (r[0] ?? null) : r
@@ -166,8 +170,9 @@ export default function VistaDeudasCliente() {
         precio_unitario: Number(raw.precio_unitario || 0),
         importe: Number(raw.importe || 0),
         documento: raw.documento || null,
-        productos: normalizeRel(raw.productos),
-        forma_pago: normalizeRel(raw.forma_pago),
+        /** aquí ya quedan normalizados a objeto o null */
+        productos: normalizeRel(raw.productos) as ProductoObj,
+        forma_pago: normalizeRel(raw.forma_pago) as FormaPagoObj,
       }
       ;(byVenta[d.venta_id] ||= []).push(d)
     }
@@ -253,11 +258,11 @@ export default function VistaDeudasCliente() {
                       </thead>
                       <tbody>
                         {(detalles[v.venta_id] || []).map((d) => {
-                          const prod = (Array.isArray(d.productos) ? d.productos[0] : d.productos) || null
+                          const prod = d.productos // ya tipado como objeto o null
                           const invBadge = prod?.control_inventario
                             ? <span className="ml-2 text-[10px] bg-emerald-600 text-white px-1.5 py-0.5 rounded">inv</span>
                             : null
-                          const fp = (Array.isArray(d.forma_pago) ? d.forma_pago[0] : d.forma_pago) || null
+                          const fp = d.forma_pago // ya tipado como objeto o null
 
                           return (
                             <tr key={d.id} className="border-t">
