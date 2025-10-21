@@ -1,9 +1,12 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { Suspense, useEffect, useMemo, useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import Image from 'next/image'
 import { supabase } from '@/lib/supabaseClient'
+
+/** Fuerza render dinámico para evitar prerender estático en Vercel */
+export const dynamic = 'force-dynamic'
 
 type VentaDetalleCredito = {
   venta_id: number
@@ -19,7 +22,16 @@ type VentaLinea = {
   saldo: number
 }
 
-export default function VistaSaldosCliente() {
+/** Wrapper con Suspense para que useSearchParams funcione en build */
+export default function VistaSaldosClientePage() {
+  return (
+    <Suspense fallback={<div className="p-6 max-w-6xl mx-auto">Cargando…</div>}>
+      <VistaSaldosClienteInner />
+    </Suspense>
+  )
+}
+
+function VistaSaldosClienteInner() {
   const router = useRouter()
   const sp = useSearchParams()
 
@@ -42,7 +54,7 @@ export default function VistaSaldosCliente() {
   }, [rows])
 
   useEffect(() => {
-    (async () => {
+    ;(async () => {
       if (!clienteId) {
         setRows([])
         return
@@ -65,8 +77,7 @@ export default function VistaSaldosCliente() {
           return
         }
 
-        // 2) Traer líneas de crédito (detalle_venta) de este cliente
-        //    Nos traemos venta_id, importe, y la fecha desde ventas
+        // 2) Traer líneas de crédito del cliente
         const { data: det, error: detErr } = await supabase
           .from('detalle_venta')
           .select(`
@@ -83,9 +94,9 @@ export default function VistaSaldosCliente() {
 
         if (detErr) throw detErr
 
-        // Agrupar en JS por venta_id
+        // Agrupamos por venta_id
         const creditoPorVenta = new Map<number, VentaDetalleCredito>()
-        for (const r of det as any[]) {
+        for (const r of (det as any[]) || []) {
           const vid = Number(r.venta_id)
           const fecha = r.ventas?.fecha as string
           const imp = Number(r.importe || 0)
@@ -99,7 +110,7 @@ export default function VistaSaldosCliente() {
 
         const ventasBase = Array.from(creditoPorVenta.values())
 
-        // 3) (Opcional) Traer abonos si tienes tabla pagos_venta
+        // 3) (Opcional) Abonos por venta si existe pagos_venta
         let abonosPorVenta = new Map<number, number>()
         const ventaIds = ventasBase.map(v => v.venta_id)
         if (ventaIds.length > 0) {
@@ -116,20 +127,22 @@ export default function VistaSaldosCliente() {
               return map
             }, new Map<number, number>())
           }
-          // si hay error/tabla no existe, se deja en 0 sin romper
+          // si no existe/da error, lo dejamos en 0 sin romper
         }
 
-        // 4) Construir filas finales
-        const filas: VentaLinea[] = ventasBase.map(v => {
-          const abonado = abonosPorVenta.get(v.venta_id) || 0
-          return {
-            venta_id: v.venta_id,
-            fecha: v.fecha,
-            credito: Number(v.credito.toFixed(2)),
-            abonado: Number(abonado.toFixed(2)),
-            saldo: Number((v.credito - abonado).toFixed(2)),
-          }
-        }).sort((a, b) => (a.fecha < b.fecha ? 1 : -1)) // más reciente primero
+        // 4) Construimos filas finales
+        const filas: VentaLinea[] = ventasBase
+          .map(v => {
+            const abonado = abonosPorVenta.get(v.venta_id) || 0
+            return {
+              venta_id: v.venta_id,
+              fecha: v.fecha,
+              credito: Number(v.credito.toFixed(2)),
+              abonado: Number(abonado.toFixed(2)),
+              saldo: Number((v.credito - abonado).toFixed(2)),
+            }
+          })
+          .sort((a, b) => (a.fecha < b.fecha ? 1 : -1)) // más reciente primero
 
         setRows(filas)
       } catch (e) {
