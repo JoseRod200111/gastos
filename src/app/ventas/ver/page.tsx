@@ -57,38 +57,51 @@ export default function VerVentas() {
 
   /* ─────────────────────── datos ─────────────────────── */
   const cargarDatos = useCallback(async () => {
+    // Construimos el SELECT de forma dinámica. Si hay filtro por cliente, usamos INNER JOIN
+    const usaFiltroCliente = Boolean(
+      filtros.cliente_nombre?.trim() || filtros.cliente_nit?.trim()
+    )
+
+    const selectCamposBasicos =
+      `
+      id, fecha, cantidad, observaciones,
+      empresa_id, division_id, cliente_id,
+      empresas ( nombre ),
+      divisiones ( nombre ),
+    `.trim()
+
+    const selectClientes = usaFiltroCliente
+      ? `clientes!inner ( nombre, nit )`
+      : `clientes ( nombre, nit )`
+
+    const selectString = `${selectCamposBasicos} ${selectClientes}`
+
     // 1) Traer cabeceras
     let query = supabase
       .from('ventas')
-      .select(
-        `
-        id, fecha, cantidad, observaciones,
-        empresa_id, division_id, cliente_id,
-        empresas ( nombre ),
-        divisiones ( nombre ),
-        clientes ( id, nombre, nit )
-      `
-      )
+      .select(selectString)
       .order('fecha', { ascending: false })
 
     // filtros básicos
     if (filtros.id) query = query.eq('id', filtros.id)
     if (filtros.empresa_id) query = query.eq('empresa_id', filtros.empresa_id)
     if (filtros.division_id) query = query.eq('division_id', filtros.division_id)
-    if (filtros.desde) query = query.gte('fecha', filtros.desde)
-    if (filtros.hasta) query = query.lte('fecha', filtros.hasta)
+    if (filtros.desde) query = query.gte('fecha', filtros.desde) // yyyy-mm-dd
+    if (filtros.hasta) query = query.lte('fecha', filtros.hasta) // yyyy-mm-dd
 
-    // filtros por cliente (si RLS lo permite sobre relaciones)
-    if (filtros.cliente_nombre) {
+    // filtros por cliente (con INNER si corresponden)
+    if (filtros.cliente_nombre?.trim()) {
       query = query.ilike('clientes.nombre', `%${filtros.cliente_nombre.trim()}%`)
     }
-    if (filtros.cliente_nit) {
+    if (filtros.cliente_nit?.trim()) {
       query = query.ilike('clientes.nit', `%${filtros.cliente_nit.trim()}%`)
     }
 
     const { data: cabeceras, error } = await query
     if (error) {
       console.error('Error cargando ventas', error)
+      setVentas([])
+      setDetalles({})
       return
     }
 
@@ -120,6 +133,9 @@ export default function VerVentas() {
 
     if (detErr) {
       console.error('Error cargando detalles', detErr)
+      setDetalles({})
+      // Mostramos también las cabeceras (filtradas) aunque no haya detalles
+      setVentas(cabeceras || [])
       return
     }
 
@@ -134,15 +150,7 @@ export default function VerVentas() {
     const filtradas = (cabeceras || []).filter(v =>
       mostrarIncompletas ? true : (grouped[v.id]?.length ?? 0) > 0
     )
-
-    // 5) Prellenar campos editables de cliente
-    const withClientFields = filtradas.map((v: any) => ({
-      ...v,
-      cliente_nombre: v.clientes?.nombre || '',
-      cliente_nit: v.clientes?.nit || '',
-    }))
-
-    setVentas(withClientFields)
+    setVentas(filtradas)
   }, [filtros, mostrarIncompletas])
 
   useEffect(() => {
@@ -156,86 +164,27 @@ export default function VerVentas() {
     )
   }
 
-  // Asegura que exista (o devuelve) un cliente según nombre/nit
-  const ensureCliente = async (nombre?: string, nit?: string): Promise<number | null> => {
-    const nom = (nombre || '').trim()
-    const nitVal = (nit || '').trim()
-
-    if (!nom && !nitVal) return null
-
-    // Buscar por NIT si viene (más confiable)
-    if (nitVal) {
-      const { data: found, error } = await supabase
-        .from('clientes')
-        .select('id')
-        .eq('nit', nitVal)
-        .maybeSingle()
-      if (error) {
-        console.error('Error buscando cliente por NIT', error)
-      }
-      if (found?.id) return found.id
-    } else if (nom) {
-      // Buscar por nombre exacto (en mayúsculas para consistencia)
-      const { data: foundByName, error: errByName } = await supabase
-        .from('clientes')
-        .select('id')
-        .eq('nombre', nom.toUpperCase())
-        .maybeSingle()
-      if (errByName) console.error('Error buscando cliente por nombre', errByName)
-      if (foundByName?.id) return foundByName.id
-    }
-
-    // No existe → crear
-    const { data: created, error: createErr } = await supabase
-      .from('clientes')
-      .insert({
-        nombre: nom ? nom.toUpperCase() : 'SIN NOMBRE',
-        nit: nitVal || null,
-      })
-      .select('id')
-      .single()
-
-    if (createErr) {
-      console.error('Error creando cliente', createErr)
-      return null
-    }
-    return created?.id ?? null
-  }
-
   const guardarCambios = async (venta: any) => {
-    try {
-      // 1) Resolver cliente (nuevo o existente) si se editó nombre/NIT
-      let clienteId: number | null = venta.cliente_id ?? null
-      const nombreTxt = (venta.cliente_nombre || '').trim()
-      const nitTxt = (venta.cliente_nit || '').trim()
+    const { error } = await supabase
+      .from('ventas')
+      .update({
+        fecha: venta.fecha,
+        cantidad: venta.cantidad,
+        observaciones: venta.observaciones,
+        empresa_id: venta.empresa_id,
+        division_id: venta.division_id,
+        cliente_id: venta.cliente_id,
+        editado_por: userEmail,
+        editado_en: new Date().toISOString(),
+      })
+      .eq('id', venta.id)
 
-      if (nombreTxt || nitTxt) {
-        const ensuredId = await ensureCliente(nombreTxt, nitTxt)
-        if (ensuredId) clienteId = ensuredId
-      }
-
-      // 2) Actualizar la venta
-      const { error } = await supabase
-        .from('ventas')
-        .update({
-          fecha: venta.fecha,
-          cantidad: venta.cantidad,
-          observaciones: venta.observaciones,
-          empresa_id: venta.empresa_id,
-          division_id: venta.division_id,
-          cliente_id: clienteId,
-          editado_por: userEmail,
-          editado_en: new Date().toISOString(),
-        })
-        .eq('id', venta.id)
-
-      if (error) throw error
-
+    if (error) {
+      alert('Error al guardar')
+      console.error(error)
+    } else {
       alert('Guardado')
       cargarDatos()
-    } catch (e: any) {
-      console.error(e)
-      alert('Error al guardar')
     }
   }
 
@@ -438,25 +387,8 @@ export default function VerVentas() {
                 </select>
               </td>
 
-              {/* Cliente editable */}
-              <td className="p-2">
-                <input
-                  className="border p-1 w-56"
-                  value={v.cliente_nombre || ''}
-                  onChange={ev => handleInputChange(v.id, 'cliente_nombre', ev.target.value)}
-                  placeholder="Nombre del cliente"
-                />
-              </td>
-
-              {/* NIT editable */}
-              <td className="p-2">
-                <input
-                  className="border p-1 w-32"
-                  value={v.cliente_nit || ''}
-                  onChange={ev => handleInputChange(v.id, 'cliente_nit', ev.target.value)}
-                  placeholder="NIT"
-                />
-              </td>
+              <td className="p-2">{v.clientes?.nombre || '—'}</td>
+              <td className="p-2">{v.clientes?.nit || '—'}</td>
 
               <td className="p-2">
                 <input
