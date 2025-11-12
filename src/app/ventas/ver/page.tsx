@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import Image from 'next/image'
 import { supabase } from '@/lib/supabaseClient'
 
+/* ─────────────────────── Tipos ─────────────────────── */
 type Filtros = {
   empresa_id: string
   division_id: string
@@ -14,15 +15,49 @@ type Filtros = {
   cliente_nit: string
 }
 
-export default function VerVentas() {
-  /* ───────────────────────── state ───────────────────────── */
-  const [ventas, setVentas] = useState<any[]>([])
-  const [detalles, setDetalles] = useState<Record<number, any[]>>({})
+type EmpresaRel = { nombre: string | null }
+type DivisionRel = { nombre: string | null }
+type ClienteRel = { nombre: string | null; nit: string | null }
 
+type VentaCab = {
+  id: number
+  fecha: string
+  cantidad: number | null
+  observaciones: string | null
+  empresa_id: number | null
+  division_id: number | null
+  cliente_id: number | null
+  empresas?: EmpresaRel | null
+  divisiones?: DivisionRel | null
+  clientes?: ClienteRel | null
+}
+
+type Detalle = {
+  id: number
+  venta_id: number
+  producto_id: number | null
+  concepto: string | null
+  cantidad: number | null
+  precio_unitario: number | null
+  importe: number | null
+  forma_pago_id: number | null
+  documento: string | null
+  productos?: {
+    id: number
+    nombre: string | null
+    sku: string | null
+    unidad: string | null
+    control_inventario: boolean | null
+  } | null
+}
+
+/* ─────────────────────── Página ─────────────────────── */
+export default function VerVentas() {
+  const [ventas, setVentas] = useState<VentaCab[]>([])
+  const [detalles, setDetalles] = useState<Record<number, Detalle[]>>({})
   const [empresas, setEmpresas] = useState<any[]>([])
   const [divisiones, setDivisiones] = useState<any[]>([])
   const [formasPago, setFormasPago] = useState<any[]>([])
-
   const [userEmail, setUserEmail] = useState('')
 
   const [filtros, setFiltros] = useState<Filtros>({
@@ -35,10 +70,9 @@ export default function VerVentas() {
     cliente_nit: '',
   })
 
-  // Mostrar/ocultar ventas sin renglones en detalle_venta
   const [mostrarIncompletas, setMostrarIncompletas] = useState(false)
 
-  /* ─────────────────────── catálogos ─────────────────────── */
+  /* catálogos */
   useEffect(() => {
     ;(async () => {
       const [emp, div, fp] = await Promise.all([
@@ -55,41 +89,35 @@ export default function VerVentas() {
     })()
   }, [])
 
-  /* ─────────────────────── datos ─────────────────────── */
+  /* datos */
   const cargarDatos = useCallback(async () => {
-    // Construimos el SELECT de forma dinámica. Si hay filtro por cliente, usamos INNER JOIN
-    const usaFiltroCliente = Boolean(
-      filtros.cliente_nombre?.trim() || filtros.cliente_nit?.trim()
-    )
+    const usaFiltroCliente =
+      Boolean(filtros.cliente_nombre?.trim()) || Boolean(filtros.cliente_nit?.trim())
 
-    const selectCamposBasicos =
-      `
+    const selectCamposBasicos = `
       id, fecha, cantidad, observaciones,
       empresa_id, division_id, cliente_id,
       empresas ( nombre ),
-      divisiones ( nombre ),
+      divisiones ( nombre )
     `.trim()
 
     const selectClientes = usaFiltroCliente
-      ? `clientes!inner ( nombre, nit )`
-      : `clientes ( nombre, nit )`
+      ? `, clientes!inner ( nombre, nit )`
+      : `, clientes ( nombre, nit )`
 
-    const selectString = `${selectCamposBasicos} ${selectClientes}`
+    const selectString = `${selectCamposBasicos}${selectClientes}`
 
-    // 1) Traer cabeceras
     let query = supabase
       .from('ventas')
       .select(selectString)
       .order('fecha', { ascending: false })
 
-    // filtros básicos
     if (filtros.id) query = query.eq('id', filtros.id)
     if (filtros.empresa_id) query = query.eq('empresa_id', filtros.empresa_id)
     if (filtros.division_id) query = query.eq('division_id', filtros.division_id)
-    if (filtros.desde) query = query.gte('fecha', filtros.desde) // yyyy-mm-dd
-    if (filtros.hasta) query = query.lte('fecha', filtros.hasta) // yyyy-mm-dd
+    if (filtros.desde) query = query.gte('fecha', filtros.desde)
+    if (filtros.hasta) query = query.lte('fecha', filtros.hasta)
 
-    // filtros por cliente (con INNER si corresponden)
     if (filtros.cliente_nombre?.trim()) {
       query = query.ilike('clientes.nombre', `%${filtros.cliente_nombre.trim()}%`)
     }
@@ -97,7 +125,8 @@ export default function VerVentas() {
       query = query.ilike('clientes.nit', `%${filtros.cliente_nit.trim()}%`)
     }
 
-    const { data: cabeceras, error } = await query
+    const { data, error } = await query
+
     if (error) {
       console.error('Error cargando ventas', error)
       setVentas([])
@@ -105,27 +134,33 @@ export default function VerVentas() {
       return
     }
 
-    const ids = (cabeceras || []).map((v: any) => v.id)
+    // Forzamos el tipo correcto de cabeceras
+    const cabList: VentaCab[] = ((data ?? []) as any[]).map((r: any) => ({
+      id: r.id,
+      fecha: r.fecha,
+      cantidad: r.cantidad,
+      observaciones: r.observaciones,
+      empresa_id: r.empresa_id,
+      division_id: r.division_id,
+      cliente_id: r.cliente_id,
+      empresas: r.empresas ?? null,
+      divisiones: r.divisiones ?? null,
+      clientes: r.clientes ?? null,
+    }))
+
+    const ids = cabList.map(v => v.id)
     if (ids.length === 0) {
       setVentas([])
       setDetalles({})
       return
     }
 
-    // 2) Traer detalles en lote
     const { data: detAll, error: detErr } = await supabase
       .from('detalle_venta')
       .select(
         `
-        id,
-        venta_id,
-        producto_id,
-        concepto,
-        cantidad,
-        precio_unitario,
-        importe,
-        forma_pago_id,
-        documento,
+        id, venta_id, producto_id, concepto, cantidad,
+        precio_unitario, importe, forma_pago_id, documento,
         productos ( id, nombre, sku, unidad, control_inventario )
       `
       )
@@ -134,21 +169,18 @@ export default function VerVentas() {
     if (detErr) {
       console.error('Error cargando detalles', detErr)
       setDetalles({})
-      // Mostramos también las cabeceras (filtradas) aunque no haya detalles
-      setVentas(cabeceras || [])
+      setVentas(cabList)
       return
     }
 
-    // 3) Agrupar
-    const grouped: Record<number, any[]> = {}
-    for (const row of detAll || []) {
-      (grouped[row.venta_id] ||= []).push(row)
+    const grouped: Record<number, Detalle[]> = {}
+    for (const row of (detAll ?? []) as any[]) {
+      (grouped[row.venta_id] ||= []).push(row as Detalle)
     }
     setDetalles(grouped)
 
-    // 4) Filtrar cabeceras sin detalle (salvo que el toggle lo permita)
-    const filtradas = (cabeceras || []).filter(v =>
-      mostrarIncompletas ? true : (grouped[v.id]?.length ?? 0) > 0
+    const filtradas = cabList.filter(v =>
+      mostrarIncompletas ? true : ((grouped[v.id] ?? []).length > 0)
     )
     setVentas(filtradas)
   }, [filtros, mostrarIncompletas])
@@ -157,14 +189,14 @@ export default function VerVentas() {
     cargarDatos()
   }, [cargarDatos])
 
-  /* ───────────── edición in-place cabecera ───────────── */
+  /* edición in-place */
   const handleInputChange = (id: number, field: string, val: any) => {
     setVentas(prev =>
       prev.map(v => (v.id === id ? { ...v, [field]: field === 'cantidad' ? parseFloat(val) : val } : v))
     )
   }
 
-  const guardarCambios = async (venta: any) => {
+  const guardarCambios = async (venta: VentaCab) => {
     const { error } = await supabase
       .from('ventas')
       .update({
@@ -188,13 +220,10 @@ export default function VerVentas() {
     }
   }
 
-  /* ───────────── eliminar con dependencias ─────────────
-     Orden: inventario_movimientos -> detalle_venta -> ventas
-  */
+  /* eliminación con dependencias */
   const handleDelete = async (id: number) => {
     if (!confirm('¿Eliminar la venta y sus detalles?')) return
 
-    // 1) obtener ids de detalle_venta de esa venta
     const { data: det, error: detSelErr } = await supabase
       .from('detalle_venta')
       .select('id')
@@ -208,7 +237,6 @@ export default function VerVentas() {
 
     const detalleIds = (det || []).map(d => d.id)
 
-    // 2) borrar movimientos de inventario ligados a esos detalles
     if (detalleIds.length > 0) {
       const { error: invErr } = await supabase
         .from('inventario_movimientos')
@@ -222,24 +250,14 @@ export default function VerVentas() {
       }
     }
 
-    // 3) borrar detalle_venta
-    const { error: delDetErr } = await supabase
-      .from('detalle_venta')
-      .delete()
-      .eq('venta_id', id)
-
+    const { error: delDetErr } = await supabase.from('detalle_venta').delete().eq('venta_id', id)
     if (delDetErr) {
       alert('No se pudieron borrar los detalles')
       console.error(delDetErr)
       return
     }
 
-    // 4) borrar la venta
-    const { error: delVenErr } = await supabase
-      .from('ventas')
-      .delete()
-      .eq('id', id)
-
+    const { error: delVenErr } = await supabase.from('ventas').delete().eq('id', id)
     if (delVenErr) {
       alert('No se pudo borrar la venta')
       console.error(delVenErr)
@@ -250,16 +268,16 @@ export default function VerVentas() {
     cargarDatos()
   }
 
-  /* ───────────── util ───────────── */
+  /* utils */
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
     setFiltros({ ...filtros, [e.target.name]: e.target.value })
 
   const getMetodoPago = useMemo(
-    () => (id: number) => formasPago.find(f => f.id === id)?.metodo || id,
+    () => (id: number | null) => (id == null ? '' : (formasPago.find(f => f.id === id)?.metodo || id)),
     [formasPago]
   )
 
-  /* ─────────────────────── UI ─────────────────────── */
+  /* UI */
   return (
     <div className="p-6 max-w-7xl mx-auto">
       <div className="flex justify-center mb-4">
@@ -273,40 +291,22 @@ export default function VerVentas() {
         <select name="empresa_id" value={filtros.empresa_id} onChange={handleChange} className="border p-2">
           <option value="">Todas las Empresas</option>
           {empresas.map(e => (
-            <option key={e.id} value={e.id}>
-              {e.nombre}
-            </option>
+            <option key={e.id} value={e.id}>{e.nombre}</option>
           ))}
         </select>
 
         <select name="division_id" value={filtros.division_id} onChange={handleChange} className="border p-2">
           <option value="">Todas las Divisiones</option>
           {divisiones.map(d => (
-            <option key={d.id} value={d.id}>
-              {d.nombre}
-            </option>
+            <option key={d.id} value={d.id}>{d.nombre}</option>
           ))}
         </select>
 
         <input type="date" name="desde" value={filtros.desde} onChange={handleChange} className="border p-2" />
         <input type="date" name="hasta" value={filtros.hasta} onChange={handleChange} className="border p-2" />
 
-        <input
-          type="text"
-          name="cliente_nombre"
-          placeholder="Cliente"
-          value={filtros.cliente_nombre}
-          onChange={handleChange}
-          className="border p-2"
-        />
-        <input
-          type="text"
-          name="cliente_nit"
-          placeholder="NIT"
-          value={filtros.cliente_nit}
-          onChange={handleChange}
-          className="border p-2"
-        />
+        <input type="text" name="cliente_nombre" placeholder="Cliente" value={filtros.cliente_nombre} onChange={handleChange} className="border p-2" />
+        <input type="text" name="cliente_nit" placeholder="NIT" value={filtros.cliente_nit} onChange={handleChange} className="border p-2" />
 
         <input type="text" name="id" placeholder="ID" value={filtros.id} onChange={handleChange} className="border p-2" />
       </div>
@@ -317,11 +317,7 @@ export default function VerVentas() {
         </button>
 
         <label className="inline-flex items-center gap-2 text-sm">
-          <input
-            type="checkbox"
-            checked={mostrarIncompletas}
-            onChange={e => setMostrarIncompletas(e.target.checked)}
-          />
+          <input type="checkbox" checked={mostrarIncompletas} onChange={e => setMostrarIncompletas(e.target.checked)} />
           Mostrar ventas sin detalle
         </label>
 
@@ -351,69 +347,35 @@ export default function VerVentas() {
               <td className="p-2">{v.id}</td>
 
               <td className="p-2">
-                <input
-                  type="date"
-                  className="border p-1"
-                  value={v.fecha}
-                  onChange={ev => handleInputChange(v.id, 'fecha', ev.target.value)}
-                />
+                <input type="date" className="border p-1" value={v.fecha} onChange={ev => handleInputChange(v.id, 'fecha', ev.target.value)} />
               </td>
 
               <td className="p-2">
-                <select
-                  className="border p-1"
-                  value={v.empresa_id}
-                  onChange={ev => handleInputChange(v.id, 'empresa_id', ev.target.value)}
-                >
-                  {empresas.map(opt => (
-                    <option key={opt.id} value={opt.id}>
-                      {opt.nombre}
-                    </option>
-                  ))}
+                <select className="border p-1" value={v.empresa_id ?? ''} onChange={ev => handleInputChange(v.id, 'empresa_id', ev.target.value)}>
+                  {empresas.map(opt => <option key={opt.id} value={opt.id}>{opt.nombre}</option>)}
                 </select>
               </td>
 
               <td className="p-2">
-                <select
-                  className="border p-1"
-                  value={v.division_id}
-                  onChange={ev => handleInputChange(v.id, 'division_id', ev.target.value)}
-                >
-                  {divisiones.map(opt => (
-                    <option key={opt.id} value={opt.id}>
-                      {opt.nombre}
-                    </option>
-                  ))}
+                <select className="border p-1" value={v.division_id ?? ''} onChange={ev => handleInputChange(v.id, 'division_id', ev.target.value)}>
+                  {divisiones.map(opt => <option key={opt.id} value={opt.id}>{opt.nombre}</option>)}
                 </select>
               </td>
 
-              <td className="p-2">{v.clientes?.nombre || '—'}</td>
-              <td className="p-2">{v.clientes?.nit || '—'}</td>
+              <td className="p-2">{v.clientes?.nombre ?? '—'}</td>
+              <td className="p-2">{v.clientes?.nit ?? '—'}</td>
 
               <td className="p-2">
-                <input
-                  type="number"
-                  className="border p-1 w-24"
-                  value={v.cantidad}
-                  onChange={ev => handleInputChange(v.id, 'cantidad', ev.target.value)}
-                />
+                <input type="number" className="border p-1 w-24" value={v.cantidad ?? 0} onChange={ev => handleInputChange(v.id, 'cantidad', ev.target.value)} />
               </td>
 
               <td className="p-2">
-                <input
-                  className="border p-1 w-56"
-                  value={v.observaciones || ''}
-                  onChange={ev => handleInputChange(v.id, 'observaciones', ev.target.value)}
-                />
+                <input className="border p-1 w-56" value={v.observaciones ?? ''} onChange={ev => handleInputChange(v.id, 'observaciones', ev.target.value)} />
               </td>
 
               <td className="p-2 space-x-1">
-                <button onClick={() => guardarCambios(v)} className="bg-green-600 text-white px-2 py-1 rounded text-xs">
-                  Guardar
-                </button>
-                <button onClick={() => handleDelete(v.id)} className="bg-red-600 text-white px-2 py-1 rounded text-xs">
-                  Eliminar
-                </button>
+                <button onClick={() => guardarCambios(v)} className="bg-green-600 text-white px-2 py-1 rounded text-xs">Guardar</button>
+                <button onClick={() => handleDelete(v.id)} className="bg-red-600 text-white px-2 py-1 rounded text-xs">Eliminar</button>
               </td>
             </tr>
           ))}
@@ -437,12 +399,12 @@ export default function VerVentas() {
               </tr>
             </thead>
             <tbody>
-              {(detalles[v.id] || []).map((d: any, i: number) => {
+              {(detalles[v.id] || []).map((d, i) => {
                 const prod = d.productos
                 const invBadge =
-                  d.producto_id && prod?.control_inventario ? (
-                    <span className="ml-2 text-[10px] bg-emerald-600 text-white px-1.5 py-0.5 rounded">inv</span>
-                  ) : null
+                  d.producto_id && prod?.control_inventario
+                    ? <span className="ml-2 text-[10px] bg-emerald-600 text-white px-1.5 py-0.5 rounded">inv</span>
+                    : null
 
                 return (
                   <tr key={i} className="border-t">
@@ -459,13 +421,11 @@ export default function VerVentas() {
                               (prod?.unidad ? `Unidad: ${prod.unidad}` : '')}
                           </div>
                         </div>
-                      ) : (
-                        <span className="text-gray-400">—</span>
-                      )}
+                      ) : <span className="text-gray-400">—</span>}
                     </td>
 
-                    <td className="p-2">{d.concepto}</td>
-                    <td className="p-2">{d.cantidad}</td>
+                    <td className="p-2">{d.concepto ?? ''}</td>
+                    <td className="p-2">{d.cantidad ?? ''}</td>
                     <td className="p-2">Q{Number(d.precio_unitario || 0).toFixed(2)}</td>
                     <td className="p-2">Q{Number(d.importe || 0).toFixed(2)}</td>
                     <td className="p-2">{getMetodoPago(d.forma_pago_id)}</td>
