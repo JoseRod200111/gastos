@@ -32,6 +32,14 @@ type VentaCab = {
   clientes?: ClienteRel | null
 }
 
+type Producto = {
+  id: number
+  nombre: string | null
+  sku: string | null
+  unidad: string | null
+  control_inventario: boolean | null
+}
+
 type Detalle = {
   id: number
   venta_id: number
@@ -42,13 +50,7 @@ type Detalle = {
   importe: number | null
   forma_pago_id: number | null
   documento: string | null
-  productos?: {
-    id: number
-    nombre: string | null
-    sku: string | null
-    unidad: string | null
-    control_inventario: boolean | null
-  } | null
+  productos?: Producto | null
 }
 
 /* ─────────────────────── Página ─────────────────────── */
@@ -58,6 +60,7 @@ export default function VerVentas() {
   const [empresas, setEmpresas] = useState<any[]>([])
   const [divisiones, setDivisiones] = useState<any[]>([])
   const [formasPago, setFormasPago] = useState<any[]>([])
+  const [productos, setProductos] = useState<Producto[]>([])
   const [userEmail, setUserEmail] = useState('')
 
   const [filtros, setFiltros] = useState<Filtros>({
@@ -75,14 +78,19 @@ export default function VerVentas() {
   /* catálogos */
   useEffect(() => {
     ;(async () => {
-      const [emp, div, fp] = await Promise.all([
+      const [emp, div, fp, prods] = await Promise.all([
         supabase.from('empresas').select('*'),
         supabase.from('divisiones').select('*'),
         supabase.from('forma_pago').select('*'),
+        supabase
+          .from('productos')
+          .select('id,nombre,sku,unidad,control_inventario')
+          .order('nombre', { ascending: true }),
       ])
       setEmpresas(emp.data || [])
       setDivisiones(div.data || [])
       setFormasPago(fp.data || [])
+      setProductos((prods.data as Producto[]) || [])
 
       const { data } = await supabase.auth.getUser()
       setUserEmail(data?.user?.email || '')
@@ -134,7 +142,6 @@ export default function VerVentas() {
       return
     }
 
-    // Forzamos el tipo correcto de cabeceras
     const cabList: VentaCab[] = ((data ?? []) as any[]).map((r: any) => ({
       id: r.id,
       fecha: r.fecha,
@@ -189,7 +196,7 @@ export default function VerVentas() {
     cargarDatos()
   }, [cargarDatos])
 
-  /* edición in-place */
+  /* edición cabecera */
   const handleInputChange = (id: number, field: string, val: any) => {
     setVentas(prev =>
       prev.map(v => (v.id === id ? { ...v, [field]: field === 'cantidad' ? parseFloat(val) : val } : v))
@@ -220,7 +227,148 @@ export default function VerVentas() {
     }
   }
 
-  /* eliminación con dependencias */
+  /* edición detalle */
+  const handleDetalleChange = (
+    ventaId: number,
+    index: number,
+    field: keyof Detalle,
+    value: any
+  ) => {
+    setDetalles(prev => {
+      const list = [...(prev[ventaId] || [])]
+      const row = { ...list[index] }
+      let v: any = value
+      if (field === 'cantidad' || field === 'precio_unitario' || field === 'forma_pago_id') {
+        v = value === '' ? null : Number(value)
+      }
+      if (field === 'producto_id') {
+        v = value === '' ? null : Number(value)
+        // Si selecciona un producto y concepto está vacío, autocompletar
+        if (!row.concepto || row.concepto.trim() === '') {
+          const p = productos.find(pp => pp.id === v)
+          if (p?.nombre) row.concepto = p.nombre
+        }
+      }
+      ;(row as any)[field] = v
+      // Importe calculado localmente
+      const cant = Number(row.cantidad || 0)
+      const pu = Number(row.precio_unitario || 0)
+      row.importe = cant * pu
+      list[index] = row
+      return { ...prev, [ventaId]: list }
+    })
+  }
+
+  const guardarDetalle = async (ventaId: number, index: number) => {
+    const row = (detalles[ventaId] || [])[index]
+    if (!row) return
+
+    const payload = {
+      venta_id: ventaId,
+      producto_id: row.producto_id ?? null,
+      concepto: row.concepto ?? null,
+      cantidad: row.cantidad ?? 0,
+      precio_unitario: row.precio_unitario ?? 0,
+      forma_pago_id: row.forma_pago_id ?? null,
+      documento: row.documento ?? null,
+    }
+
+    try {
+      if (row.id) {
+        const { error } = await supabase.from('detalle_venta').update(payload).eq('id', row.id)
+        if (error) throw error
+      } else {
+        const { data, error } = await supabase.from('detalle_venta').insert(payload).select('*').single()
+        if (error) throw error
+        // asignar ID a la fila nueva
+        setDetalles(prev => {
+          const list = [...(prev[ventaId] || [])]
+          list[index] = { ...(list[index] || row), id: (data as any).id }
+          return { ...prev, [ventaId]: list }
+        })
+      }
+
+      // Recalcular y actualizar TOTAL de la venta
+      const total = (detalles[ventaId] || []).reduce((s, d, i) => {
+        const r = i === index ? { ...d, ...payload } : d
+        return s + Number(r.cantidad || 0) * Number(r.precio_unitario || 0)
+      }, 0)
+
+      await supabase
+        .from('ventas')
+        .update({
+          cantidad: total,
+          editado_por: userEmail,
+          editado_en: new Date().toISOString(),
+        })
+        .eq('id', ventaId)
+
+      // Refrescar cabecera en UI
+      setVentas(prev => prev.map(v => (v.id === ventaId ? { ...v, cantidad: total } : v)))
+      alert('Detalle guardado')
+    } catch (e: any) {
+      console.error(e)
+      alert('No se pudo guardar el detalle')
+    }
+  }
+
+  const eliminarDetalle = async (ventaId: number, detalleId: number, index: number) => {
+    if (!confirm('¿Eliminar este detalle?')) return
+    try {
+      // borrar movimientos de inventario asociados a este detalle
+      await supabase.from('inventario_movimientos').delete().eq('venta_detalle_id', detalleId)
+      // borrar detalle
+      await supabase.from('detalle_venta').delete().eq('id', detalleId)
+
+      // quitar de UI
+      setDetalles(prev => {
+        const list = [...(prev[ventaId] || [])]
+        list.splice(index, 1)
+        return { ...prev, [ventaId]: list }
+      })
+
+      // recalc total y actualizar venta
+      const total = (detalles[ventaId] || [])
+        .filter((_, i) => i !== index)
+        .reduce((s, d) => s + Number(d.cantidad || 0) * Number(d.precio_unitario || 0), 0)
+
+      await supabase
+        .from('ventas')
+        .update({
+          cantidad: total,
+          editado_por: userEmail,
+          editado_en: new Date().toISOString(),
+        })
+        .eq('id', ventaId)
+
+      setVentas(prev => prev.map(v => (v.id === ventaId ? { ...v, cantidad: total } : v)))
+      alert('Detalle eliminado')
+    } catch (e: any) {
+      console.error(e)
+      alert('No se pudo eliminar el detalle')
+    }
+  }
+
+  const agregarDetalle = (ventaId: number) => {
+    setDetalles(prev => {
+      const list = [...(prev[ventaId] || [])]
+      list.push({
+        id: 0, // 0 => nuevo (aún sin guardar)
+        venta_id: ventaId,
+        producto_id: null,
+        concepto: '',
+        cantidad: 0,
+        precio_unitario: 0,
+        importe: 0,
+        forma_pago_id: null,
+        documento: '',
+        productos: null,
+      })
+      return { ...prev, [ventaId]: list }
+    })
+  }
+
+  /* eliminación de venta (con dependencias) */
   const handleDelete = async (id: number) => {
     if (!confirm('¿Eliminar la venta y sus detalles?')) return
 
@@ -385,7 +533,16 @@ export default function VerVentas() {
       {/* Detalles */}
       {ventas.map(v => (
         <div key={`det-${v.id}`} className="mb-6 border p-3 rounded bg-gray-50">
-          <h3 className="font-semibold mb-2">📦 Detalles de Venta #{v.id}</h3>
+          <div className="mb-2 flex items-center justify-between">
+            <h3 className="font-semibold">📦 Detalles de Venta #{v.id}</h3>
+            <button
+              className="rounded bg-emerald-600 px-3 py-1 text-white text-sm"
+              onClick={() => agregarDetalle(v.id)}
+            >
+              + Agregar detalle
+            </button>
+          </div>
+
           <table className="w-full text-sm border">
             <thead className="bg-gray-200">
               <tr>
@@ -396,40 +553,110 @@ export default function VerVentas() {
                 <th className="p-2 text-left">Importe</th>
                 <th className="p-2 text-left">Pago</th>
                 <th className="p-2 text-left">Documento</th>
+                <th className="p-2 text-left">Acciones</th>
               </tr>
             </thead>
             <tbody>
               {(detalles[v.id] || []).map((d, i) => {
-                const prod = d.productos
+                const prodSel = d.producto_id ? productos.find(p => p.id === d.producto_id) || d.productos : null
                 const invBadge =
-                  d.producto_id && prod?.control_inventario
+                  d.producto_id && (prodSel?.control_inventario ?? false)
                     ? <span className="ml-2 text-[10px] bg-emerald-600 text-white px-1.5 py-0.5 rounded">inv</span>
                     : null
 
+                const importe = Number(d.cantidad || 0) * Number(d.precio_unitario || 0)
+
                 return (
-                  <tr key={i} className="border-t">
+                  <tr key={`${d.id || 'new'}-${i}`} className="border-t align-top">
                     <td className="p-2">
+                      <select
+                        className="border p-1 w-full"
+                        value={d.producto_id ?? ''}
+                        onChange={e => handleDetalleChange(v.id, i, 'producto_id', e.target.value)}
+                      >
+                        <option value="">— Sin producto (no inventario) —</option>
+                        {productos.map(p => (
+                          <option key={p.id} value={p.id}>
+                            {(p.sku ? `${p.sku} — ` : '') + (p.nombre || 'Producto')}
+                          </option>
+                        ))}
+                      </select>
                       {d.producto_id ? (
-                        <div>
-                          <div className="font-medium">
-                            {prod?.nombre || 'Producto'}
-                            {invBadge}
-                          </div>
-                          <div className="text-xs text-gray-600">
-                            {(prod?.sku ? `SKU: ${prod.sku}` : '') +
-                              (prod?.sku && prod?.unidad ? ' · ' : '') +
-                              (prod?.unidad ? `Unidad: ${prod.unidad}` : '')}
-                          </div>
+                        <div className="mt-1 text-xs text-gray-600">
+                          {(prodSel?.sku ? `SKU: ${prodSel.sku}` : '') +
+                            (prodSel?.sku && prodSel?.unidad ? ' · ' : '') +
+                            (prodSel?.unidad ? `Unidad: ${prodSel.unidad}` : '')}
+                          {invBadge}
                         </div>
-                      ) : <span className="text-gray-400">—</span>}
+                      ) : null}
                     </td>
 
-                    <td className="p-2">{d.concepto ?? ''}</td>
-                    <td className="p-2">{d.cantidad ?? ''}</td>
-                    <td className="p-2">Q{Number(d.precio_unitario || 0).toFixed(2)}</td>
-                    <td className="p-2">Q{Number(d.importe || 0).toFixed(2)}</td>
-                    <td className="p-2">{getMetodoPago(d.forma_pago_id)}</td>
-                    <td className="p-2">{d.documento || '—'}</td>
+                    <td className="p-2">
+                      <input
+                        className="border p-1 w-full"
+                        value={d.concepto ?? ''}
+                        onChange={e => handleDetalleChange(v.id, i, 'concepto', e.target.value)}
+                      />
+                    </td>
+
+                    <td className="p-2">
+                      <input
+                        type="number"
+                        className="border p-1 w-24 text-right"
+                        value={d.cantidad ?? 0}
+                        onChange={e => handleDetalleChange(v.id, i, 'cantidad', e.target.value)}
+                      />
+                    </td>
+
+                    <td className="p-2">
+                      <input
+                        type="number"
+                        step="0.01"
+                        className="border p-1 w-28 text-right"
+                        value={d.precio_unitario ?? 0}
+                        onChange={e => handleDetalleChange(v.id, i, 'precio_unitario', e.target.value)}
+                      />
+                    </td>
+
+                    <td className="p-2">Q{importe.toFixed(2)}</td>
+
+                    <td className="p-2">
+                      <select
+                        className="border p-1 w-full"
+                        value={d.forma_pago_id ?? ''}
+                        onChange={e => handleDetalleChange(v.id, i, 'forma_pago_id', e.target.value)}
+                      >
+                        <option value="">Método de Pago</option>
+                        {formasPago.map(fp => (
+                          <option key={fp.id} value={fp.id}>{fp.metodo}</option>
+                        ))}
+                      </select>
+                    </td>
+
+                    <td className="p-2">
+                      <input
+                        className="border p-1 w-full"
+                        value={d.documento ?? ''}
+                        onChange={e => handleDetalleChange(v.id, i, 'documento', e.target.value)}
+                      />
+                    </td>
+
+                    <td className="p-2 space-x-1">
+                      <button
+                        className="bg-green-600 text-white px-2 py-1 rounded text-xs"
+                        onClick={() => guardarDetalle(v.id, i)}
+                      >
+                        Guardar
+                      </button>
+                      {d.id ? (
+                        <button
+                          className="bg-red-600 text-white px-2 py-1 rounded text-xs"
+                          onClick={() => eliminarDetalle(v.id, d.id, i)}
+                        >
+                          Eliminar
+                        </button>
+                      ) : null}
+                    </td>
                   </tr>
                 )
               })}
