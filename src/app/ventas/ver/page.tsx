@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import Image from 'next/image'
 import { supabase } from '@/lib/supabaseClient'
 
@@ -243,14 +243,14 @@ export default function VerVentas() {
       }
       if (field === 'producto_id') {
         v = value === '' ? null : Number(value)
-        // Si selecciona un producto y concepto está vacío, autocompletar
+        // autocompletar concepto con el nombre del producto si está vacío
         if (!row.concepto || row.concepto.trim() === '') {
           const p = productos.find(pp => pp.id === v)
           if (p?.nombre) row.concepto = p.nombre
         }
       }
       ;(row as any)[field] = v
-      // Importe calculado localmente
+      // recalcular importe local
       const cant = Number(row.cantidad || 0)
       const pu = Number(row.precio_unitario || 0)
       row.importe = cant * pu
@@ -315,19 +315,15 @@ export default function VerVentas() {
   const eliminarDetalle = async (ventaId: number, detalleId: number, index: number) => {
     if (!confirm('¿Eliminar este detalle?')) return
     try {
-      // borrar movimientos de inventario asociados a este detalle
       await supabase.from('inventario_movimientos').delete().eq('venta_detalle_id', detalleId)
-      // borrar detalle
       await supabase.from('detalle_venta').delete().eq('id', detalleId)
 
-      // quitar de UI
       setDetalles(prev => {
         const list = [...(prev[ventaId] || [])]
         list.splice(index, 1)
         return { ...prev, [ventaId]: list }
       })
 
-      // recalc total y actualizar venta
       const total = (detalles[ventaId] || [])
         .filter((_, i) => i !== index)
         .reduce((s, d) => s + Number(d.cantidad || 0) * Number(d.precio_unitario || 0), 0)
@@ -353,7 +349,7 @@ export default function VerVentas() {
     setDetalles(prev => {
       const list = [...(prev[ventaId] || [])]
       list.push({
-        id: 0, // 0 => nuevo (aún sin guardar)
+        id: 0,
         venta_id: ventaId,
         producto_id: null,
         concepto: '',
@@ -368,7 +364,7 @@ export default function VerVentas() {
     })
   }
 
-  /* eliminación de venta (con dependencias) */
+  /* eliminación venta */
   const handleDelete = async (id: number) => {
     if (!confirm('¿Eliminar la venta y sus detalles?')) return
 
@@ -419,11 +415,6 @@ export default function VerVentas() {
   /* utils */
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
     setFiltros({ ...filtros, [e.target.name]: e.target.value })
-
-  const getMetodoPago = useMemo(
-    () => (id: number | null) => (id == null ? '' : (formasPago.find(f => f.id === id)?.metodo || id)),
-    [formasPago]
-  )
 
   /* UI */
   return (
