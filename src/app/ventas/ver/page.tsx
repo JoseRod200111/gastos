@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import Image from 'next/image'
 import { supabase } from '@/lib/supabaseClient'
 
@@ -82,7 +82,10 @@ export default function VerVentas() {
         supabase.from('empresas').select('*'),
         supabase.from('divisiones').select('*'),
         supabase.from('forma_pago').select('*'),
-        supabase.from('productos').select('id, nombre, sku, unidad, control_inventario').order('nombre', { ascending: true }),
+        supabase
+          .from('productos')
+          .select('id, nombre, sku, unidad, control_inventario')
+          .order('nombre', { ascending: true }),
       ])
       setEmpresas(emp.data || [])
       setDivisiones(div.data || [])
@@ -124,7 +127,6 @@ export default function VerVentas() {
     if (filtros.hasta) query = query.lte('fecha', filtros.hasta)
 
     if (filtros.cliente_nombre?.trim()) {
-      // NOTA: cuando usas !inner arriba, puedes filtrar con el alias de la relación
       query = query.ilike('clientes.nombre', `%${filtros.cliente_nombre.trim()}%`)
     }
     if (filtros.cliente_nit?.trim()) {
@@ -344,7 +346,7 @@ export default function VerVentas() {
 
   const agregarDetalle = async (ventaId: number) => {
     // una fila libre con concepto
-    const { data, error } = await supabase
+    const { error } = await supabase
       .from('detalle_venta')
       .insert({
         venta_id: ventaId,
@@ -356,7 +358,6 @@ export default function VerVentas() {
         forma_pago_id: null,
         documento: null,
       })
-      .select('id')
 
     if (error) {
       alert('No se pudo agregar una línea de detalle')
@@ -371,11 +372,6 @@ export default function VerVentas() {
   /* utils */
   const handleChangeFiltros = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
     setFiltros({ ...filtros, [e.target.name]: e.target.value })
-
-  const getMetodoPago = useMemo(
-    () => (id: number | null) => (id == null ? '' : (formasPago.find(f => f.id === id)?.metodo || id)),
-    [formasPago]
-  )
 
   /* UI */
   return (
