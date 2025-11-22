@@ -369,7 +369,11 @@ export default function VerVentas() {
         </button>
 
         <label className="inline-flex items-center gap-2 text-sm">
-          <input type="checkbox" checked={MostrarIncompletas} onChange={e => setMostrarIncompletas(e.target.checked)} />
+          <input
+            type="checkbox"
+            checked={mostrarIncompletas}
+            onChange={e => setMostrarIncompletas(e.target.checked)}
+          />
           Mostrar ventas sin detalle
         </label>
 
