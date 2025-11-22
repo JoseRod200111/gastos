@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import Image from 'next/image'
 import { supabase } from '@/lib/supabaseClient'
 
@@ -196,12 +196,6 @@ export default function VerVentas() {
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
     setFiltros({ ...filtros, [e.target.name]: e.target.value })
 
-  const getMetodoPago = useMemo(
-    () => (id: number | null) =>
-      id == null ? '' : (formasPago.find(f => f.id === id)?.metodo || `${id}`),
-    [formasPago]
-  )
-
   /* edición CABECERA */
   const handleInputChangeCab = (id: number, field: keyof VentaCab, val: any) => {
     setVentas(prev =>
@@ -210,7 +204,6 @@ export default function VerVentas() {
   }
 
   const guardarCabecera = async (venta: VentaCab) => {
-    // NO tocar columnas que no existen (antes fallaba por editado_en / editado_por)
     const { error } = await supabase
       .from('ventas')
       .update({
@@ -229,7 +222,6 @@ export default function VerVentas() {
       return
     }
 
-    // Recalcular total por si lo modificaron manualmente en detalle antes
     await recalcularTotal(venta.id)
     await cargarDatos()
     alert('Venta guardada')
@@ -245,7 +237,6 @@ export default function VerVentas() {
         const d = { ...arr[idx] }
 
         if (field === 'cantidad' || field === 'precio_unitario') {
-          // normaliza
           if (field === 'cantidad') d.cantidad = Number(value)
           if (field === 'precio_unitario') d.precio_unitario = Number(value)
           const q = Number(d.cantidad || 0)
@@ -286,7 +277,6 @@ export default function VerVentas() {
       return
     }
 
-    // Recalcular total de la venta
     await recalcularTotal(ventaId)
     await cargarDatos()
   }
@@ -294,7 +284,6 @@ export default function VerVentas() {
   const eliminarDetalle = async (ventaId: number, detId: number) => {
     if (!confirm('¿Eliminar este detalle?')) return
 
-    // borra movimientos de inventario vinculados (si tuvieras integrados)
     const { data: movs, error: errMovs } = await supabase
       .from('inventario_movimientos')
       .select('id')
@@ -380,7 +369,7 @@ export default function VerVentas() {
         </button>
 
         <label className="inline-flex items-center gap-2 text-sm">
-          <input type="checkbox" checked={mostrarIncompletas} onChange={e => setMostrarIncompletas(e.target.checked)} />
+          <input type="checkbox" checked={MostrarIncompletas} onChange={e => setMostrarIncompletas(e.target.checked)} />
           Mostrar ventas sin detalle
         </label>
 
@@ -438,7 +427,6 @@ export default function VerVentas() {
 
               <td className="p-2 space-x-1">
                 <button onClick={() => guardarCabecera(v)} className="bg-green-600 text-white px-2 py-1 rounded text-xs">Guardar</button>
-                {/* Si quieres permitir eliminar la venta, agrega tu función de borrado aquí */}
               </td>
             </tr>
           ))}
