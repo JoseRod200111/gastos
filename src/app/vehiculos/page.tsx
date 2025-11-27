@@ -38,6 +38,12 @@ type GastoAdicional = {
   monto: number | null
 }
 
+type VehiculoOption = {
+  id: number
+  placa: string | null
+  alias: string | null
+}
+
 /* ========================= Página ========================= */
 export default function VehiculosPage() {
   const [viajes, setViajes] = useState<Viaje[]>([])
@@ -86,7 +92,25 @@ export default function VehiculosPage() {
       observaciones: '',
     })
 
-  /* ========================= Carga de datos ========================= */
+  /* ========================= Vehículos para el select ========================= */
+  const [vehiculos, setVehiculos] = useState<VehiculoOption[]>([])
+
+  const cargarVehiculos = useCallback(async () => {
+    const { data, error } = await supabase
+      .from('vehiculos')
+      .select('id, placa, alias')
+      .order('placa', { ascending: true })
+
+    if (error) {
+      console.error('Error cargando vehículos', error)
+      setVehiculos([])
+      return
+    }
+
+    setVehiculos((data as VehiculoOption[]) || [])
+  }, [])
+
+  /* ========================= Carga de viajes ========================= */
   const cargarViajes = useCallback(async () => {
     setLoading(true)
     try {
@@ -108,9 +132,7 @@ export default function VehiculosPage() {
 
       const fixed: Viaje[] = ((data as any[]) || []).map((r) => ({
         ...r,
-        vehiculos: Array.isArray(r?.vehiculos)
-          ? (r.vehiculos[0] ?? null)
-          : (r.vehiculos ?? null),
+        vehiculos: Array.isArray(r?.vehiculos) ? (r.vehiculos[0] ?? null) : (r.vehiculos ?? null),
       }))
 
       setViajes(fixed)
@@ -121,7 +143,49 @@ export default function VehiculosPage() {
 
   useEffect(() => {
     cargarViajes()
-  }, [cargarViajes])
+    cargarVehiculos()
+  }, [cargarViajes, cargarVehiculos])
+
+  /* ========================= Filtros de la tabla ========================= */
+  const [filters, setFilters] = useState({
+    vehiculoId: '',
+    desde: '',
+    hasta: '',
+    texto: '',
+  })
+
+  const viajesFiltrados = useMemo(() => {
+    return viajes.filter((v) => {
+      // filtro por vehículo
+      if (filters.vehiculoId && String(v.vehiculo_id ?? '') !== filters.vehiculoId) {
+        return false
+      }
+
+      // filtro por fecha de inicio
+      if (filters.desde && v.fecha_inicio && v.fecha_inicio < filters.desde) {
+        return false
+      }
+      if (filters.hasta && v.fecha_inicio && v.fecha_inicio > filters.hasta) {
+        return false
+      }
+
+      // filtro por texto (conductor, origen, destino, placa, alias)
+      const t = filters.texto.trim().toLowerCase()
+      if (t) {
+        const fields = [
+          v.conductor,
+          v.origen,
+          v.destino,
+          v.vehiculos?.placa,
+          v.vehiculos?.alias,
+        ]
+        const match = fields.some((f) => (f || '').toLowerCase().includes(t))
+        if (!match) return false
+      }
+
+      return true
+    })
+  }, [viajes, filters])
 
   /* ========================= Seleccionar / editar ========================= */
   const cargarGastos = useCallback(async (viajeId: number) => {
@@ -283,7 +347,7 @@ export default function VehiculosPage() {
         </Link>
       </div>
 
-      {/* Lista */}
+      {/* Lista + filtros */}
       <div className="mb-6">
         <div className="flex items-center justify-between mb-2">
           <h2 className="font-semibold">Viajes registrados</h2>
@@ -293,6 +357,42 @@ export default function VehiculosPage() {
           >
             + Nuevo viaje
           </button>
+        </div>
+
+        {/* Filtros */}
+        <div className="mb-2 grid md:grid-cols-4 gap-2 text-sm">
+          <select
+            className="border p-2 rounded"
+            value={filters.vehiculoId}
+            onChange={(e) => setFilters((f) => ({ ...f, vehiculoId: e.target.value }))}
+          >
+            <option value="">Todos los vehículos</option>
+            {vehiculos.map((v) => (
+              <option key={v.id} value={v.id}>
+                {v.placa || `ID ${v.id}`}{v.alias ? ` · ${v.alias}` : ''}
+              </option>
+            ))}
+          </select>
+          <input
+            type="date"
+            className="border p-2 rounded"
+            value={filters.desde}
+            onChange={(e) => setFilters((f) => ({ ...f, desde: e.target.value }))}
+            placeholder="Desde"
+          />
+          <input
+            type="date"
+            className="border p-2 rounded"
+            value={filters.hasta}
+            onChange={(e) => setFilters((f) => ({ ...f, hasta: e.target.value }))}
+            placeholder="Hasta"
+          />
+          <input
+            className="border p-2 rounded"
+            placeholder="Buscar (placa, alias, conductor, origen, destino)"
+            value={filters.texto}
+            onChange={(e) => setFilters((f) => ({ ...f, texto: e.target.value }))}
+          />
         </div>
 
         <div className="overflow-x-auto border rounded">
@@ -312,12 +412,15 @@ export default function VehiculosPage() {
             <tbody>
               {loading ? (
                 <tr><td className="p-3" colSpan={8}>Cargando…</td></tr>
-              ) : viajes.length === 0 ? (
+              ) : viajesFiltrados.length === 0 ? (
                 <tr><td className="p-3" colSpan={8}>Sin registros.</td></tr>
-              ) : viajes.map(v => (
+              ) : viajesFiltrados.map(v => (
                 <tr key={v.id} className="border-t">
                   <td className="p-2">{v.id}</td>
-                  <td className="p-2">{v.vehiculos?.placa || '—'}{v.vehiculos?.alias ? ` · ${v.vehiculos.alias}` : ''}</td>
+                  <td className="p-2">
+                    {v.vehiculos?.placa || '—'}
+                    {v.vehiculos?.alias ? ` · ${v.vehiculos.alias}` : ''}
+                  </td>
                   <td className="p-2">{v.conductor || '—'}</td>
                   <td className="p-2">{v.fecha_inicio || '—'}</td>
                   <td className="p-2">{v.fecha_fin || '—'}</td>
@@ -348,47 +451,120 @@ export default function VehiculosPage() {
           <h3 className="font-semibold mb-3">{form.id ? `Editar viaje #${form.id}` : 'Nuevo viaje'}</h3>
 
           <div className="grid grid-cols-2 gap-3">
-            <input type="number" className="border p-2 rounded col-span-2" placeholder="ID de Vehículo (vehiculo_id)"
-                   value={form.vehiculo_id} onChange={(e) => setForm({ ...form, vehiculo_id: e.target.value })} />
-            <input type="date" className="border p-2 rounded" value={form.fecha_inicio}
-                   onChange={(e) => setForm({ ...form, fecha_inicio: e.target.value })} />
-            <input type="date" className="border p-2 rounded" value={form.fecha_fin}
-                   onChange={(e) => setForm({ ...form, fecha_fin: e.target.value })} />
-            <input className="border p-2 rounded" placeholder="Origen" value={form.origen}
-                   onChange={(e) => setForm({ ...form, origen: e.target.value })} />
-            <input className="border p-2 rounded" placeholder="Destino" value={form.destino}
-                   onChange={(e) => setForm({ ...form, destino: e.target.value })} />
-            <input className="border p-2 rounded col-span-2" placeholder="Conductor" value={form.conductor}
-                   onChange={(e) => setForm({ ...form, conductor: e.target.value })} />
+            {/* Select de vehículo */}
+            <select
+              className="border p-2 rounded col-span-2"
+              value={form.vehiculo_id}
+              onChange={(e) => setForm({ ...form, vehiculo_id: e.target.value })}
+            >
+              <option value="">Seleccione un vehículo</option>
+              {vehiculos.map((v) => (
+                <option key={v.id} value={v.id}>
+                  {v.placa || `ID ${v.id}`}{v.alias ? ` · ${v.alias}` : ''}
+                </option>
+              ))}
+            </select>
 
-            <input type="number" className="border p-2 rounded" placeholder="Combustible inicial (gal)"
-                   value={form.combustible_inicial} onChange={(e) => setForm({ ...form, combustible_inicial: e.target.value })} />
-            <input type="number" className="border p-2 rounded" placeholder="Combustible final (gal)"
-                   value={form.combustible_final} onChange={(e) => setForm({ ...form, combustible_final: e.target.value })} />
-            <input type="number" className="border p-2 rounded" placeholder="Despachado (gal)"
-                   value={form.combustible_despachado} onChange={(e) => setForm({ ...form, combustible_despachado: e.target.value })} />
-            <input type="number" className="border p-2 rounded" placeholder="Precio por galón"
-                   value={form.precio_galon} onChange={(e) => setForm({ ...form, precio_galon: e.target.value })} />
-            <input type="number" className="border p-2 rounded" placeholder="Salario diario"
-                   value={form.salario_diario} onChange={(e) => setForm({ ...form, salario_diario: e.target.value })} />
-            <input type="number" className="border p-2 rounded" placeholder="Días"
-                   value={form.dias} onChange={(e) => setForm({ ...form, dias: e.target.value })} />
+            <input
+              type="date"
+              className="border p-2 rounded"
+              value={form.fecha_inicio}
+              onChange={(e) => setForm({ ...form, fecha_inicio: e.target.value })}
+            />
+            <input
+              type="date"
+              className="border p-2 rounded"
+              value={form.fecha_fin}
+              onChange={(e) => setForm({ ...form, fecha_fin: e.target.value })}
+            />
+            <input
+              className="border p-2 rounded"
+              placeholder="Origen"
+              value={form.origen}
+              onChange={(e) => setForm({ ...form, origen: e.target.value })}
+            />
+            <input
+              className="border p-2 rounded"
+              placeholder="Destino"
+              value={form.destino}
+              onChange={(e) => setForm({ ...form, destino: e.target.value })}
+            />
+            <input
+              className="border p-2 rounded col-span-2"
+              placeholder="Conductor"
+              value={form.conductor}
+              onChange={(e) => setForm({ ...form, conductor: e.target.value })}
+            />
 
-            <textarea className="border p-2 rounded col-span-2" placeholder="Observaciones"
-                      value={form.observaciones} onChange={(e) => setForm({ ...form, observaciones: e.target.value })} />
+            <input
+              type="number"
+              className="border p-2 rounded"
+              placeholder="Combustible inicial (gal)"
+              value={form.combustible_inicial}
+              onChange={(e) => setForm({ ...form, combustible_inicial: e.target.value })}
+            />
+            <input
+              type="number"
+              className="border p-2 rounded"
+              placeholder="Combustible final (gal)"
+              value={form.combustible_final}
+              onChange={(e) => setForm({ ...form, combustible_final: e.target.value })}
+            />
+            <input
+              type="number"
+              className="border p-2 rounded"
+              placeholder="Despachado (gal)"
+              value={form.combustible_despachado}
+              onChange={(e) => setForm({ ...form, combustible_despachado: e.target.value })}
+            />
+            <input
+              type="number"
+              className="border p-2 rounded"
+              placeholder="Precio por galón"
+              value={form.precio_galon}
+              onChange={(e) => setForm({ ...form, precio_galon: e.target.value })}
+            />
+            <input
+              type="number"
+              className="border p-2 rounded"
+              placeholder="Salario diario"
+              value={form.salario_diario}
+              onChange={(e) => setForm({ ...form, salario_diario: e.target.value })}
+            />
+            <input
+              type="number"
+              className="border p-2 rounded"
+              placeholder="Días"
+              value={form.dias}
+              onChange={(e) => setForm({ ...form, dias: e.target.value })}
+            />
+
+            <textarea
+              className="border p-2 rounded col-span-2"
+              placeholder="Observaciones"
+              value={form.observaciones}
+              onChange={(e) => setForm({ ...form, observaciones: e.target.value })}
+            />
           </div>
 
           <div className="mt-3 flex gap-2">
-            <button onClick={guardarViaje} className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded">
+            <button
+              onClick={guardarViaje}
+              className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded"
+            >
               {form.id ? 'Actualizar' : 'Guardar'}
             </button>
-            <button onClick={() => { resetForm(); setSelected(null); setGastos([]) }}
-                    className="bg-gray-200 px-4 py-2 rounded">
+            <button
+              onClick={() => { resetForm(); setSelected(null); setGastos([]) }}
+              className="bg-gray-200 px-4 py-2 rounded"
+            >
               Cancelar
             </button>
             {form.id ? (
-              <Link href={`/vehiculos/reporte?id=${form.id}`}
-                    className="ml-auto bg-amber-600 hover:bg-amber-700 text-white px-4 py-2 rounded">
+              <Link
+                href={`/vehiculos/reporte?id=${form.id}`}
+                className="ml-auto bg-amber-600 hover:bg-amber-700 text-white px-4 py-2 rounded"
+              >
                 Ver Reporte
               </Link>
             ) : null}
@@ -415,18 +591,30 @@ export default function VehiculosPage() {
           ) : (
             <>
               <div className="grid grid-cols-5 gap-2 mb-3">
-                <input type="date" className="border p-2 rounded"
-                       value={gastoNuevo.fecha}
-                       onChange={(e) => setGastoNuevo({ ...gastoNuevo, fecha: e.target.value })} />
-                <input className="border p-2 rounded col-span-3" placeholder="Descripción"
-                       value={gastoNuevo.descripcion}
-                       onChange={(e) => setGastoNuevo({ ...gastoNuevo, descripcion: e.target.value })} />
-                <input type="number" className="border p-2 rounded" placeholder="Monto"
-                       value={gastoNuevo.monto}
-                       onChange={(e) => setGastoNuevo({ ...gastoNuevo, monto: e.target.value })} />
+                <input
+                  type="date"
+                  className="border p-2 rounded"
+                  value={gastoNuevo.fecha}
+                  onChange={(e) => setGastoNuevo({ ...gastoNuevo, fecha: e.target.value })}
+                />
+                <input
+                  className="border p-2 rounded col-span-3"
+                  placeholder="Descripción"
+                  value={gastoNuevo.descripcion}
+                  onChange={(e) => setGastoNuevo({ ...gastoNuevo, descripcion: e.target.value })}
+                />
+                <input
+                  type="number"
+                  className="border p-2 rounded"
+                  placeholder="Monto"
+                  value={gastoNuevo.monto}
+                  onChange={(e) => setGastoNuevo({ ...gastoNuevo, monto: e.target.value })}
+                />
               </div>
-              <button onClick={agregarGasto}
-                      className="bg-sky-600 hover:bg-sky-700 text-white px-3 py-2 rounded mb-3">
+              <button
+                onClick={agregarGasto}
+                className="bg-sky-600 hover:bg-sky-700 text-white px-3 py-2 rounded mb-3"
+              >
                 + Agregar gasto
               </button>
 
@@ -449,8 +637,10 @@ export default function VehiculosPage() {
                         <td className="p-2">{g.descripcion || '—'}</td>
                         <td className="p-2 text-right">Q{Number(g.monto || 0).toFixed(2)}</td>
                         <td className="p-2 text-center">
-                          <button onClick={() => eliminarGasto(g.id)}
-                                  className="px-2 py-1 text-xs rounded bg-red-600 text-white">
+                          <button
+                            onClick={() => eliminarGasto(g.id)}
+                            className="px-2 py-1 text-xs rounded bg-red-600 text-white"
+                          >
                             Eliminar
                           </button>
                         </td>
