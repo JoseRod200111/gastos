@@ -36,8 +36,14 @@ export default function Dashboard() {
         >
           🛒 Ventas
         </Link>
+
+        <Link
+          href="/vehiculos"
+          className="block bg-amber-600 hover:bg-amber-700 text-white text-center py-4 rounded shadow"
+        >
+          🚚 Vehículos
+        </Link>
       </div>
     </div>
   )
 }
-
