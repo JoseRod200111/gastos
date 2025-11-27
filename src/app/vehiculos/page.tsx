@@ -92,7 +92,7 @@ export default function VehiculosPage() {
 
   /* ========================= Catálogo de vehículos ========================= */
 
-  const Vehiculos = useCallback(async () => {
+  const cargarVehiculos = useCallback(async () => {
     const { data, error } = await supabase
       .from('vehiculos')
       .select('id, placa, alias')
@@ -107,7 +107,6 @@ export default function VehiculosPage() {
     setVehiculos((data as VehiculoOption[]) || [])
   }, [])
 
-  // Mapa id -> etiqueta para mostrar placa/alias sin hacer join en viajes
   const vehiculoMap = useMemo(() => {
     const map = new Map<number, string>()
     for (const v of vehiculos) {
@@ -119,35 +118,35 @@ export default function VehiculosPage() {
 
   /* ========================= Carga de viajes ========================= */
 
- const cargarViajes = useCallback(async () => {
-  setLoading(true)
-  try {
-    const { data, error } = await supabase
-      .from('viajes')
-      .select('*') // nada de columnas específicas ni order para descartar causas
-    // .order('id', { ascending: false }) // lo podemos volver a activar después
+  const cargarViajes = useCallback(async () => {
+    setLoading(true)
+    try {
+      const { data, error } = await supabase
+        .from('viajes')
+        .select('*')
 
-    if (error) {
-      console.error('Error cargando viajes', error)
+      if (error) {
+        console.error('Error cargando viajes', error)
+        alert(
+          'Error cargando viajes:\n' +
+          (error.message || '') +
+          (error.details ? '\nDetalles: ' + error.details : '') +
+          (error.hint ? '\nHint: ' + error.hint : '')
+        )
+        setViajes([])
+        return
+      }
 
-      // Mostrar mensaje completo para que lo puedas leer:
-      alert(
-        'Error cargando viajes:\n' +
-        (error.message || '') +
-        (error.details ? '\nDetalles: ' + error.details : '') +
-        (error.hint ? '\nHint: ' + error.hint : '')
-      )
-
-      setViajes([])
-      return
+      setViajes(((data as any[]) || []) as Viaje[])
+    } finally {
+      setLoading(false)
     }
+  }, [])
 
-    setViajes(((data as any[]) || []) as Viaje[])
-  } finally {
-    setLoading(false)
-  }
-}, [])
-
+  useEffect(() => {
+    cargarViajes()
+    cargarVehiculos()
+  }, [cargarViajes, cargarVehiculos])
 
   /* ========================= Calcular días automáticamente ========================= */
 
@@ -175,7 +174,7 @@ export default function VehiculosPage() {
     }
   }, [form.fecha_inicio, form.fecha_fin, form.dias])
 
-  /* ========================= Filtros de la tabla ========================= */
+  /* ========================= Filtros ========================= */
 
   const [filters, setFilters] = useState({
     vehiculoId: '',
@@ -225,7 +224,7 @@ export default function VehiculosPage() {
     setGastos((data as GastoAdicional[]) ?? [])
   }, [])
 
-  /* ========================= Seleccionar / editar viaje ========================= */
+  /* ========================= Seleccionar / editar ========================= */
 
   const seleccionarViaje = async (v: Viaje) => {
     setSelected(v)
@@ -388,7 +387,6 @@ export default function VehiculosPage() {
           </button>
         </div>
 
-        {/* Filtros */}
         <div className="mb-2 grid md:grid-cols-4 gap-2 text-sm">
           <select
             className="border p-2 rounded"
@@ -490,7 +488,6 @@ export default function VehiculosPage() {
           </h3>
 
           <div className="grid grid-cols-2 gap-3">
-            {/* Select de vehículo */}
             <select
               className="border p-2 rounded col-span-2"
               value={form.vehiculo_id}
@@ -620,7 +617,7 @@ export default function VehiculosPage() {
 
         {/* Gastos */}
         <div className="border rounded p-4">
-          <div className="flex items-center justify_between mb-3">
+          <div className="flex items-center justify-between mb-3">
             <h3 className="font-semibold">Gastos adicionales</h3>
             {selected ? (
               <div className="text-xs text-gray-600">Viaje seleccionado: #{selected.id}</div>
@@ -701,4 +698,3 @@ export default function VehiculosPage() {
     </div>
   )
 }
-
