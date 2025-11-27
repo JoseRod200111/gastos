@@ -1,15 +1,20 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
-import Image from 'next/image'
 import { useSearchParams } from 'next/navigation'
 import { supabase } from '@/lib/supabaseClient'
+import Link from 'next/link'
+
+type VehiculoRel = {
+  placa: string | null
+  alias: string | null
+} | null
 
 type Viaje = {
   id: number
   vehiculo_id: number | null
-  fecha_inicio: string
-  fecha_fin: string
+  fecha_inicio: string | null
+  fecha_fin: string | null
   origen: string | null
   destino: string | null
   conductor: string | null
@@ -20,145 +25,163 @@ type Viaje = {
   salario_diario: number | null
   dias: number | null
   observaciones: string | null
-  vehiculos?: { placa: string | null; alias: string | null } | null
+  vehiculos?: VehiculoRel
 }
-type Gasto = { id: number; viaje_id: number; concepto: string | null; monto: number | null }
+
+type GastoAdicional = {
+  id: number
+  viaje_id: number
+  fecha: string | null
+  descripcion: string | null
+  monto: number | null
+}
 
 export default function ReporteViaje() {
   const params = useSearchParams()
-  const idParam = params.get('id')
+  const idParam = Number(params.get('id') || 0)
+
   const [viaje, setViaje] = useState<Viaje | null>(null)
-  const [gastos, setGastos] = useState<Gasto[]>([])
+  const [gastos, setGastos] = useState<GastoAdicional[]>([])
+  const [loading, setLoading] = useState(false)
 
   useEffect(() => {
     if (!idParam) return
     ;(async () => {
-      const { data, error } = await supabase
-        .from('viajes')
-        .select(
-          `
-          id, vehiculo_id, fecha_inicio, fecha_fin, origen, destino, conductor,
-          combustible_inicial, combustible_final, combustible_despachado, precio_galon,
-          salario_diario, dias, observaciones,
-          vehiculos ( placa, alias )
-        `
-        )
-        .eq('id', idParam)
-        .single()
-      if (!error) setViaje((data as Viaje) || null)
+      setLoading(true)
+      try {
+        const { data, error } = await supabase
+          .from('viajes')
+          .select(`
+            id, vehiculo_id, fecha_inicio, fecha_fin, origen, destino, conductor,
+            combustible_inicial, combustible_final, combustible_despachado, precio_galon,
+            salario_diario, dias, observaciones,
+            vehiculos ( placa, alias )
+          `)
+          .eq('id', idParam)
+          .single()
 
-      const { data: g, error: errG } = await supabase
-        .from('viaje_gastos')
-        .select('id, viaje_id, concepto, monto')
-        .eq('viaje_id', idParam)
-        .order('id')
-      if (!errG) setGastos((g as Gasto[]) || [])
+        if (!error) {
+          // 🔧 Normalizamos relación `vehiculos` si viene como array:
+          const row: any = data || null
+          const fixed: Viaje | null = row
+            ? {
+                ...row,
+                vehiculos: Array.isArray(row?.vehiculos)
+                  ? (row.vehiculos[0] ?? null)
+                  : (row.vehiculos ?? null),
+              }
+            : null
+          setViaje(fixed)
+        }
+
+        const { data: g, error: errG } = await supabase
+          .from('viaje_gastos')
+          .select('id, viaje_id, fecha, descripcion, monto')
+          .eq('viaje_id', idParam)
+          .order('fecha', { ascending: true })
+
+        if (!errG) setGastos((g as GastoAdicional[]) ?? [])
+      } finally {
+        setLoading(false)
+      }
     })()
   }, [idParam])
 
-  const resumen = useMemo(() => {
-    if (!viaje) return null
-    const fuelUsed =
-      Number(viaje.combustible_inicial || 0) +
-      Number(viaje.combustible_despachado || 0) -
-      Number(viaje.combustible_final || 0)
-    const costoComb = fuelUsed * Number(viaje.precio_galon || 0)
-    const costoConductor = Number(viaje.salario_diario || 0) * Number(viaje.dias || 0)
+  const totales = useMemo(() => {
+    const fuel = (Number(viaje?.combustible_despachado || 0) * Number(viaje?.precio_galon || 0)) || 0
+    const salary = (Number(viaje?.salario_diario || 0) * Number(viaje?.dias || 0)) || 0
     const otros = gastos.reduce((s, g) => s + Number(g.monto || 0), 0)
-    const total = costoComb + costoConductor + otros
-    return { fuelUsed, costoComb, costoConductor, otros, total }
+    const total = fuel + salary + otros
+    return { fuel, salary, otros, total }
   }, [viaje, gastos])
 
-  if (!viaje) {
-    return (
-      <div className="p-6 max-w-4xl mx-auto">
-        <p>Cargando…</p>
-      </div>
-    )
-  }
-
   return (
-    <div className="p-6 max-w-4xl mx-auto">
-      <div className="flex justify-center mb-4">
-        <Image src="/logo.png" alt="Logo" width={160} height={64} />
+    <div className="p-6 max-w-5xl mx-auto">
+      <div className="mb-6 flex items-center gap-3">
+        <img src="/logo.png" alt="Logo" className="h-10" />
+        <h1 className="text-2xl font-bold">📄 Reporte de Viaje</h1>
+        <Link href="/vehiculos" className="ml-auto bg-slate-700 hover:bg-slate-800 text-white px-3 py-2 rounded">
+          ⬅ Volver
+        </Link>
+        <button onClick={() => window.print()} className="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-2 rounded">
+          Imprimir / PDF
+        </button>
       </div>
 
-      <div className="flex items-center justify-between mb-3">
-        <h1 className="text-2xl font-bold">Reporte del Viaje #{viaje.id}</h1>
-        <div className="space-x-2">
-          <button
-            onClick={() => window.print()}
-            className="bg-indigo-600 text-white px-3 py-1.5 rounded"
-          >
-            🖨️ Imprimir / PDF
-          </button>
+      {loading ? (
+        <div>Cargando…</div>
+      ) : !viaje ? (
+        <div>No se encontró el viaje solicitado.</div>
+      ) : (
+        <div className="border rounded p-4 print:border-none print:p-0">
+          <div className="grid grid-cols-2 gap-2 text-sm mb-4">
+            <div><span className="font-semibold">ID:</span> {viaje.id}</div>
+            <div><span className="font-semibold">Vehículo:</span> {viaje.vehiculos?.placa || '—'}{viaje.vehiculos?.alias ? ` · ${viaje.vehiculos.alias}` : ''}</div>
+            <div><span className="font-semibold">Conductor:</span> {viaje.conductor || '—'}</div>
+            <div><span className="font-semibold">Fecha (inicio/fin):</span> {viaje.fecha_inicio || '—'} — {viaje.fecha_fin || '—'}</div>
+            <div><span className="font-semibold">Origen:</span> {viaje.origen || '—'}</div>
+            <div><span className="font-semibold">Destino:</span> {viaje.destino || '—'}</div>
+          </div>
+
+          <div className="grid grid-cols-3 gap-3 text-sm mb-4">
+            <div className="bg-gray-50 border rounded p-3">
+              <div className="font-semibold mb-1">Combustible</div>
+              <div>Inicial: {viaje.combustible_inicial ?? 0} gal</div>
+              <div>Final: {viaje.combustible_final ?? 0} gal</div>
+              <div>Despachado: {viaje.combustible_despachado ?? 0} gal</div>
+              <div>Precio/galón: Q{Number(viaje.precio_galon || 0).toFixed(2)}</div>
+              <div className="mt-1 font-semibold">
+                Costo combustible: Q{totales.fuel.toFixed(2)}
+              </div>
+            </div>
+
+            <div className="bg-gray-50 border rounded p-3">
+              <div className="font-semibold mb-1">Mano de obra</div>
+              <div>Salario diario: Q{Number(viaje.salario_diario || 0).toFixed(2)}</div>
+              <div>Días: {viaje.dias ?? 0}</div>
+              <div className="mt-1 font-semibold">
+                Total salarios: Q{totales.salary.toFixed(2)}
+              </div>
+            </div>
+
+            <div className="bg-gray-50 border rounded p-3">
+              <div className="font-semibold mb-1">Observaciones</div>
+              <div className="whitespace-pre-wrap">{viaje.observaciones || '—'}</div>
+            </div>
+          </div>
+
+          <div className="mb-3 font-semibold">Gastos adicionales</div>
+          <div className="overflow-x-auto border rounded mb-4">
+            <table className="w-full text-sm">
+              <thead className="bg-gray-100">
+                <tr>
+                  <th className="p-2 text-left">Fecha</th>
+                  <th className="p-2 text-left">Descripción</th>
+                  <th className="p-2 text-right">Monto</th>
+                </tr>
+              </thead>
+              <tbody>
+                {gastos.length === 0 ? (
+                  <tr><td className="p-3" colSpan={3}>Sin gastos registrados.</td></tr>
+                ) : gastos.map(g => (
+                  <tr key={g.id} className="border-t">
+                    <td className="p-2">{g.fecha || '—'}</td>
+                    <td className="p-2">{g.descripcion || '—'}</td>
+                    <td className="p-2 text-right">Q{Number(g.monto || 0).toFixed(2)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="text-right text-sm">
+            <div>Combustible: <span className="font-semibold">Q{totales.fuel.toFixed(2)}</span></div>
+            <div>Salarios: <span className="font-semibold">Q{totales.salary.toFixed(2)}</span></div>
+            <div>Otros gastos: <span className="font-semibold">Q{totales.otros.toFixed(2)}</span></div>
+            <div className="mt-1 text-lg font-bold">Total del viaje: Q{totales.total.toFixed(2)}</div>
+          </div>
         </div>
-      </div>
-
-      <div className="border rounded p-3 mb-3 bg-gray-50 text-sm">
-        <div><b>Vehículo:</b> {viaje.vehiculos?.placa || '—'} {viaje.vehiculos?.alias ? `(${viaje.vehiculos?.alias})` : ''}</div>
-        <div><b>Conductor:</b> {viaje.conductor || '—'}</div>
-        <div><b>Periodo:</b> {viaje.fecha_inicio?.slice(0,10)} — {viaje.fecha_fin?.slice(0,10)}</div>
-        <div><b>Ruta:</b> {viaje.origen || '—'} → {viaje.destino || '—'}</div>
-        {viaje.observaciones ? <div><b>Observaciones:</b> {viaje.observaciones}</div> : null}
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
-        <div className="border rounded p-3">
-          <h3 className="font-semibold mb-2">⛽ Combustible</h3>
-          <div>Inicial: <b>{Number(viaje.combustible_inicial || 0).toFixed(2)} gal</b></div>
-          <div>Despachado: <b>{Number(viaje.combustible_despachado || 0).toFixed(2)} gal</b></div>
-          <div>Final: <b>{Number(viaje.combustible_final || 0).toFixed(2)} gal</b></div>
-          <div className="mt-1">Precio por galón: <b>Q{Number(viaje.precio_galon || 0).toFixed(2)}</b></div>
-          <div className="mt-2">Galones usados: <b>{resumen?.fuelUsed.toFixed(2)} gal</b></div>
-          <div>Costo combustible: <b>Q{resumen?.costoComb.toFixed(2)}</b></div>
-        </div>
-
-        <div className="border rounded p-3">
-          <h3 className="font-semibold mb-2">👷 Mano de Obra</h3>
-          <div>Salario diario: <b>Q{Number(viaje.salario_diario || 0).toFixed(2)}</b></div>
-          <div>Días: <b>{Number(viaje.dias || 0)}</b></div>
-          <div className="mt-2">Costo conductor: <b>Q{resumen?.costoConductor.toFixed(2)}</b></div>
-        </div>
-      </div>
-
-      <h3 className="font-semibold mb-2">🧾 Gastos adicionales</h3>
-      <table className="w-full text-sm border mb-3">
-        <thead className="bg-gray-200">
-          <tr>
-            <th className="p-2 text-left">Concepto</th>
-            <th className="p-2 text-left">Monto (Q)</th>
-          </tr>
-        </thead>
-        <tbody>
-          {gastos.length === 0 ? (
-            <tr><td colSpan={2} className="p-3 text-center text-gray-500">Sin gastos</td></tr>
-          ) : gastos.map((g) => (
-            <tr key={g.id} className="border-t">
-              <td className="p-2">{g.concepto || '—'}</td>
-              <td className="p-2">Q{Number(g.monto || 0).toFixed(2)}</td>
-            </tr>
-          ))}
-        </tbody>
-        <tfoot>
-          <tr className="bg-gray-50">
-            <td className="p-2 text-right font-semibold">Total otros gastos:</td>
-            <td className="p-2 font-semibold">Q{resumen?.otros.toFixed(2)}</td>
-          </tr>
-        </tfoot>
-      </table>
-
-      <div className="border rounded p-3 bg-gray-100">
-        <div className="text-lg">
-          <b>Total del viaje:</b> Q{resumen?.total.toFixed(2)}
-        </div>
-      </div>
-
-      <div className="mt-6">
-        <a href="/vehiculos" className="inline-block bg-gray-700 text-white px-4 py-2 rounded">
-          ⬅ Volver a Vehículos
-        </a>
-      </div>
+      )}
     </div>
   )
 }
