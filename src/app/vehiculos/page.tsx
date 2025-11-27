@@ -105,60 +105,25 @@ export default function VehiculosPage() {
   }, [])
 
   /* ========================= Carga de viajes ========================= */
-  const cargarViajes = useCallback(async () => {
-    setLoading(true)
-    try {
-      const { data, error } = await supabase
-        .from('viajes')
-        .select(`
-          id, vehiculo_id, fecha_inicio, fecha_fin, origen, destino, conductor,
-          combustible_inicial, combustible_final, combustible_despachado, precio_galon,
-          salario_diario, dias, observaciones
-        `)
-        .order('id', { ascending: false })
+const cargarViajes = useCallback(async () => {
+  setLoading(true)
+  try {
+    const { data, error } = await supabase
+      .from('viajes')
+      .select('*')              // 👈 pedimos todas las columnas, sin lista
+      .order('id', { ascending: false })
 
-      if (error) {
-        console.error('Error cargando viajes', error)
-        setViajes([])
-        return
-      }
-
-      setViajes(((data as any[]) || []) as Viaje[])
-    } finally {
-      setLoading(false)
-    }
-  }, [])
-
-  useEffect(() => {
-    cargarViajes()
-    cargarVehiculos()
-  }, [cargarViajes, cargarVehiculos])
-
-  /* ========================= Calcular días automáticamente ========================= */
-  useEffect(() => {
-    if (!form.fecha_inicio || !form.fecha_fin) {
-      if (form.dias !== '') {
-        setForm((prev) => ({ ...prev, dias: '' }))
-      }
+    if (error) {
+      console.error('Error cargando viajes', error)  // aquí verías el detalle
+      setViajes([])
       return
     }
 
-    const inicio = new Date(form.fecha_inicio)
-    const fin = new Date(form.fecha_fin)
-    if (isNaN(inicio.getTime()) || isNaN(fin.getTime())) return
-
-    const diffMs = fin.getTime() - inicio.getTime()
-    const msPerDay = 1000 * 60 * 60 * 24
-    const rawDays = diffMs / msPerDay
-
-    // Si la fecha final es anterior a la inicial, dejamos 0
-    const diasCalc = diffMs >= 0 ? Math.floor(rawDays) + 1 : 0
-    const diasStr = diasCalc > 0 ? String(diasCalc) : ''
-
-    if (form.dias !== diasStr) {
-      setForm((prev) => ({ ...prev, dias: diasStr }))
-    }
-  }, [form.fecha_inicio, form.fecha_fin, form.dias])
+    setViajes(((data as any[]) || []) as Viaje[])
+  } finally {
+    setLoading(false)
+  }
+}, [])
 
   /* ========================= Filtros de la tabla ========================= */
   const [filters, setFilters] = useState({
@@ -656,3 +621,4 @@ export default function VehiculosPage() {
     </div>
   )
 }
+
