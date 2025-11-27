@@ -92,7 +92,7 @@ export default function VehiculosPage() {
 
   /* ========================= Catálogo de vehículos ========================= */
 
-  const cargarVehiculos = useCallback(async () => {
+  const Vehiculos = useCallback(async () => {
     const { data, error } = await supabase
       .from('vehiculos')
       .select('id, placa, alias')
@@ -119,31 +119,35 @@ export default function VehiculosPage() {
 
   /* ========================= Carga de viajes ========================= */
 
-  const cargarViajes = useCallback(async () => {
-    setLoading(true)
-    try {
-      const { data, error } = await supabase
-        .from('viajes')
-        .select('*') // pedimos todo para evitar problemas de columnas
-        .order('id', { ascending: false })
+ const cargarViajes = useCallback(async () => {
+  setLoading(true)
+  try {
+    const { data, error } = await supabase
+      .from('viajes')
+      .select('*') // nada de columnas específicas ni order para descartar causas
+    // .order('id', { ascending: false }) // lo podemos volver a activar después
 
-      if (error) {
-        console.error('Error cargando viajes', error)
-        setViajes([])
-        return
-      }
+    if (error) {
+      console.error('Error cargando viajes', error)
 
-      setViajes(((data as any[]) || []) as Viaje[])
-    } finally {
-      setLoading(false)
+      // Mostrar mensaje completo para que lo puedas leer:
+      alert(
+        'Error cargando viajes:\n' +
+        (error.message || '') +
+        (error.details ? '\nDetalles: ' + error.details : '') +
+        (error.hint ? '\nHint: ' + error.hint : '')
+      )
+
+      setViajes([])
+      return
     }
-  }, [])
 
-  useEffect(() => {
-    // se ejecuta al montar la página
-    cargarViajes()
-    cargarVehiculos()
-  }, [cargarViajes, cargarVehiculos])
+    setViajes(((data as any[]) || []) as Viaje[])
+  } finally {
+    setLoading(false)
+  }
+}, [])
+
 
   /* ========================= Calcular días automáticamente ========================= */
 
@@ -697,3 +701,4 @@ export default function VehiculosPage() {
     </div>
   )
 }
+
