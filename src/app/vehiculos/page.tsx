@@ -7,10 +7,11 @@ import Link from 'next/link'
 import { supabase } from '@/lib/supabaseClient'
 
 /* ========================= Tipos ========================= */
-type VehiculoRel = {
+type VehiculoOption = {
+  id: number
   placa: string | null
   alias: string | null
-} | null
+}
 
 type Viaje = {
   id: number
@@ -27,7 +28,6 @@ type Viaje = {
   salario_diario: number | null
   dias: number | null
   observaciones: string | null
-  vehiculos?: VehiculoRel
 }
 
 type GastoAdicional = {
@@ -36,12 +36,6 @@ type GastoAdicional = {
   fecha: string | null
   descripcion: string | null
   monto: number | null
-}
-
-type VehiculoOption = {
-  id: number
-  placa: string | null
-  alias: string | null
 }
 
 /* ========================= Página ========================= */
@@ -119,23 +113,17 @@ export default function VehiculosPage() {
         .select(`
           id, vehiculo_id, fecha_inicio, fecha_fin, origen, destino, conductor,
           combustible_inicial, combustible_final, combustible_despachado, precio_galon,
-          salario_diario, dias, observaciones,
-          vehiculos ( placa, alias )
+          salario_diario, dias, observaciones
         `)
         .order('id', { ascending: false })
 
       if (error) {
-        console.error(error)
+        console.error('Error cargando viajes', error)
         setViajes([])
         return
       }
 
-      const fixed: Viaje[] = ((data as any[]) || []).map((r) => ({
-        ...r,
-        vehiculos: Array.isArray(r?.vehiculos) ? (r.vehiculos[0] ?? null) : (r.vehiculos ?? null),
-      }))
-
-      setViajes(fixed)
+      setViajes(((data as any[]) || []) as Viaje[])
     } finally {
       setLoading(false)
     }
@@ -145,6 +133,32 @@ export default function VehiculosPage() {
     cargarViajes()
     cargarVehiculos()
   }, [cargarViajes, cargarVehiculos])
+
+  /* ========================= Calcular días automáticamente ========================= */
+  useEffect(() => {
+    if (!form.fecha_inicio || !form.fecha_fin) {
+      if (form.dias !== '') {
+        setForm((prev) => ({ ...prev, dias: '' }))
+      }
+      return
+    }
+
+    const inicio = new Date(form.fecha_inicio)
+    const fin = new Date(form.fecha_fin)
+    if (isNaN(inicio.getTime()) || isNaN(fin.getTime())) return
+
+    const diffMs = fin.getTime() - inicio.getTime()
+    const msPerDay = 1000 * 60 * 60 * 24
+    const rawDays = diffMs / msPerDay
+
+    // Si la fecha final es anterior a la inicial, dejamos 0
+    const diasCalc = diffMs >= 0 ? Math.floor(rawDays) + 1 : 0
+    const diasStr = diasCalc > 0 ? String(diasCalc) : ''
+
+    if (form.dias !== diasStr) {
+      setForm((prev) => ({ ...prev, dias: diasStr }))
+    }
+  }, [form.fecha_inicio, form.fecha_fin, form.dias])
 
   /* ========================= Filtros de la tabla ========================= */
   const [filters, setFilters] = useState({
@@ -156,12 +170,10 @@ export default function VehiculosPage() {
 
   const viajesFiltrados = useMemo(() => {
     return viajes.filter((v) => {
-      // filtro por vehículo
       if (filters.vehiculoId && String(v.vehiculo_id ?? '') !== filters.vehiculoId) {
         return false
       }
 
-      // filtro por fecha de inicio
       if (filters.desde && v.fecha_inicio && v.fecha_inicio < filters.desde) {
         return false
       }
@@ -169,16 +181,9 @@ export default function VehiculosPage() {
         return false
       }
 
-      // filtro por texto (conductor, origen, destino, placa, alias)
       const t = filters.texto.trim().toLowerCase()
       if (t) {
-        const fields = [
-          v.conductor,
-          v.origen,
-          v.destino,
-          v.vehiculos?.placa,
-          v.vehiculos?.alias,
-        ]
+        const fields = [v.conductor, v.origen, v.destino]
         const match = fields.some((f) => (f || '').toLowerCase().includes(t))
         if (!match) return false
       }
@@ -196,7 +201,7 @@ export default function VehiculosPage() {
       .order('fecha', { ascending: true })
 
     if (error) {
-      console.error(error)
+      console.error('Error cargando gastos', error)
       setGastos([])
       return
     }
@@ -378,18 +383,16 @@ export default function VehiculosPage() {
             className="border p-2 rounded"
             value={filters.desde}
             onChange={(e) => setFilters((f) => ({ ...f, desde: e.target.value }))}
-            placeholder="Desde"
           />
           <input
             type="date"
             className="border p-2 rounded"
             value={filters.hasta}
             onChange={(e) => setFilters((f) => ({ ...f, hasta: e.target.value }))}
-            placeholder="Hasta"
           />
           <input
             className="border p-2 rounded"
-            placeholder="Buscar (placa, alias, conductor, origen, destino)"
+            placeholder="Buscar (conductor, origen, destino)"
             value={filters.texto}
             onChange={(e) => setFilters((f) => ({ ...f, texto: e.target.value }))}
           />
@@ -400,7 +403,7 @@ export default function VehiculosPage() {
             <thead className="bg-gray-100">
               <tr>
                 <th className="p-2 text-left">ID</th>
-                <th className="p-2 text-left">Vehículo</th>
+                <th className="p-2 text-left">Vehículo (ID)</th>
                 <th className="p-2 text-left">Conductor</th>
                 <th className="p-2 text-left">Desde</th>
                 <th className="p-2 text-left">Hasta</th>
@@ -417,10 +420,7 @@ export default function VehiculosPage() {
               ) : viajesFiltrados.map(v => (
                 <tr key={v.id} className="border-t">
                   <td className="p-2">{v.id}</td>
-                  <td className="p-2">
-                    {v.vehiculos?.placa || '—'}
-                    {v.vehiculos?.alias ? ` · ${v.vehiculos.alias}` : ''}
-                  </td>
+                  <td className="p-2">{v.vehiculo_id ?? '—'}</td>
                   <td className="p-2">{v.conductor || '—'}</td>
                   <td className="p-2">{v.fecha_inicio || '—'}</td>
                   <td className="p-2">{v.fecha_fin || '—'}</td>
@@ -534,9 +534,9 @@ export default function VehiculosPage() {
             <input
               type="number"
               className="border p-2 rounded"
-              placeholder="Días"
+              placeholder="Días (calculado)"
               value={form.dias}
-              onChange={(e) => setForm({ ...form, dias: e.target.value })}
+              readOnly
             />
 
             <textarea
