@@ -7,6 +7,7 @@ import Link from 'next/link'
 import { supabase } from '@/lib/supabaseClient'
 
 /* ========================= Tipos ========================= */
+
 type VehiculoOption = {
   id: number
   placa: string | null
@@ -39,10 +40,13 @@ type GastoAdicional = {
 }
 
 /* ========================= Página ========================= */
+
 export default function VehiculosPage() {
   const [viajes, setViajes] = useState<Viaje[]>([])
   const [loading, setLoading] = useState(false)
   const [selected, setSelected] = useState<Viaje | null>(null)
+
+  const [vehiculos, setVehiculos] = useState<VehiculoOption[]>([])
 
   const [gastos, setGastos] = useState<GastoAdicional[]>([])
   const [gastoNuevo, setGastoNuevo] = useState<{ fecha: string; descripcion: string; monto: string }>({
@@ -86,8 +90,7 @@ export default function VehiculosPage() {
       observaciones: '',
     })
 
-  /* ========================= Vehículos para el select ========================= */
-  const [vehiculos, setVehiculos] = useState<VehiculoOption[]>([])
+  /* ========================= Catálogo de vehículos ========================= */
 
   const cargarVehiculos = useCallback(async () => {
     const { data, error } = await supabase
@@ -104,28 +107,72 @@ export default function VehiculosPage() {
     setVehiculos((data as VehiculoOption[]) || [])
   }, [])
 
-  /* ========================= Carga de viajes ========================= */
-const cargarViajes = useCallback(async () => {
-  setLoading(true)
-  try {
-    const { data, error } = await supabase
-      .from('viajes')
-      .select('*')              // 👈 pedimos todas las columnas, sin lista
-      .order('id', { ascending: false })
+  // Mapa id -> etiqueta para mostrar placa/alias sin hacer join en viajes
+  const vehiculoMap = useMemo(() => {
+    const map = new Map<number, string>()
+    for (const v of vehiculos) {
+      const etiqueta = (v.placa || `ID ${v.id}`) + (v.alias ? ` · ${v.alias}` : '')
+      map.set(v.id, etiqueta)
+    }
+    return map
+  }, [vehiculos])
 
-    if (error) {
-      console.error('Error cargando viajes', error)  // aquí verías el detalle
-      setViajes([])
+  /* ========================= Carga de viajes ========================= */
+
+  const cargarViajes = useCallback(async () => {
+    setLoading(true)
+    try {
+      const { data, error } = await supabase
+        .from('viajes')
+        .select('*') // pedimos todo para evitar problemas de columnas
+        .order('id', { ascending: false })
+
+      if (error) {
+        console.error('Error cargando viajes', error)
+        setViajes([])
+        return
+      }
+
+      setViajes(((data as any[]) || []) as Viaje[])
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    // se ejecuta al montar la página
+    cargarViajes()
+    cargarVehiculos()
+  }, [cargarViajes, cargarVehiculos])
+
+  /* ========================= Calcular días automáticamente ========================= */
+
+  useEffect(() => {
+    if (!form.fecha_inicio || !form.fecha_fin) {
+      if (form.dias !== '') {
+        setForm((prev) => ({ ...prev, dias: '' }))
+      }
       return
     }
 
-    setViajes(((data as any[]) || []) as Viaje[])
-  } finally {
-    setLoading(false)
-  }
-}, [])
+    const inicio = new Date(form.fecha_inicio)
+    const fin = new Date(form.fecha_fin)
+    if (isNaN(inicio.getTime()) || isNaN(fin.getTime())) return
+
+    const diffMs = fin.getTime() - inicio.getTime()
+    const msPerDay = 1000 * 60 * 60 * 24
+    const rawDays = diffMs / msPerDay
+
+    const diasCalc = diffMs >= 0 ? Math.floor(rawDays) + 1 : 0
+    const diasStr = diasCalc > 0 ? String(diasCalc) : ''
+
+    if (form.dias !== diasStr) {
+      setForm((prev) => ({ ...prev, dias: diasStr }))
+    }
+  }, [form.fecha_inicio, form.fecha_fin, form.dias])
 
   /* ========================= Filtros de la tabla ========================= */
+
   const [filters, setFilters] = useState({
     vehiculoId: '',
     desde: '',
@@ -157,7 +204,8 @@ const cargarViajes = useCallback(async () => {
     })
   }, [viajes, filters])
 
-  /* ========================= Seleccionar / editar ========================= */
+  /* ========================= Gastos ========================= */
+
   const cargarGastos = useCallback(async (viajeId: number) => {
     const { data, error } = await supabase
       .from('viaje_gastos')
@@ -172,6 +220,8 @@ const cargarViajes = useCallback(async () => {
     }
     setGastos((data as GastoAdicional[]) ?? [])
   }, [])
+
+  /* ========================= Seleccionar / editar viaje ========================= */
 
   const seleccionarViaje = async (v: Viaje) => {
     setSelected(v)
@@ -195,6 +245,7 @@ const cargarViajes = useCallback(async () => {
   }
 
   /* ========================= Guardar viaje ========================= */
+
   const guardarViaje = async () => {
     const payload = {
       vehiculo_id: form.vehiculo_id ? Number(form.vehiculo_id) : null,
@@ -232,6 +283,7 @@ const cargarViajes = useCallback(async () => {
 
     resetForm()
     setSelected(null)
+    setGastos([])
     await cargarViajes()
   }
 
@@ -262,6 +314,7 @@ const cargarViajes = useCallback(async () => {
   }
 
   /* ========================= Gastos adicionales ========================= */
+
   const agregarGasto = async () => {
     if (!selected) {
       alert('Primero selecciona/crea un viaje.')
@@ -295,6 +348,7 @@ const cargarViajes = useCallback(async () => {
   }
 
   /* ========================= Totales (preview) ========================= */
+
   const totales = useMemo(() => {
     const fuel = (Number(form.combustible_despachado || 0) * Number(form.precio_galon || 0)) || 0
     const salary = (Number(form.salario_diario || 0) * Number(form.dias || 0)) || 0
@@ -304,6 +358,7 @@ const cargarViajes = useCallback(async () => {
   }, [form.combustible_despachado, form.precio_galon, form.salario_diario, form.dias, gastos])
 
   /* ========================= UI ========================= */
+
   return (
     <div className="p-6 max-w-6xl mx-auto">
       <div className="mb-6 flex items-center gap-3">
@@ -339,7 +394,7 @@ const cargarViajes = useCallback(async () => {
             <option value="">Todos los vehículos</option>
             {vehiculos.map((v) => (
               <option key={v.id} value={v.id}>
-                {v.placa || `ID ${v.id}`}{v.alias ? ` · ${v.alias}` : ''}
+                {(v.placa || `ID ${v.id}`) + (v.alias ? ` · ${v.alias}` : '')}
               </option>
             ))}
           </select>
@@ -368,7 +423,7 @@ const cargarViajes = useCallback(async () => {
             <thead className="bg-gray-100">
               <tr>
                 <th className="p-2 text-left">ID</th>
-                <th className="p-2 text-left">Vehículo (ID)</th>
+                <th className="p-2 text-left">Vehículo</th>
                 <th className="p-2 text-left">Conductor</th>
                 <th className="p-2 text-left">Desde</th>
                 <th className="p-2 text-left">Hasta</th>
@@ -385,20 +440,33 @@ const cargarViajes = useCallback(async () => {
               ) : viajesFiltrados.map(v => (
                 <tr key={v.id} className="border-t">
                   <td className="p-2">{v.id}</td>
-                  <td className="p-2">{v.vehiculo_id ?? '—'}</td>
+                  <td className="p-2">
+                    {v.vehiculo_id != null
+                      ? (vehiculoMap.get(v.vehiculo_id) || `ID ${v.vehiculo_id}`)
+                      : '—'}
+                  </td>
                   <td className="p-2">{v.conductor || '—'}</td>
                   <td className="p-2">{v.fecha_inicio || '—'}</td>
                   <td className="p-2">{v.fecha_fin || '—'}</td>
                   <td className="p-2">{v.origen || '—'}</td>
                   <td className="p-2">{v.destino || '—'}</td>
                   <td className="p-2 space-x-2">
-                    <button onClick={() => seleccionarViaje(v)} className="px-2 py-1 text-xs rounded bg-sky-600 text-white">
+                    <button
+                      onClick={() => seleccionarViaje(v)}
+                      className="px-2 py-1 text-xs rounded bg-sky-600 text-white"
+                    >
                       Editar
                     </button>
-                    <Link href={`/vehiculos/reporte?id=${v.id}`} className="px-2 py-1 text-xs rounded bg-amber-600 text-white">
+                    <Link
+                      href={`/vehiculos/reporte?id=${v.id}`}
+                      className="px-2 py-1 text-xs rounded bg-amber-600 text-white"
+                    >
                       Reporte
                     </Link>
-                    <button onClick={() => eliminarViaje(v.id)} className="px-2 py-1 text-xs rounded bg-red-600 text-white">
+                    <button
+                      onClick={() => eliminarViaje(v.id)}
+                      className="px-2 py-1 text-xs rounded bg-red-600 text-white"
+                    >
                       Eliminar
                     </button>
                   </td>
@@ -413,7 +481,9 @@ const cargarViajes = useCallback(async () => {
       <div className="grid md:grid-cols-2 gap-6">
         {/* Formulario */}
         <div className="border rounded p-4">
-          <h3 className="font-semibold mb-3">{form.id ? `Editar viaje #${form.id}` : 'Nuevo viaje'}</h3>
+          <h3 className="font-semibold mb-3">
+            {form.id ? `Editar viaje #${form.id}` : 'Nuevo viaje'}
+          </h3>
 
           <div className="grid grid-cols-2 gap-3">
             {/* Select de vehículo */}
@@ -425,7 +495,7 @@ const cargarViajes = useCallback(async () => {
               <option value="">Seleccione un vehículo</option>
               {vehiculos.map((v) => (
                 <option key={v.id} value={v.id}>
-                  {v.placa || `ID ${v.id}`}{v.alias ? ` · ${v.alias}` : ''}
+                  {(v.placa || `ID ${v.id}`) + (v.alias ? ` · ${v.alias}` : '')}
                 </option>
               ))}
             </select>
@@ -546,13 +616,17 @@ const cargarViajes = useCallback(async () => {
 
         {/* Gastos */}
         <div className="border rounded p-4">
-          <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center justify_between mb-3">
             <h3 className="font-semibold">Gastos adicionales</h3>
-            {selected ? <div className="text-xs text-gray-600">Viaje seleccionado: #{selected.id}</div> : null}
+            {selected ? (
+              <div className="text-xs text-gray-600">Viaje seleccionado: #{selected.id}</div>
+            ) : null}
           </div>
 
           {!selected ? (
-            <div className="text-sm text-gray-600">Selecciona o guarda un viaje para agregar gastos.</div>
+            <div className="text-sm text-gray-600">
+              Selecciona o guarda un viaje para agregar gastos.
+            </div>
           ) : (
             <>
               <div className="grid grid-cols-5 gap-2 mb-3">
@@ -600,7 +674,9 @@ const cargarViajes = useCallback(async () => {
                       <tr key={g.id} className="border-t">
                         <td className="p-2">{g.fecha || '—'}</td>
                         <td className="p-2">{g.descripcion || '—'}</td>
-                        <td className="p-2 text-right">Q{Number(g.monto || 0).toFixed(2)}</td>
+                        <td className="p-2 text-right">
+                          Q{Number(g.monto || 0).toFixed(2)}
+                        </td>
                         <td className="p-2 text-center">
                           <button
                             onClick={() => eliminarGasto(g.id)}
@@ -621,4 +697,3 @@ const cargarViajes = useCallback(async () => {
     </div>
   )
 }
-
