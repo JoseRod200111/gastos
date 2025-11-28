@@ -29,6 +29,8 @@ type Viaje = {
   salario_diario: number | null
   dias: number | null
   observaciones: string | null
+  km_recorridos: number | null
+  consumo_por_galon: number | null
 }
 
 type GastoAdicional = {
@@ -70,6 +72,8 @@ export default function VehiculosPage() {
     salario_diario: '',
     dias: '',
     observaciones: '',
+    km_recorridos: '',
+    consumo_por_galon: '',
   })
 
   const resetForm = () =>
@@ -88,6 +92,8 @@ export default function VehiculosPage() {
       salario_diario: '',
       dias: '',
       observaciones: '',
+      km_recorridos: '',
+      consumo_por_galon: '',
     })
 
   /* ========================= Catálogo de vehículos ========================= */
@@ -124,15 +130,10 @@ export default function VehiculosPage() {
       const { data, error } = await supabase
         .from('viajes')
         .select('*')
+        .order('id', { ascending: false })
 
       if (error) {
         console.error('Error cargando viajes', error)
-        alert(
-          'Error cargando viajes:\n' +
-          (error.message || '') +
-          (error.details ? '\nDetalles: ' + error.details : '') +
-          (error.hint ? '\nHint: ' + error.hint : '')
-        )
         setViajes([])
         return
       }
@@ -173,6 +174,25 @@ export default function VehiculosPage() {
       setForm((prev) => ({ ...prev, dias: diasStr }))
     }
   }, [form.fecha_inicio, form.fecha_fin, form.dias])
+
+  /* ========================= Calcular consumo por galón ========================= */
+
+  useEffect(() => {
+    const km = Number(form.km_recorridos || 0)
+    const gal = Number(form.combustible_despachado || 0)
+
+    if (km > 0 && gal > 0) {
+      const consumo = km / gal
+      const str = consumo.toFixed(2)
+      if (form.consumo_por_galon !== str) {
+        setForm((prev) => ({ ...prev, consumo_por_galon: str }))
+      }
+    } else {
+      if (form.consumo_por_galon !== '') {
+        setForm((prev) => ({ ...prev, consumo_por_galon: '' }))
+      }
+    }
+  }, [form.km_recorridos, form.combustible_despachado, form.consumo_por_galon])
 
   /* ========================= Filtros ========================= */
 
@@ -243,6 +263,8 @@ export default function VehiculosPage() {
       salario_diario: v.salario_diario != null ? String(v.salario_diario) : '',
       dias: v.dias != null ? String(v.dias) : '',
       observaciones: v.observaciones ?? '',
+      km_recorridos: v.km_recorridos != null ? String(v.km_recorridos) : '',
+      consumo_por_galon: v.consumo_por_galon != null ? String(v.consumo_por_galon) : '',
     })
     await cargarGastos(v.id)
   }
@@ -264,6 +286,8 @@ export default function VehiculosPage() {
       salario_diario: form.salario_diario ? Number(form.salario_diario) : null,
       dias: form.dias ? Number(form.dias) : null,
       observaciones: form.observaciones || null,
+      km_recorridos: form.km_recorridos ? Number(form.km_recorridos) : null,
+      consumo_por_galon: form.consumo_por_galon ? Number(form.consumo_por_galon) : null,
     }
 
     if (form.id) {
@@ -572,6 +596,21 @@ export default function VehiculosPage() {
               className="border p-2 rounded"
               placeholder="Días (calculado)"
               value={form.dias}
+              readOnly
+            />
+
+            <input
+              type="number"
+              className="border p-2 rounded"
+              placeholder="Km recorridos"
+              value={form.km_recorridos}
+              onChange={(e) => setForm({ ...form, km_recorridos: e.target.value })}
+            />
+            <input
+              type="number"
+              className="border p-2 rounded"
+              placeholder="Consumo (km/galón)"
+              value={form.consumo_por_galon}
               readOnly
             />
 
