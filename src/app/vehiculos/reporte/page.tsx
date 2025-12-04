@@ -1,11 +1,11 @@
 'use client'
 
+export const dynamic = 'force-dynamic'
+
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
-import { useSearchParams } from 'next/navigation'
 import { supabase } from '@/lib/supabaseClient'
 
-// misma librería que en otros reportes
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore
 import jsPDF from 'jspdf'
@@ -46,8 +46,7 @@ type Gasto = {
 }
 
 export default function ReporteViajePage() {
-  const searchParams = useSearchParams()
-  const idParam = searchParams.get('id')
+  const [idParam, setIdParam] = useState<string | null>(null)
 
   const [viaje, setViaje] = useState<Viaje | null>(null)
   const [vehiculo, setVehiculo] = useState<Vehiculo | null>(null)
@@ -55,69 +54,87 @@ export default function ReporteViajePage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
-  /* ========================= Carga de datos ========================= */
-
-  const cargar = useCallback(
-    async (id: number) => {
-      setLoading(true)
-      setError(null)
-
-      // 1) Viaje
-      const { data: viajeData, error: vErr } = await supabase
-        .from('viajes')
-        .select('*')
-        .eq('id', id)
-        .maybeSingle()
-
-      if (vErr || !viajeData) {
-        console.error('Error cargando viaje', vErr)
-        setError('No se pudo cargar el viaje.')
-        setLoading(false)
-        return
-      }
-
-      const v = viajeData as Viaje
-      setViaje(v)
-
-      // 2) Vehículo
-      if (v.vehiculo_id != null) {
-        const { data: vehiculoData, error: veErr } = await supabase
-          .from('vehiculos')
-          .select('id, placa, alias, marca, modelo, anio')
-          .eq('id', v.vehiculo_id)
-          .maybeSingle()
-
-        if (!veErr && vehiculoData) {
-          setVehiculo(vehiculoData as Vehiculo)
-        }
-      }
-
-      // 3) Gastos adicionales
-      const { data: gastosData, error: gErr } = await supabase
-        .from('viaje_gastos')
-        .select('id, fecha, descripcion, monto')
-        .eq('viaje_id', id)
-        .order('fecha', { ascending: true })
-
-      if (gErr) {
-        console.error('Error cargando gastos', gErr)
-        setGastos([])
-      } else {
-        setGastos((gastosData as Gasto[]) ?? [])
-      }
-
-      setLoading(false)
-    },
-    []
-  )
+  /* ========================= Leer ID de la URL ========================= */
 
   useEffect(() => {
-    const id = idParam ? Number(idParam) : NaN
-    if (!idParam || Number.isNaN(id)) {
+    if (typeof window === 'undefined') return
+    const params = new URLSearchParams(window.location.search)
+    const id = params.get('id')
+    setIdParam(id)
+  }, [])
+
+  /* ========================= Carga de datos ========================= */
+
+  const cargar = useCallback(async (id: number) => {
+    setLoading(true)
+    setError(null)
+
+    // 1) Viaje
+    const { data: viajeData, error: vErr } = await supabase
+      .from('viajes')
+      .select('*')
+      .eq('id', id)
+      .maybeSingle()
+
+    if (vErr || !viajeData) {
+      console.error('Error cargando viaje', vErr)
+      setError('No se pudo cargar el viaje.')
+      setLoading(false)
+      return
+    }
+
+    const v = viajeData as Viaje
+    setViaje(v)
+
+    // 2) Vehículo
+    if (v.vehiculo_id != null) {
+      const { data: vehiculoData, error: veErr } = await supabase
+        .from('vehiculos')
+        .select('id, placa, alias, marca, modelo, anio')
+        .eq('id', v.vehiculo_id)
+        .maybeSingle()
+
+      if (!veErr && vehiculoData) {
+        setVehiculo(vehiculoData as Vehiculo)
+      }
+    }
+
+    // 3) Gastos adicionales
+    const { data: gastosData, error: gErr } = await supabase
+      .from('viaje_gastos')
+      .select('id, fecha, descripcion, monto')
+      .eq('viaje_id', id)
+      .order('fecha', { ascending: true })
+
+    if (gErr) {
+      console.error('Error cargando gastos', gErr)
+      setGastos([])
+    } else {
+      setGastos((gastosData as Gasto[]) ?? [])
+    }
+
+    setLoading(false)
+  }, [])
+
+  useEffect(() => {
+    if (idParam === null) {
+      // todavía no se ha leído la URL
+      return
+    }
+
+    if (!idParam) {
       setError('ID de viaje inválido.')
       setLoading(false)
       return
     }
+
+    const id = Number(idParam)
+    if (Number.isNaN(id)) {
+      setError('ID de viaje inválido.')
+      setLoading(false)
+      return
+    }
+
     cargar(id)
   }, [idParam, cargar])
 
