@@ -117,10 +117,7 @@ export default function ReporteViajePage() {
   }, [])
 
   useEffect(() => {
-    if (idParam === null) {
-      // todavía no se ha leído la URL
-      return
-    }
+    if (idParam === null) return
 
     if (!idParam) {
       setError('ID de viaje inválido.')
@@ -159,33 +156,65 @@ export default function ReporteViajePage() {
 
   /* ========================= Generar PDF ========================= */
 
-  const generarPDF = () => {
+  const generarPDF = async () => {
     if (!viaje) return
 
-    const doc = new jsPDF()
+    // Crear doc A4 en mm
+    const doc = new jsPDF('p', 'mm', 'a4')
 
-    let y = 15
+    // ----- Encabezado con logo y banda gris -----
+    doc.setFillColor(245, 245, 245)
+    doc.rect(0, 0, 210, 30, 'F')
 
-    // Encabezado
+    // Cargar logo
+    try {
+      const img = new Image()
+      img.src = '/logo.png'
+
+      await new Promise<void>((resolve) => {
+        img.onload = () => resolve()
+        img.onerror = () => resolve()
+      })
+
+      // Si cargó, lo dibujamos
+      // (si falla, simplemente no se verá el logo)
+      // ancho ~30mm, alto proporcional
+      doc.addImage(img, 'PNG', 10, 5, 30, 18)
+    } catch {
+      // ignorar errores de logo
+    }
+
+    // Título y subtítulo
+    doc.setTextColor(0, 0, 0)
     doc.setFontSize(16)
     doc.setFont('helvetica', 'bold')
-    doc.text('Reporte de Viaje', 105, y, { align: 'center' })
-    y += 8
+    doc.text('Reporte de Viaje', 125, 14, { align: 'center' })
 
     doc.setFontSize(10)
     doc.setFont('helvetica', 'normal')
-    const fechaGen = new Date().toLocaleString()
-    doc.text(`Generado: ${fechaGen}`, 14, y)
-    y += 6
+    doc.text('Sistema de Control de Gastos y Flota', 125, 20, {
+      align: 'center',
+    })
 
-    // Info vehículo
+    const fechaGen = new Date().toLocaleString()
+    doc.setFontSize(9)
+    doc.text(`Generado: ${fechaGen}`, 125, 26, { align: 'center' })
+
+    let y = 36
+
+    // ----- Bloque: Vehículo -----
+    doc.setFontSize(11)
     doc.setFont('helvetica', 'bold')
     doc.text('Vehículo', 14, y)
     y += 5
+
+    doc.setFontSize(9)
     doc.setFont('helvetica', 'normal')
 
     const placaAlias = vehiculo
-      ? `${vehiculo.placa || ''}${vehiculo.alias ? ' · ' + vehiculo.alias : ''}`
+      ? `${vehiculo.placa || ''}${
+          vehiculo.alias ? ' · ' + vehiculo.alias : ''
+        }`
       : viaje.vehiculo_id != null
       ? `ID ${viaje.vehiculo_id}`
       : 'No registrado'
@@ -200,13 +229,21 @@ export default function ReporteViajePage() {
       .join('   |   ')
 
     doc.text(lineaVehiculo, 14, y)
+    y += 8
+
+    // Línea divisoria
+    doc.setDrawColor(200, 200, 200)
+    doc.line(14, y, 196, y)
     y += 6
 
-    // Datos principales del viaje
+    // ----- Bloque: Datos del viaje -----
     doc.setFont('helvetica', 'bold')
+    doc.setFontSize(11)
     doc.text('Datos del viaje', 14, y)
     y += 5
+
     doc.setFont('helvetica', 'normal')
+    doc.setFontSize(9)
 
     const fechaInicio = viaje.fecha_inicio || '—'
     const fechaFin = viaje.fecha_fin || '—'
@@ -220,13 +257,21 @@ export default function ReporteViajePage() {
     doc.text(`Origen: ${viaje.origen || '—'}`, 14, y)
     y += 5
     doc.text(`Destino: ${viaje.destino || '—'}`, 14, y)
+    y += 8
+
+    // Línea divisoria
+    doc.setDrawColor(200, 200, 200)
+    doc.line(14, y, 196, y)
     y += 6
 
-    // Distancia y consumo
+    // ----- Bloque: Distancia y consumo -----
     doc.setFont('helvetica', 'bold')
+    doc.setFontSize(11)
     doc.text('Distancia y consumo', 14, y)
     y += 5
+
     doc.setFont('helvetica', 'normal')
+    doc.setFontSize(9)
 
     const km =
       viaje.km_recorridos != null
@@ -240,13 +285,21 @@ export default function ReporteViajePage() {
     doc.text(`Km recorridos: ${km} km`, 14, y)
     y += 5
     doc.text(`Consumo promedio: ${consumo} km/galón`, 14, y)
+    y += 8
+
+    // Línea divisoria
+    doc.setDrawColor(200, 200, 200)
+    doc.line(14, y, 196, y)
     y += 6
 
-    // Combustible y salarios
+    // ----- Bloque: Costos principales -----
     doc.setFont('helvetica', 'bold')
+    doc.setFontSize(11)
     doc.text('Resumen de costos principales', 14, y)
     y += 5
+
     doc.setFont('helvetica', 'normal')
+    doc.setFontSize(9)
 
     const desp = Number(viaje.combustible_despachado || 0).toFixed(2)
     const precio = Number(viaje.precio_galon || 0).toFixed(2)
@@ -263,17 +316,25 @@ export default function ReporteViajePage() {
     doc.text(`Salario diario: Q${salDia}   Días: ${dias}`, 14, y)
     y += 5
     doc.text(`Total salarios: Q${salarioQ}`, 14, y)
+    y += 8
+
+    // Línea divisoria
+    doc.setDrawColor(200, 200, 200)
+    doc.line(14, y, 196, y)
     y += 6
 
-    // Gastos adicionales
+    // ----- Bloque: Gastos adicionales -----
     doc.setFont('helvetica', 'bold')
+    doc.setFontSize(11)
     doc.text('Gastos adicionales', 14, y)
     y += 5
+
     doc.setFont('helvetica', 'normal')
+    doc.setFontSize(9)
 
     if (gastos.length === 0) {
       doc.text('Sin gastos adicionales registrados.', 14, y)
-      y += 6
+      y += 8
     } else {
       doc.text(
         'Fecha         Descripción                                      Monto (Q)',
@@ -281,11 +342,12 @@ export default function ReporteViajePage() {
         y
       )
       y += 4
+      doc.setDrawColor(180, 180, 180)
       doc.line(14, y, 196, y)
       y += 3
 
       gastos.forEach((g) => {
-        if (y > 270) {
+        if (y > 260) {
           doc.addPage()
           y = 20
         }
@@ -299,30 +361,52 @@ export default function ReporteViajePage() {
         y += 5
       })
 
-      y += 3
+      y += 4
       const otrosQ = totales.otros.toFixed(2)
       doc.setFont('helvetica', 'bold')
       doc.text(`Subtotal gastos adicionales: Q${otrosQ}`, 14, y)
-      y += 6
+      y += 8
       doc.setFont('helvetica', 'normal')
+      doc.setFontSize(9)
     }
 
-    // Observaciones
+    // ----- Observaciones -----
     if (viaje.observaciones) {
+      doc.setDrawColor(200, 200, 200)
+      doc.line(14, y, 196, y)
+      y += 6
+
       doc.setFont('helvetica', 'bold')
+      doc.setFontSize(11)
       doc.text('Observaciones', 14, y)
       y += 5
-      doc.setFont('helvetica', 'normal')
 
+      doc.setFont('helvetica', 'normal')
+      doc.setFontSize(9)
       const obsLines = doc.splitTextToSize(viaje.observaciones, 180)
       doc.text(obsLines, 14, y)
       y += obsLines.length * 5 + 4
     }
 
-    // Total general
+    // ----- Total general -----
     const totalQ = totales.total.toFixed(2)
+    doc.setDrawColor(0, 0, 0)
+    doc.setLineWidth(0.3)
+    doc.rect(14, y, 182, 10)
     doc.setFont('helvetica', 'bold')
-    doc.text(`TOTAL GENERAL DEL VIAJE: Q${totalQ}`, 14, y)
+    doc.setFontSize(11)
+    doc.text(`TOTAL GENERAL DEL VIAJE: Q${totalQ}`, 19, y + 7)
+
+    // ----- Footer -----
+    doc.setFont('helvetica', 'normal')
+    doc.setFontSize(8)
+    doc.setTextColor(120, 120, 120)
+    doc.text(
+      'Documento generado automáticamente por el Sistema de Control de Gastos y Viajes',
+      105,
+      290,
+      { align: 'center' }
+    )
 
     const nombre = `reporte_viaje_${viaje.id}.pdf`
     doc.save(nombre)
