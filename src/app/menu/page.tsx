@@ -43,6 +43,14 @@ export default function Dashboard() {
         >
           🚚 Vehículos
         </Link>
+
+        {/* Nuevo módulo Granja */}
+        <Link
+          href="/granja"
+          className="block bg-pink-600 hover:bg-pink-700 text-white text-center py-4 rounded shadow"
+        >
+          🐷 Granja
+        </Link>
       </div>
     </div>
   )
