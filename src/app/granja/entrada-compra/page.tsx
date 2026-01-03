@@ -298,7 +298,7 @@ export default function GranjaEntradaCompraPage() {
             {/* lote existente */}
             <div>
               <label className="block text-xs font-semibold mb-1">
-                Lote existente (opcional)
+                Lote existente
               </label>
               <select
                 className="border rounded w-full p-2 text-sm"
@@ -323,7 +323,7 @@ export default function GranjaEntradaCompraPage() {
               </label>
               <input
                 className="border rounded w-full p-2 text-sm"
-                placeholder="Ej. C-2025-001 (opcional)"
+                placeholder=""
                 value={form.nuevo_lote_codigo}
                 onChange={(e) =>
                   setForm({ ...form, nuevo_lote_codigo: e.target.value })
@@ -333,7 +333,7 @@ export default function GranjaEntradaCompraPage() {
 
             <div className="col-span-2">
               <label className="block text-xs font-semibold mb-1">
-                Proveedor (opcional)
+                Proveedor
               </label>
               <select
                 className="border rounded w-full p-2 text-sm"
@@ -512,3 +512,4 @@ export default function GranjaEntradaCompraPage() {
     </div>
   )
 }
+
