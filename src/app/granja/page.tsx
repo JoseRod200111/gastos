@@ -69,10 +69,7 @@ export default function GranjaMenuPage() {
         {/* INVENTARIO */}
         <section className="border rounded-lg p-4 shadow-sm bg-white">
           <h2 className="font-semibold mb-3">Inventario</h2>
-          <p className="text-xs text-gray-600 mb-2">
-            Ajustes manuales por ubicación y visualización de existencias
-            teóricas.
-          </p>
+         
           <div className="grid gap-2">
             <Link
               href="/granja/inventario"
@@ -92,9 +89,7 @@ export default function GranjaMenuPage() {
         {/* REPORTES */}
         <section className="border rounded-lg p-4 shadow-sm bg-white">
           <h2 className="font-semibold mb-3">Reportes</h2>
-          <p className="text-xs text-gray-600 mb-2">
-            Resumen de movimientos, mortalidad, productividad por cerda, etc.
-          </p>
+         
           <div className="grid gap-2">
             <Link
               href="/granja/reportes"
@@ -108,3 +103,4 @@ export default function GranjaMenuPage() {
     </div>
   )
 }
+
