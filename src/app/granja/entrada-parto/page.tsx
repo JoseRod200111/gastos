@@ -36,7 +36,7 @@ export default function GranjaEntradaPartoPage() {
   const [ubicaciones, setUbicaciones] = useState<Ubicacion[]>([])
   const [lotes, setLotes] = useState<Lote[]>([])
   const [partosRecientes, setPartosRecientes] = useState<Parto[]>([])
-  const [cerdas, setCerdas] = useState<string[]>([]) // hembras conocidas
+  const [cerdas, setCerdas] = useState<string[]>([])
 
   const [loading, setLoading] = useState(false)
   const [guardando, setGuardando] = useState(false)
@@ -44,7 +44,6 @@ export default function GranjaEntradaPartoPage() {
   const [form, setForm] = useState({
     fecha: '',
     ubicacion_id: '',
-    // cerda_id seguirá siendo el valor final (ya sea seleccionada o nueva)
     cerda_id: '',
     lote_id: '',
     nuevo_lote_codigo: '',
@@ -73,7 +72,7 @@ export default function GranjaEntradaPartoPage() {
       observaciones: '',
     })
 
-  // --------- cargar catálogos + partos recientes ----------
+  // --------- cargar datos ---------
   const cargarDatos = useCallback(async () => {
     setLoading(true)
     try {
@@ -101,7 +100,6 @@ export default function GranjaEntradaPartoPage() {
           )
           .order('fecha', { ascending: false })
           .limit(20),
-        // solo necesitamos cerda_id para armar la drop list
         supabase
           .from('granja_partos')
           .select('cerda_id')
@@ -136,20 +134,19 @@ export default function GranjaEntradaPartoPage() {
     cargarDatos()
   }, [cargarDatos])
 
-  // --------- helpers ----------
   const findUbicacion = (id: number) =>
     ubicaciones.find((u) => u.id === id)
 
   const findLote = (id: number | null) =>
     lotes.find((l) => l.id === id)
 
-  // --------- guardar parto ----------
+  // --------- guardar parto ---------
   const guardarParto = async () => {
     const cerdaCodigo = form.cerda_id.trim()
 
     if (!form.fecha || !form.ubicacion_id || !cerdaCodigo) {
       alert(
-        'Fecha, ubicación y la hembra (cerda) son obligatorios.\nSeleccione una de la lista o escriba una nueva.'
+        'Fecha, ubicación y la hembra (cerda) son obligatorios. Seleccione una de la lista o escriba una nueva.'
       )
       return
     }
@@ -161,7 +158,6 @@ export default function GranjaEntradaPartoPage() {
 
     setGuardando(true)
     try {
-      // 1) determinar / crear lote (tipo PARTO)
       let loteId: number | null = form.lote_id ? Number(form.lote_id) : null
 
       if (!loteId) {
@@ -198,7 +194,6 @@ export default function GranjaEntradaPartoPage() {
         ? Number(form.peso_camda_kg)
         : null
 
-      // 2) insertar registro de parto
       const { data: partoInsertado, error: partoErr } = await supabase
         .from('granja_partos')
         .insert({
@@ -223,7 +218,6 @@ export default function GranjaEntradaPartoPage() {
         return
       }
 
-      // 3) movimiento de inventario: solo se ingresan los vivos
       const movResp = await supabase
         .from('granja_movimientos')
         .insert({
@@ -255,10 +249,9 @@ export default function GranjaEntradaPartoPage() {
     }
   }
 
-  // --------- UI ----------
+  // --------- UI ---------
   return (
     <div className="p-6 max-w-6xl mx-auto">
-      {/* encabezado */}
       <div className="mb-6 flex items-center gap-3">
         <img src="/logo.png" alt="Logo" className="h-10" />
         <div>
@@ -279,7 +272,7 @@ export default function GranjaEntradaPartoPage() {
       </div>
 
       <div className="grid gap-6 md:grid-cols-2">
-        {/* ---- formulario ---- */}
+        {/* formulario */}
         <div className="border rounded-lg p-4 bg-white shadow-sm">
           <h2 className="font-semibold mb-3">Nuevo parto</h2>
 
@@ -325,7 +318,7 @@ export default function GranjaEntradaPartoPage() {
               </select>
             </div>
 
-            {/* NUEVO: drop list de hembras registradas */}
+            {/* lista de hembras registradas */}
             <div className="col-span-2">
               <label className="block text-xs font-semibold mb-1">
                 Hembra registrada
@@ -336,16 +329,14 @@ export default function GranjaEntradaPartoPage() {
                   const value = e.target.value
                   if (!value) return
                   if (value === '__nueva__') {
-                    // limpiar para que escriba una nueva
                     setForm((f) => ({ ...f, cerda_id: '' }))
                   } else {
-                    // copiar al campo de texto
                     setForm((f) => ({ ...f, cerda_id: value }))
                   }
                 }}
               >
                 <option value="">
-                  — Seleccione o elija "Nueva hembra" —
+                  — Seleccione una existente o la opción Nueva hembra —
                 </option>
                 {cerdas.map((c) => (
                   <option key={c} value={c}>
@@ -355,13 +346,12 @@ export default function GranjaEntradaPartoPage() {
                 <option value="__nueva__">➕ Nueva hembra…</option>
               </select>
               <p className="text-[10px] text-gray-500 mt-1">
-                Si selecciona una hembra, el código se copia abajo.
-                Para una nueva hembra, elija &quot;Nueva hembra…&quot; y
-                escriba el código manualmente.
+                Si selecciona una hembra de la lista, el código se copia
+                abajo. Para registrar una hembra nueva, elija la opción
+                Nueva hembra y escriba el código manualmente.
               </p>
             </div>
 
-            {/* campo final donde queda el código de la cerda */}
             <div className="col-span-2">
               <label className="block text-xs font-semibold mb-1">
                 Cerda (arete / código)
@@ -539,7 +529,7 @@ export default function GranjaEntradaPartoPage() {
           </div>
         </div>
 
-        {/* ---- partos recientes ---- */}
+        {/* partos recientes */}
         <div className="border rounded-lg p-4 bg-white shadow-sm">
           <h2 className="font-semibold mb-3">Partos recientes</h2>
           {partosRecientes.length === 0 ? (
