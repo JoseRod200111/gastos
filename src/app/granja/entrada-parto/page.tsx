@@ -140,7 +140,7 @@ export default function GranjaEntradaPartoPage() {
   const findLote = (id: number | null) =>
     lotes.find((l) => l.id === id)
 
-  // --------- guardar parto ---------
+   // --------- guardar parto ---------
   const guardarParto = async () => {
     const cerdaCodigo = form.cerda_id.trim()
 
@@ -160,11 +160,15 @@ export default function GranjaEntradaPartoPage() {
     try {
       let loteId: number | null = form.lote_id ? Number(form.lote_id) : null
 
+      // ----------------------------
+      // 1) Determinar / crear lote
+      // ----------------------------
       if (!loteId) {
         const codigoBase =
           form.nuevo_lote_codigo.trim() ||
           `P-${form.fecha.replace(/-/g, '')}`
 
+        // Intentamos crear el lote
         const { data: loteInsertado, error: loteErr } = await supabase
           .from('granja_lotes')
           .insert({
@@ -176,15 +180,48 @@ export default function GranjaEntradaPartoPage() {
           .select('id')
           .single()
 
-        if (loteErr || !loteInsertado) {
-          console.error('Error creando lote', loteErr)
-          alert('No se pudo crear el lote.')
-          return
-        }
+        if (loteErr) {
+          // Si el error es por conflicto de UNIQUE (código ya existe),
+          // buscamos ese lote y lo reutilizamos.
+          const isConflict =
+            loteErr.code === '23505' || // Postgres unique_violation
+            loteErr.code === '409' ||
+            (typeof loteErr.details === 'string' &&
+              loteErr.details.toLowerCase().includes('already exists'))
 
-        loteId = loteInsertado.id
+          if (isConflict) {
+            const {
+              data: loteExistente,
+              error: loteExistErr,
+            } = await supabase
+              .from('granja_lotes')
+              .select('id')
+              .eq('codigo', codigoBase)
+              .maybeSingle()
+
+            if (loteExistErr || !loteExistente) {
+              console.error(
+                'Error buscando lote existente después del conflicto',
+                loteExistErr || loteErr
+              )
+              alert('No se pudo usar el lote ya existente.')
+              return
+            }
+
+            loteId = loteExistente.id
+          } else {
+            console.error('Error creando lote', loteErr)
+            alert('No se pudo crear el lote.')
+            return
+          }
+        } else if (loteInsertado) {
+          loteId = loteInsertado.id
+        }
       }
 
+      // ----------------------------
+      // 2) Insertar parto
+      // ----------------------------
       const nacidosVivos = Number(form.nacidos_vivos || 0)
       const nacidosMuertos = Number(form.nacidos_muertos || 0)
       const momias = Number(form.momias || 0)
@@ -218,6 +255,9 @@ export default function GranjaEntradaPartoPage() {
         return
       }
 
+      // ----------------------------
+      // 3) Movimiento de inventario
+      // ----------------------------
       const movResp = await supabase
         .from('granja_movimientos')
         .insert({
@@ -248,6 +288,7 @@ export default function GranjaEntradaPartoPage() {
       setGuardando(false)
     }
   }
+
 
   // --------- UI ---------
   return (
@@ -597,3 +638,4 @@ export default function GranjaEntradaPartoPage() {
     </div>
   )
 }
+
