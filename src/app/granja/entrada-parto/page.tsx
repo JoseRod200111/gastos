@@ -32,6 +32,7 @@ export default function GranjaEntradaPartoPage() {
   const [ubicaciones, setUbicaciones] = useState<Ubicacion[]>([])
   const [lotes, setLotes] = useState<Lote[]>([])
   const [partosRecientes, setPartosRecientes] = useState<Parto[]>([])
+  const [cerdasRegistradas, setCerdasRegistradas] = useState<string[]>([])
   const [loading, setLoading] = useState(false)
   const [guardando, setGuardando] = useState(false)
 
@@ -66,7 +67,7 @@ export default function GranjaEntradaPartoPage() {
       observaciones: '',
     })
 
-  // ------- carga de catálogos y partos recientes -------
+  // -------- cargar catálogos y partos --------
   const cargarDatos = useCallback(async () => {
     setLoading(true)
     try {
@@ -83,7 +84,7 @@ export default function GranjaEntradaPartoPage() {
         supabase
           .from('granja_lotes')
           .select('id, codigo, fecha, tipo_origen')
-          .eq('tipo_origen', 'PARTO')
+          // IMPORTANTE: sin filtro por tipo para evitar problemas.
           .order('fecha', { ascending: false })
           .limit(50),
         supabase
@@ -101,7 +102,19 @@ export default function GranjaEntradaPartoPage() {
 
       if (ubicData) setUbicaciones(ubicData as Ubicacion[])
       if (loteData) setLotes(loteData as Lote[])
-      if (partoData) setPartosRecientes(partoData as Parto[])
+      if (partoData) {
+        const p = partoData as Parto[]
+        setPartosRecientes(p)
+
+        // cerdas registradas = distintos cerda_id de los partos
+        const setCerdas = new Set<string>()
+        p.forEach((row) => {
+          if (row.cerda_id && row.cerda_id.trim() !== '') {
+            setCerdas.add(row.cerda_id.trim())
+          }
+        })
+        setCerdasRegistradas(Array.from(setCerdas).sort())
+      }
     } finally {
       setLoading(false)
     }
@@ -117,20 +130,20 @@ export default function GranjaEntradaPartoPage() {
   const findLote = (id: number | null) =>
     lotes.find((l) => l.id === id)
 
-  // ------- guardar parto -------
+  // -------- guardar parto --------
   const guardarParto = async () => {
     if (!form.fecha || !form.ubicacion_id) {
       alert('Fecha y ubicación son obligatorias.')
       return
     }
     if (!form.cerda_id.trim()) {
-      alert('Debe escribir el código de la cerda.')
+      alert('Debe indicar la cerda.')
       return
     }
 
     setGuardando(true)
     try {
-      // 1) determinar / crear lote de tipo PARTO
+      // 1) determinar / crear lote
       let loteId: number | null = form.lote_id
         ? Number(form.lote_id)
         : null
@@ -140,10 +153,7 @@ export default function GranjaEntradaPartoPage() {
           form.nuevo_lote_codigo.trim() ||
           `P-${form.fecha.replace(/-/g, '')}`
 
-        const {
-          data: loteInsertado,
-          error: loteErr,
-        } = await supabase
+        const { data: loteInsertado, error: loteErr } = await supabase
           .from('granja_lotes')
           .insert({
             codigo: codigoBase,
@@ -172,11 +182,8 @@ export default function GranjaEntradaPartoPage() {
       const momias = form.momias ? Number(form.momias) : 0
       const cantidadTotal = nacidosVivos + nacidosMuertos + momias
 
-      // 2) insertar parto (ahora SI incluye lote_id)
-      const {
-        data: partoInsertado,
-        error: partoErr,
-      } = await supabase
+      // 2) insertar parto
+      const { data: partoInsertado, error: partoErr } = await supabase
         .from('granja_partos')
         .insert({
           fecha: form.fecha,
@@ -202,7 +209,7 @@ export default function GranjaEntradaPartoPage() {
         return
       }
 
-      // 3) movimiento de inventario: entrada por parto
+      // 3) movimiento inventario
       const { error: movErr } = await supabase
         .from('granja_movimientos')
         .insert({
@@ -221,10 +228,7 @@ export default function GranjaEntradaPartoPage() {
         })
 
       if (movErr) {
-        console.error(
-          'Error registrando movimiento de inventario',
-          movErr
-        )
+        console.error('Error registrando movimiento', movErr)
         alert(
           'Parto guardado, pero hubo un problema al registrar el movimiento de inventario.'
         )
@@ -239,7 +243,7 @@ export default function GranjaEntradaPartoPage() {
     }
   }
 
-  // ------- UI -------
+  // -------- UI --------
   return (
     <div className="p-6 max-w-5xl mx-auto">
       {/* encabezado */}
@@ -262,7 +266,7 @@ export default function GranjaEntradaPartoPage() {
       </div>
 
       <div className="grid gap-6 md:grid-cols-2">
-        {/* -------- formulario -------- */}
+        {/* ------ formulario ------ */}
         <div className="border rounded-lg p-4 bg-white shadow-sm">
           <h2 className="font-semibold mb-3">Nuevo parto</h2>
 
@@ -347,19 +351,41 @@ export default function GranjaEntradaPartoPage() {
               />
             </div>
 
-            {/* cerda */}
+            {/* cerda: input + combo de cerdas registradas */}
             <div className="col-span-2">
               <label className="block text-xs font-semibold mb-1">
-                Cerda (arete o código)
+                Cerda (arete / código)
               </label>
-              <input
-                className="border rounded w-full p-2 text-sm"
-                value={form.cerda_id}
-                onChange={(e) =>
-                  setForm({ ...form, cerda_id: e.target.value })
-                }
-                placeholder="Ejemplo: M1J1, 3805, etc."
-              />
+              <div className="flex gap-2">
+                <input
+                  className="border rounded w-full p-2 text-sm"
+                  value={form.cerda_id}
+                  onChange={(e) =>
+                    setForm({ ...form, cerda_id: e.target.value })
+                  }
+                  placeholder="Escriba o seleccione de la lista"
+                />
+                <select
+                  className="border rounded p-2 text-xs w-40"
+                  value=""
+                  onChange={(e) =>
+                    setForm({ ...form, cerda_id: e.target.value })
+                  }
+                >
+                  <option value="">
+                    Cerdas registradas…
+                  </option>
+                  {cerdasRegistradas.map((c) => (
+                    <option key={c} value={c}>
+                      {c}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <p className="text-[10px] text-gray-500 mt-1">
+                Si la cerda no está en la lista, solo escríbala en el
+                cuadro de texto; quedará registrada para futuros partos.
+              </p>
             </div>
 
             <div>
@@ -491,7 +517,7 @@ export default function GranjaEntradaPartoPage() {
           </div>
         </div>
 
-        {/* -------- partos recientes -------- */}
+        {/* ------ partos recientes ------ */}
         <div className="border rounded-lg p-4 bg-white shadow-sm">
           <h2 className="font-semibold mb-3">Partos recientes</h2>
           {partosRecientes.length === 0 ? (
