@@ -26,16 +26,12 @@ type Parto = {
   nacidos_vivos: number
   nacidos_muertos: number
   momias: number
-  peso_camda_kg: number | null
-  hembras: number
-  machos: number
 }
 
 export default function GranjaEntradaPartoPage() {
   const [ubicaciones, setUbicaciones] = useState<Ubicacion[]>([])
   const [lotes, setLotes] = useState<Lote[]>([])
   const [partosRecientes, setPartosRecientes] = useState<Parto[]>([])
-  const [cerdas, setCerdas] = useState<string[]>([]) // lista para dropdown
   const [loading, setLoading] = useState(false)
   const [guardando, setGuardando] = useState(false)
 
@@ -44,7 +40,6 @@ export default function GranjaEntradaPartoPage() {
     ubicacion_id: '',
     lote_id: '',
     nuevo_lote_codigo: '',
-    cerda_seleccion: 'NUEVA',
     cerda_id: '',
     nacidos_vivos: '',
     nacidos_muertos: '',
@@ -61,7 +56,6 @@ export default function GranjaEntradaPartoPage() {
       ubicacion_id: '',
       lote_id: '',
       nuevo_lote_codigo: '',
-      cerda_seleccion: 'NUEVA',
       cerda_id: '',
       nacidos_vivos: '',
       nacidos_muertos: '',
@@ -72,6 +66,7 @@ export default function GranjaEntradaPartoPage() {
       observaciones: '',
     })
 
+  // ------- carga de catálogos y partos recientes -------
   const cargarDatos = useCallback(async () => {
     setLoading(true)
     try {
@@ -94,7 +89,7 @@ export default function GranjaEntradaPartoPage() {
         supabase
           .from('granja_partos')
           .select(
-            'id, fecha, ubicacion_id, lote_id, cerda_id, nacidos_vivos, nacidos_muertos, momias, peso_camda_kg, hembras, machos'
+            'id, fecha, ubicacion_id, lote_id, cerda_id, nacidos_vivos, nacidos_muertos, momias'
           )
           .order('fecha', { ascending: false })
           .limit(20),
@@ -106,20 +101,7 @@ export default function GranjaEntradaPartoPage() {
 
       if (ubicData) setUbicaciones(ubicData as Ubicacion[])
       if (loteData) setLotes(loteData as Lote[])
-      if (partoData) {
-        const lista = partoData as Parto[]
-        setPartosRecientes(lista)
-
-        // generar lista de cerdas para el dropdown (distintas y ordenadas)
-        const distinct = Array.from(
-          new Set(
-            lista
-              .map((p) => p.cerda_id)
-              .filter((c) => c && c.trim().length > 0)
-          )
-        ).sort()
-        setCerdas(distinct)
-      }
+      if (partoData) setPartosRecientes(partoData as Parto[])
     } finally {
       setLoading(false)
     }
@@ -135,105 +117,62 @@ export default function GranjaEntradaPartoPage() {
   const findLote = (id: number | null) =>
     lotes.find((l) => l.id === id)
 
-  const manejarCambioCerda = (value: string) => {
-    if (value === 'NUEVA') {
-      setForm((f) => ({
-        ...f,
-        cerda_seleccion: 'NUEVA',
-        cerda_id: '',
-      }))
-    } else {
-      setForm((f) => ({
-        ...f,
-        cerda_seleccion: value,
-        cerda_id: value,
-      }))
-    }
-  }
-
+  // ------- guardar parto -------
   const guardarParto = async () => {
     if (!form.fecha || !form.ubicacion_id) {
       alert('Fecha y ubicación son obligatorias.')
       return
     }
-
-    const cerdaFinal =
-      form.cerda_seleccion === 'NUEVA'
-        ? form.cerda_id.trim()
-        : form.cerda_seleccion
-
-    if (!cerdaFinal) {
-      alert('Debe indicar la cerda.')
-      return
-    }
-
-    if (!form.nacidos_vivos) {
-      alert('Debe indicar nacidos vivos.')
+    if (!form.cerda_id.trim()) {
+      alert('Debe escribir el código de la cerda.')
       return
     }
 
     setGuardando(true)
     try {
-      // 1) determinar / crear lote (evitando 409 por duplicado)
-      let loteId: number | null = form.lote_id ? Number(form.lote_id) : null
+      // 1) determinar / crear lote de tipo PARTO
+      let loteId: number | null = form.lote_id
+        ? Number(form.lote_id)
+        : null
 
       if (!loteId) {
         const codigoBase =
           form.nuevo_lote_codigo.trim() ||
           `P-${form.fecha.replace(/-/g, '')}`
 
-        // buscar si ya existe un lote con este código
         const {
-          data: loteExistente,
-          error: loteExistError,
+          data: loteInsertado,
+          error: loteErr,
         } = await supabase
           .from('granja_lotes')
+          .insert({
+            codigo: codigoBase,
+            tipo_origen: 'PARTO',
+            fecha: form.fecha,
+            observaciones: form.observaciones || null,
+          })
           .select('id')
-          .eq('codigo', codigoBase)
-          .maybeSingle()
+          .single()
 
-        if (loteExistError) {
-          console.error('Error buscando lote', loteExistError)
-          alert('No se pudo buscar el lote.')
+        if (loteErr || !loteInsertado) {
+          console.error('Error creando lote', loteErr)
+          alert('No se pudo crear el lote.')
           return
         }
 
-        if (loteExistente) {
-          loteId = loteExistente.id
-        } else {
-          const {
-            data: loteInsertado,
-            error: loteInsertError,
-          } = await supabase
-            .from('granja_lotes')
-            .insert({
-              codigo: codigoBase,
-              tipo_origen: 'PARTO',
-              fecha: form.fecha,
-              observaciones: form.observaciones || null,
-            })
-            .select('id')
-            .single()
-
-          if (loteInsertError || !loteInsertado) {
-            console.error('Error creando lote', loteInsertError)
-            alert('No se pudo crear el lote.')
-            return
-          }
-
-          loteId = loteInsertado.id
-        }
+        loteId = loteInsertado.id
       }
 
-      const nacV = Number(form.nacidos_vivos) || 0
-      const nacM = Number(form.nacidos_muertos) || 0
-      const mom = Number(form.momias) || 0
-      const totalCerdos = nacV + nacM + mom
+      const nacidosVivos = form.nacidos_vivos
+        ? Number(form.nacidos_vivos)
+        : 0
+      const nacidosMuertos = form.nacidos_muertos
+        ? Number(form.nacidos_muertos)
+        : 0
+      const momias = form.momias ? Number(form.momias) : 0
+      const cantidadTotal = nacidosVivos + nacidosMuertos + momias
 
-      const hembras = form.hembras ? Number(form.hembras) : 0
-      const machos = form.machos ? Number(form.machos) : 0
-
-      // 2) insertar parto
+      // 2) insertar parto (ahora SI incluye lote_id)
       const {
         data: partoInsertado,
         error: partoErr,
@@ -243,15 +182,15 @@ export default function GranjaEntradaPartoPage() {
           fecha: form.fecha,
           ubicacion_id: Number(form.ubicacion_id),
           lote_id: loteId,
-          cerda_id: cerdaFinal,
-          nacidos_vivos: nacV,
-          nacidos_muertos: nacM,
-          momias: mom,
+          cerda_id: form.cerda_id.trim(),
+          nacidos_vivos: nacidosVivos,
+          nacidos_muertos: nacidosMuertos,
+          momias,
           peso_camda_kg: form.peso_camda_kg
             ? Number(form.peso_camda_kg)
             : null,
-          hembras,
-          machos,
+          hembras: form.hembras ? Number(form.hembras) : 0,
+          machos: form.machos ? Number(form.machos) : 0,
           observaciones: form.observaciones || null,
         })
         .select('id')
@@ -263,16 +202,16 @@ export default function GranjaEntradaPartoPage() {
         return
       }
 
-      // 3) movimiento de inventario (entrada por parto)
+      // 3) movimiento de inventario: entrada por parto
       const { error: movErr } = await supabase
         .from('granja_movimientos')
         .insert({
           ubicacion_id: Number(form.ubicacion_id),
           tipo: 'ENTRADA_PARTO',
           lote_id: loteId,
-          cantidad: totalCerdos,
-          hembras,
-          machos,
+          cantidad: cantidadTotal,
+          hembras: form.hembras ? Number(form.hembras) : null,
+          machos: form.machos ? Number(form.machos) : null,
           peso_total_kg: form.peso_camda_kg
             ? Number(form.peso_camda_kg)
             : null,
@@ -282,9 +221,12 @@ export default function GranjaEntradaPartoPage() {
         })
 
       if (movErr) {
-        console.error('Error registrando movimiento', movErr)
+        console.error(
+          'Error registrando movimiento de inventario',
+          movErr
+        )
         alert(
-          'Parto guardado, pero hubo un error registrando el movimiento de inventario.'
+          'Parto guardado, pero hubo un problema al registrar el movimiento de inventario.'
         )
       } else {
         alert('Parto registrado correctamente.')
@@ -297,8 +239,10 @@ export default function GranjaEntradaPartoPage() {
     }
   }
 
+  // ------- UI -------
   return (
     <div className="p-6 max-w-5xl mx-auto">
+      {/* encabezado */}
       <div className="mb-6 flex items-center gap-3">
         <img src="/logo.png" alt="Logo" className="h-10" />
         <div>
@@ -395,7 +339,10 @@ export default function GranjaEntradaPartoPage() {
                 placeholder="Si se deja vacío se genera P-AAAAMMDD"
                 value={form.nuevo_lote_codigo}
                 onChange={(e) =>
-                  setForm({ ...form, nuevo_lote_codigo: e.target.value })
+                  setForm({
+                    ...form,
+                    nuevo_lote_codigo: e.target.value,
+                  })
                 }
               />
             </div>
@@ -405,29 +352,14 @@ export default function GranjaEntradaPartoPage() {
               <label className="block text-xs font-semibold mb-1">
                 Cerda (arete o código)
               </label>
-              <select
-                className="border rounded w-full p-2 text-sm mb-1"
-                value={form.cerda_seleccion}
-                onChange={(e) => manejarCambioCerda(e.target.value)}
-              >
-                <option value="NUEVA">Escribir nueva cerda</option>
-                {cerdas.map((c) => (
-                  <option key={c} value={c}>
-                    {c}
-                  </option>
-                ))}
-              </select>
-
-              {form.cerda_seleccion === 'NUEVA' && (
-                <input
-                  className="border rounded w-full p-2 text-sm"
-                  placeholder="Código de la cerda"
-                  value={form.cerda_id}
-                  onChange={(e) =>
-                    setForm({ ...form, cerda_id: e.target.value })
-                  }
-                />
-              )}
+              <input
+                className="border rounded w-full p-2 text-sm"
+                value={form.cerda_id}
+                onChange={(e) =>
+                  setForm({ ...form, cerda_id: e.target.value })
+                }
+                placeholder="Ejemplo: M1J1, 3805, etc."
+              />
             </div>
 
             <div>
@@ -439,7 +371,10 @@ export default function GranjaEntradaPartoPage() {
                 className="border rounded w-full p-2 text-sm"
                 value={form.nacidos_vivos}
                 onChange={(e) =>
-                  setForm({ ...form, nacidos_vivos: e.target.value })
+                  setForm({
+                    ...form,
+                    nacidos_vivos: e.target.value,
+                  })
                 }
               />
             </div>
@@ -453,7 +388,10 @@ export default function GranjaEntradaPartoPage() {
                 className="border rounded w-full p-2 text-sm"
                 value={form.nacidos_muertos}
                 onChange={(e) =>
-                  setForm({ ...form, nacidos_muertos: e.target.value })
+                  setForm({
+                    ...form,
+                    nacidos_muertos: e.target.value,
+                  })
                 }
               />
             </div>
@@ -481,7 +419,10 @@ export default function GranjaEntradaPartoPage() {
                 className="border rounded w-full p-2 text-sm"
                 value={form.peso_camda_kg}
                 onChange={(e) =>
-                  setForm({ ...form, peso_camda_kg: e.target.value })
+                  setForm({
+                    ...form,
+                    peso_camda_kg: e.target.value,
+                  })
                 }
               />
             </div>
@@ -523,7 +464,10 @@ export default function GranjaEntradaPartoPage() {
                 rows={3}
                 value={form.observaciones}
                 onChange={(e) =>
-                  setForm({ ...form, observaciones: e.target.value })
+                  setForm({
+                    ...form,
+                    observaciones: e.target.value,
+                  })
                 }
               />
             </div>
@@ -574,9 +518,7 @@ export default function GranjaEntradaPartoPage() {
                     const l = findLote(p.lote_id)
                     return (
                       <tr key={p.id} className="border-t">
-                        <td className="p-2">
-                          {p.fecha || '—'}
-                        </td>
+                        <td className="p-2">{p.fecha}</td>
                         <td className="p-2">
                           {u
                             ? `${u.codigo}${
