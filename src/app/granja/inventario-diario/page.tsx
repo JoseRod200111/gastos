@@ -3,7 +3,10 @@
 import { useCallback, useEffect, useState } from 'react'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabaseClient'
+import jsPDF from 'jspdf'
+import autoTable from 'jspdf-autotable'
 
+// ---------- Tipos ----------
 type Ubicacion = {
   id: number
   codigo: string
@@ -27,11 +30,11 @@ type InventarioDiarioRow = {
 
 type EstadoUbicacion = {
   teorico: number
-  manual: string // mantengo string para que el input sea controlado
+  manual: string
   diferencia: number
 }
 
-// mismos grupos que en /granja/inventario
+// ---------- Grupos de ubicaciones (mismo orden que inventario) ----------
 const GRUPOS = [
   {
     titulo: 'GALERA 1',
@@ -118,6 +121,131 @@ const GRUPOS = [
   },
 ]
 
+// ---------- Helpers para PDF ----------
+
+function generarPdfInventarioDiario(
+  fecha: string,
+  ubicaciones: Ubicacion[],
+  estado: Record<number, EstadoUbicacion>
+) {
+  const doc = new jsPDF()
+
+  doc.setFontSize(16)
+  doc.text('Inventario diario de cerdos', 14, 18)
+
+  doc.setFontSize(11)
+  doc.text(`Fecha: ${fecha}`, 14, 26)
+
+  const ahora = new Date()
+  const fechaHoraStr = `${ahora.toLocaleDateString()} ${ahora.toLocaleTimeString()}`
+  doc.setFontSize(9)
+  doc.text(`Generado: ${fechaHoraStr}`, 14, 32)
+
+  // ---- Resumen por área ----
+  const codigosEnGrupos = new Set(GRUPOS.flatMap((g) => g.codigos))
+  const otrasUbicaciones = ubicaciones.filter(
+    (u) => !codigosEnGrupos.has(u.codigo)
+  )
+
+  type ResumenArea = {
+    area: string
+    teorico: number
+    manual: number
+    diferencia: number
+  }
+
+  const resumen: ResumenArea[] = []
+
+  let totalTeorico = 0
+  let totalManual = 0
+  let totalDiff = 0
+
+  const acumularGrupo = (titulo: string, ubis: Ubicacion[]) => {
+    let teo = 0
+    let man = 0
+    let diff = 0
+
+    ubis.forEach((u) => {
+      const e = estado[u.id]
+      if (!e || e.manual === '') return // sin conteo, no se incluye
+
+      const teorico = e.teorico || 0
+      const manualNum = Number(e.manual) || 0
+      const diferencia = manualNum - teorico
+
+      teo += teorico
+      man += manualNum
+      diff += diferencia
+    })
+
+    // si no hay datos en el área, no la agregamos
+    if (teo === 0 && man === 0 && diff === 0) return
+
+    resumen.push({
+      area: titulo,
+      teorico: teo,
+      manual: man,
+      diferencia: diff,
+    })
+
+    totalTeorico += teo
+    totalManual += man
+    totalDiff += diff
+  }
+
+  GRUPOS.forEach((grupo) => {
+    const ubisGrupo = ubicaciones.filter((u) =>
+      grupo.codigos.includes(u.codigo)
+    )
+    if (ubisGrupo.length === 0) return
+    acumularGrupo(grupo.titulo, ubisGrupo)
+  })
+
+  if (otrasUbicaciones.length > 0) {
+    acumularGrupo('OTRAS UBICACIONES', otrasUbicaciones)
+  }
+
+  const body = resumen.map((r) => [
+    r.area,
+    r.teorico.toString(),
+    r.manual.toString(),
+    r.diferencia.toString(),
+  ])
+
+  // fila de totales generales
+  body.push([
+    'TOTAL GENERAL',
+    totalTeorico.toString(),
+    totalManual.toString(),
+    totalDiff.toString(),
+  ])
+
+  autoTable(doc, {
+    startY: 38,
+    head: [['Área', 'Teórico', 'Manual', 'Diferencia']],
+    body,
+    styles: { fontSize: 9 },
+    headStyles: { fillColor: [22, 163, 74] }, // verde similar a la app
+  })
+
+  // nombre de archivo inventario_diario_YYYYMMDD_HHMMSS.pdf
+  const pad = (n: number) => (n < 10 ? `0${n}` : `${n}`)
+  const nombre =
+    (() => {
+      const y = ahora.getFullYear()
+      const m = pad(ahora.getMonth() + 1)
+      const d = pad(ahora.getDate())
+      const h = pad(ahora.getHours())
+      const min = pad(ahora.getMinutes())
+      const s = pad(ahora.getSeconds())
+      return `inventario_diario_${y}${m}${d}_${h}${min}${s}.pdf`
+    })()
+
+  doc.save(nombre)
+}
+
+// ---------- Componente principal ----------
+
 export default function GranjaInventarioDiarioPage() {
   const [fecha, setFecha] = useState('')
   const [ubicaciones, setUbicaciones] = useState<Ubicacion[]>([])
@@ -125,7 +253,6 @@ export default function GranjaInventarioDiarioPage() {
   const [loading, setLoading] = useState(false)
   const [guardando, setGuardando] = useState(false)
 
-  // para registrar usuario que guarda
   const [userId, setUserId] = useState<string | null>(null)
 
   useEffect(() => {
@@ -190,7 +317,6 @@ export default function GranjaInventarioDiarioPage() {
           (saldoPorUbic[mov.ubicacion_id] || 0) + delta
       })
 
-      // tomar ultimo registro por ubicacion (ya viene ordenado desc)
       const ultimaLectura: Record<number, InventarioDiarioRow> = {}
       ;(invData || []).forEach((r) => {
         const row = r as unknown as InventarioDiarioRow
@@ -279,6 +405,9 @@ export default function GranjaInventarioDiarioPage() {
       return
     }
 
+    // snapshot del estado para el PDF, antes de que cambie nada
+    const estadoParaPdf = { ...estado }
+
     setGuardando(true)
     try {
       const { error } = await supabase
@@ -290,6 +419,9 @@ export default function GranjaInventarioDiarioPage() {
         alert('Ocurrió un error al guardar el inventario diario.')
         return
       }
+
+      // Generar y descargar PDF automáticamente
+      generarPdfInventarioDiario(fecha, ubicaciones, estadoParaPdf)
 
       alert('Inventario diario guardado correctamente.')
       await cargarDatos()
