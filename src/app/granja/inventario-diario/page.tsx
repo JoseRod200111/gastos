@@ -42,7 +42,7 @@ const GRUPOS = [
   },
   {
     titulo: 'GALERA 2',
-    codigos: ['TR9', 'TR10', 'TR11', 'TR12', 'TR13', 'TR14', 'TR15', 'TR16'],
+    codigos: ['TR09', 'TR10', 'TR11', 'TR12', 'TR13', 'TR14', 'TR15', 'TR16'],
   },
   {
     titulo: 'GALERA 3',
@@ -557,3 +557,4 @@ export default function GranjaInventarioDiarioPage() {
     </div>
   )
 }
+
