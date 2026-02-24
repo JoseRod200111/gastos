@@ -381,7 +381,7 @@ export default function InventarioDiarioPage() {
 
     // preparar inserts (solo donde haya conteo)
     const registros = Object.entries(estado)
-      .filter(([_, v]) => v.manual !== '')
+      .filter(([, v]) => v.manual !== '')
       .map(([ubicacion_id, v]) => {
         const manualNum = Number(v.manual) || 0
         const teo = v.teorico || 0
@@ -521,3 +521,4 @@ export default function InventarioDiarioPage() {
     </div>
   )
 }
+
