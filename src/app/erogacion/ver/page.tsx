@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { supabase } from '@/lib/supabaseClient'
 
 type Filtros = {
@@ -25,6 +25,8 @@ export default function VerErogaciones() {
   const [formasPago, setFormasPago] = useState<any[]>([])
 
   const [userEmail, setUserEmail] = useState('')
+
+  const [savingDetalleId, setSavingDetalleId] = useState<number | null>(null)
 
   const [filtros, setFiltros] = useState<Filtros>({
     empresa_id: '',
@@ -56,6 +58,7 @@ export default function VerErogaciones() {
     })()
 
     cargarDatos()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   /* ─────────────────────── datos ─────────────────────── */
@@ -120,6 +123,7 @@ export default function VerErogaciones() {
       `
       )
       .in('erogacion_id', ids)
+      .order('id', { ascending: true })
 
     if (detErr) {
       console.error('Error cargando detalles', detErr)
@@ -130,16 +134,21 @@ export default function VerErogaciones() {
     for (const row of detAll || []) {
       const key = row.erogacion_id as number
       if (!grouped[key]) grouped[key] = []
-      grouped[key].push(row)
+      // normaliza números para evitar strings raros
+      grouped[key].push({
+        ...row,
+        cantidad: row.cantidad ?? 0,
+        precio_unitario: row.precio_unitario ?? 0,
+        importe: row.importe ?? Number(row.cantidad || 0) * Number(row.precio_unitario || 0),
+      })
     }
     setDetalles(grouped)
   }
 
-  /* ───────────── edición in-place cabecera ───────────── */
+  /* ────────── edición in-place cabecera ───────────── */
   const handleInputChange = (id: number, field: string, val: any) => {
-    setErogaciones(prev =>
-      prev.map(e => (e.id === id ? { ...e, [field]: field === 'cantidad' ? parseFloat(val) : val } : e))
-    )
+    // NOTA: total (cantidad) ya no se edita manualmente, se recalcula por detalles
+    setErogaciones(prev => prev.map(e => (e.id === id ? { ...e, [field]: val } : e)))
   }
 
   const guardarCambios = async (erog: any) => {
@@ -147,7 +156,6 @@ export default function VerErogaciones() {
       .from('erogaciones')
       .update({
         fecha: erog.fecha,
-        cantidad: erog.cantidad,
         observaciones: erog.observaciones,
         empresa_id: erog.empresa_id,
         division_id: erog.division_id,
@@ -173,10 +181,7 @@ export default function VerErogaciones() {
     if (!confirm('¿Eliminar la erogación y sus detalles?')) return
 
     // 1) obtener ids de detalle_compra de esa erogación
-    const { data: det, error: detSelErr } = await supabase
-      .from('detalle_compra')
-      .select('id')
-      .eq('erogacion_id', id)
+    const { data: det, error: detSelErr } = await supabase.from('detalle_compra').select('id').eq('erogacion_id', id)
 
     if (detSelErr) {
       alert('No se pudo preparar la eliminación (detalle)')
@@ -188,10 +193,7 @@ export default function VerErogaciones() {
 
     // 2) borrar movimientos de inventario ligados a esos detalles
     if (detalleIds.length > 0) {
-      const { error: invErr } = await supabase
-        .from('inventario_movimientos')
-        .delete()
-        .in('erogacion_detalle_id', detalleIds)
+      const { error: invErr } = await supabase.from('inventario_movimientos').delete().in('erogacion_detalle_id', detalleIds)
 
       if (invErr) {
         alert('No se pudieron borrar movimientos de inventario')
@@ -201,10 +203,7 @@ export default function VerErogaciones() {
     }
 
     // 3) borrar detalle_compra
-    const { error: delDetErr } = await supabase
-      .from('detalle_compra')
-      .delete()
-      .eq('erogacion_id', id)
+    const { error: delDetErr } = await supabase.from('detalle_compra').delete().eq('erogacion_id', id)
 
     if (delDetErr) {
       alert('No se pudieron borrar los detalles')
@@ -213,10 +212,7 @@ export default function VerErogaciones() {
     }
 
     // 4) borrar la erogación
-    const { error: delEroErr } = await supabase
-      .from('erogaciones')
-      .delete()
-      .eq('id', id)
+    const { error: delEroErr } = await supabase.from('erogaciones').delete().eq('id', id)
 
     if (delEroErr) {
       alert('No se pudo borrar la erogación')
@@ -232,7 +228,109 @@ export default function VerErogaciones() {
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
     setFiltros({ ...filtros, [e.target.name]: e.target.value })
 
-  const getMetodoPago = (id: number) => formasPago.find(f => f.id === id)?.metodo || id
+  const getMetodoPago = (id: number | null | undefined) => {
+    if (!id) return '—'
+    return formasPago.find(f => f.id === id)?.metodo || String(id)
+  }
+
+  const toNum = (v: any) => {
+    const n = Number(v)
+    return Number.isFinite(n) ? n : 0
+  }
+
+  const calcTotalErogacion = (erogId: number, detMap: { [k: number]: any[] }) => {
+    const rows = detMap[erogId] || []
+    return rows.reduce((acc, r) => acc + toNum(r.importe), 0)
+  }
+
+  /* ───────────── edición detalle_compra ───────────── */
+  const handleDetalleChange = (erogId: number, detalleId: number, field: string, value: any) => {
+    setDetalles(prev => {
+      const copy = { ...prev }
+      const rows = [...(copy[erogId] || [])]
+      const idx = rows.findIndex(r => r.id === detalleId)
+      if (idx === -1) return prev
+
+      const row = { ...rows[idx] }
+
+      if (field === 'cantidad') row.cantidad = toNum(value)
+      else if (field === 'precio_unitario') row.precio_unitario = toNum(value)
+      else if (field === 'forma_pago_id') row.forma_pago_id = value === '' ? null : toNum(value)
+      else row[field] = value
+
+      // recalcular importe siempre que cambie cantidad/precio
+      row.importe = toNum(row.cantidad) * toNum(row.precio_unitario)
+
+      rows[idx] = row
+      copy[erogId] = rows
+      return copy
+    })
+  }
+
+  const guardarDetalle = async (erogId: number, detalle: any) => {
+    setSavingDetalleId(detalle.id)
+    try {
+      const cantidad = toNum(detalle.cantidad)
+      const precio_unitario = toNum(detalle.precio_unitario)
+      const importe = cantidad * precio_unitario
+      const forma_pago_id = detalle.forma_pago_id === '' ? null : detalle.forma_pago_id
+
+      const { error: updErr } = await supabase
+        .from('detalle_compra')
+        .update({
+          cantidad,
+          precio_unitario,
+          importe,
+          forma_pago_id,
+        })
+        .eq('id', detalle.id)
+
+      if (updErr) {
+        alert('Error guardando detalle')
+        console.error(updErr)
+        return
+      }
+
+      // recalcular total y actualizar erogaciones.cantidad
+      setDetalles(prev => {
+        const copy = { ...prev }
+        const rows = [...(copy[erogId] || [])]
+        const idx = rows.findIndex(r => r.id === detalle.id)
+        if (idx !== -1) {
+          rows[idx] = { ...rows[idx], cantidad, precio_unitario, importe, forma_pago_id }
+          copy[erogId] = rows
+        }
+        return copy
+      })
+
+      // usa el estado más reciente (post-update) para el total
+      const nextTotal = (() => {
+        const rows = (detalles[erogId] || []).map(r =>
+          r.id === detalle.id ? { ...r, cantidad, precio_unitario, importe, forma_pago_id } : r
+        )
+        return rows.reduce((acc, r) => acc + toNum(r.importe), 0)
+      })()
+
+      const { error: updEroErr } = await supabase
+        .from('erogaciones')
+        .update({
+          cantidad: nextTotal,
+          editado_por: userEmail,
+          editado_en: new Date().toISOString(),
+        })
+        .eq('id', erogId)
+
+      if (updEroErr) {
+        alert('Detalle guardado, pero falló actualizar el total')
+        console.error(updEroErr)
+      }
+
+      // actualizar total en UI
+      setErogaciones(prev => prev.map(e => (e.id === erogId ? { ...e, cantidad: nextTotal } : e)))
+    } finally {
+      setSavingDetalleId(null)
+    }
+  }
 
   /* ─────────────────────── UI ─────────────────────── */
   return (
@@ -253,6 +351,7 @@ export default function VerErogaciones() {
             </option>
           ))}
         </select>
+
         <select name="division_id" value={filtros.division_id} onChange={handleChange} className="border p-2">
           <option value="">Todas las Divisiones</option>
           {divisiones.map(d => (
@@ -261,6 +360,7 @@ export default function VerErogaciones() {
             </option>
           ))}
         </select>
+
         <select name="categoria_id" value={filtros.categoria_id} onChange={handleChange} className="border p-2">
           <option value="">Todas las Categorías</option>
           {categorias.map(c => (
@@ -333,11 +433,7 @@ export default function VerErogaciones() {
               </td>
 
               <td className="p-2">
-                <select
-                  className="border p-1"
-                  value={e.empresa_id}
-                  onChange={ev => handleInputChange(e.id, 'empresa_id', ev.target.value)}
-                >
+                <select className="border p-1" value={e.empresa_id} onChange={ev => handleInputChange(e.id, 'empresa_id', ev.target.value)}>
                   {empresas.map(opt => (
                     <option key={opt.id} value={opt.id}>
                       {opt.nombre}
@@ -347,11 +443,7 @@ export default function VerErogaciones() {
               </td>
 
               <td className="p-2">
-                <select
-                  className="border p-1"
-                  value={e.division_id}
-                  onChange={ev => handleInputChange(e.id, 'division_id', ev.target.value)}
-                >
+                <select className="border p-1" value={e.division_id} onChange={ev => handleInputChange(e.id, 'division_id', ev.target.value)}>
                   {divisiones.map(opt => (
                     <option key={opt.id} value={opt.id}>
                       {opt.nombre}
@@ -361,11 +453,7 @@ export default function VerErogaciones() {
               </td>
 
               <td className="p-2">
-                <select
-                  className="border p-1"
-                  value={e.categoria_id}
-                  onChange={ev => handleInputChange(e.id, 'categoria_id', ev.target.value)}
-                >
+                <select className="border p-1" value={e.categoria_id} onChange={ev => handleInputChange(e.id, 'categoria_id', ev.target.value)}>
                   {categorias.map(opt => (
                     <option key={opt.id} value={opt.id}>
                       {opt.nombre}
@@ -377,21 +465,13 @@ export default function VerErogaciones() {
               <td className="p-2">{e.proveedores?.nombre || '—'}</td>
               <td className="p-2">{e.proveedores?.nit || '—'}</td>
 
+              {/* Total SOLO LECTURA: se recalcula por los detalles */}
               <td className="p-2">
-                <input
-                  type="number"
-                  className="border p-1 w-24"
-                  value={e.cantidad}
-                  onChange={ev => handleInputChange(e.id, 'cantidad', ev.target.value)}
-                />
+                <input type="number" className="border p-1 w-24 bg-gray-100" value={toNum(e.cantidad)} readOnly />
               </td>
 
               <td className="p-2">
-                <input
-                  className="border p-1"
-                  value={e.observaciones || ''}
-                  onChange={ev => handleInputChange(e.id, 'observaciones', ev.target.value)}
-                />
+                <input className="border p-1 w-full" value={e.observaciones || ''} onChange={ev => handleInputChange(e.id, 'observaciones', ev.target.value)} />
               </td>
 
               <td className="p-2 space-x-1">
@@ -411,6 +491,7 @@ export default function VerErogaciones() {
       {erogaciones.map(e => (
         <div key={`det-${e.id}`} className="mb-6 border p-3 rounded bg-gray-50">
           <h3 className="font-semibold mb-2">🧾 Detalles de Erogación #{e.id}</h3>
+
           <table className="w-full text-sm border">
             <thead className="bg-gray-200">
               <tr>
@@ -421,10 +502,12 @@ export default function VerErogaciones() {
                 <th className="p-2 text-left">Importe</th>
                 <th className="p-2 text-left">Pago</th>
                 <th className="p-2 text-left">Documento</th>
+                <th className="p-2 text-left">Acciones</th>
               </tr>
             </thead>
+
             <tbody>
-              {(detalles[e.id] || []).map((d: any, i: number) => {
+              {(detalles[e.id] || []).map((d: any) => {
                 const prod = d.productos
                 const invBadge =
                   d.producto_id && prod?.control_inventario ? (
@@ -432,7 +515,7 @@ export default function VerErogaciones() {
                   ) : null
 
                 return (
-                  <tr key={i} className="border-t">
+                  <tr key={d.id} className="border-t">
                     <td className="p-2">
                       {d.producto_id ? (
                         <div>
@@ -452,11 +535,59 @@ export default function VerErogaciones() {
                     </td>
 
                     <td className="p-2">{d.concepto}</td>
-                    <td className="p-2">{d.cantidad}</td>
-                    <td className="p-2">Q{Number(d.precio_unitario || 0).toFixed(2)}</td>
-                    <td className="p-2">Q{Number(d.importe || 0).toFixed(2)}</td>
-                    <td className="p-2">{getMetodoPago(d.forma_pago_id)}</td>
+
+                    {/* EDITABLE: cantidad */}
+                    <td className="p-2">
+                      <input
+                        type="number"
+                        className="border p-1 w-24"
+                        value={toNum(d.cantidad)}
+                        onChange={ev => handleDetalleChange(e.id, d.id, 'cantidad', ev.target.value)}
+                      />
+                    </td>
+
+                    {/* EDITABLE: precio unitario */}
+                    <td className="p-2">
+                      <input
+                        type="number"
+                        className="border p-1 w-28"
+                        value={toNum(d.precio_unitario)}
+                        onChange={ev => handleDetalleChange(e.id, d.id, 'precio_unitario', ev.target.value)}
+                      />
+                    </td>
+
+                    {/* importe calculado */}
+                    <td className="p-2">Q{toNum(d.importe).toFixed(2)}</td>
+
+                    {/* EDITABLE: forma pago */}
+                    <td className="p-2">
+                      <select
+                        className="border p-1"
+                        value={d.forma_pago_id ?? ''}
+                        onChange={ev => handleDetalleChange(e.id, d.id, 'forma_pago_id', ev.target.value)}
+                      >
+                        <option value="">—</option>
+                        {formasPago.map((fp: any) => (
+                          <option key={fp.id} value={fp.id}>
+                            {fp.metodo}
+                          </option>
+                        ))}
+                      </select>
+                    </td>
+
                     <td className="p-2">{d.documento || '—'}</td>
+
+                    <td className="p-2">
+                      <button
+                        onClick={() => guardarDetalle(e.id, d)}
+                        disabled={savingDetalleId === d.id}
+                        className={`px-2 py-1 rounded text-xs text-white ${
+                          savingDetalleId === d.id ? 'bg-gray-500' : 'bg-green-600'
+                        }`}
+                      >
+                        {savingDetalleId === d.id ? 'Guardando...' : 'Guardar'}
+                      </button>
+                    </td>
                   </tr>
                 )
               })}
