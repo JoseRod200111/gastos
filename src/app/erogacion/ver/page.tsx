@@ -44,7 +44,17 @@ export default function VerErogaciones() {
     return Number.isFinite(n) ? n : 0
   }
 
-  const calcTotalFromRows = (rows: any[]) => rows.reduce((acc, r) => acc + toNum(r.importe), 0)
+  const calcImporte = (cantidad: any, precio: any) => toNum(cantidad) * toNum(precio)
+
+  const calcTotalFromRows = (rows: any[]) => rows.reduce((acc, r) => acc + calcImporte(r.cantidad, r.precio_unitario), 0)
+
+  const showSupabaseError = (title: string, err: any) => {
+    const msg = err?.message || err?.error_description || 'Error desconocido'
+    const details = err?.details ? `\n${err.details}` : ''
+    const hint = err?.hint ? `\n${err.hint}` : ''
+    alert(`${title}\n${msg}${details}${hint}`)
+    console.error(title, err)
+  }
 
   /* ─────────────────────── catálogos + user ─────────────────────── */
   useEffect(() => {
@@ -95,11 +105,12 @@ export default function VerErogaciones() {
     // Si tu relación permite filtrar por columnas de proveedores:
     if (filtros.proveedor_nombre)
       query = query.ilike('proveedores.nombre', `%${filtros.proveedor_nombre.trim()}%`)
-    if (filtros.proveedor_nit) query = query.ilike('proveedores.nit', `%${filtros.proveedor_nit.trim()}%`)
+    if (filtros.proveedor_nit)
+      query = query.ilike('proveedores.nit', `%${filtros.proveedor_nit.trim()}%`)
 
     const { data, error } = await query
     if (error) {
-      console.error('Error cargando erogaciones', error)
+      showSupabaseError('Error cargando erogaciones', error)
       return
     }
 
@@ -121,7 +132,6 @@ export default function VerErogaciones() {
         concepto,
         cantidad,
         precio_unitario,
-        importe,
         forma_pago_id,
         documento,
         productos ( id, nombre, sku, unidad, control_inventario )
@@ -131,7 +141,7 @@ export default function VerErogaciones() {
       .order('id', { ascending: true })
 
     if (detErr) {
-      console.error('Error cargando detalles', detErr)
+      showSupabaseError('Error cargando detalles', detErr)
       return
     }
 
@@ -142,13 +152,11 @@ export default function VerErogaciones() {
 
       const cantidad = toNum(row.cantidad)
       const precio_unitario = toNum(row.precio_unitario)
-      const importe = toNum(row.importe) || cantidad * precio_unitario
 
       grouped[key].push({
         ...row,
         cantidad,
         precio_unitario,
-        importe,
       })
     }
 
@@ -180,8 +188,7 @@ export default function VerErogaciones() {
       .eq('id', erog.id)
 
     if (error) {
-      alert('Error al guardar')
-      console.error(error)
+      showSupabaseError('Error al guardar cabecera', error)
       return
     }
 
@@ -189,9 +196,7 @@ export default function VerErogaciones() {
     cargarDatos()
   }
 
-  /* ─────────────────────── eliminar ───────────────────────
-     Orden: inventario_movimientos -> detalle_compra -> erogaciones
-  */
+  /* ─────────────────────── eliminar ─────────────────────── */
   const handleDelete = async (id: number) => {
     if (!confirm('¿Eliminar la erogación y sus detalles?')) return
 
@@ -201,8 +206,7 @@ export default function VerErogaciones() {
       .eq('erogacion_id', id)
 
     if (detSelErr) {
-      alert('No se pudo preparar la eliminación (detalle)')
-      console.error(detSelErr)
+      showSupabaseError('No se pudo preparar la eliminación (detalle)', detSelErr)
       return
     }
 
@@ -215,23 +219,20 @@ export default function VerErogaciones() {
         .in('erogacion_detalle_id', detalleIds)
 
       if (invErr) {
-        alert('No se pudieron borrar movimientos de inventario')
-        console.error(invErr)
+        showSupabaseError('No se pudieron borrar movimientos de inventario', invErr)
         return
       }
     }
 
     const { error: delDetErr } = await supabase.from('detalle_compra').delete().eq('erogacion_id', id)
     if (delDetErr) {
-      alert('No se pudieron borrar los detalles')
-      console.error(delDetErr)
+      showSupabaseError('No se pudieron borrar los detalles', delDetErr)
       return
     }
 
     const { error: delEroErr } = await supabase.from('erogaciones').delete().eq('id', id)
     if (delEroErr) {
-      alert('No se pudo borrar la erogación')
-      console.error(delEroErr)
+      showSupabaseError('No se pudo borrar la erogación', delEroErr)
       return
     }
 
@@ -254,8 +255,6 @@ export default function VerErogaciones() {
       else if (field === 'forma_pago_id') row.forma_pago_id = value === '' ? null : toNum(value)
       else row[field] = value
 
-      row.importe = toNum(row.cantidad) * toNum(row.precio_unitario)
-
       rows[idx] = row
       copy[erogId] = rows
       return copy
@@ -268,27 +267,24 @@ export default function VerErogaciones() {
     try {
       const cantidad = toNum(detalle.cantidad)
       const precio_unitario = toNum(detalle.precio_unitario)
-      const importe = cantidad * precio_unitario
       const forma_pago_id = detalle.forma_pago_id === '' ? null : detalle.forma_pago_id
 
-      // 1) update detalle_compra
+      // ✅ IMPORTANTE: NO mandamos "importe" porque puede ser generado/trigger y causar 400
       const { error: updErr } = await supabase
         .from('detalle_compra')
         .update({
           cantidad,
           precio_unitario,
-          importe,
           forma_pago_id,
         })
         .eq('id', detalle.id)
 
       if (updErr) {
-        alert('Error guardando detalle')
-        console.error(updErr)
+        showSupabaseError('Error guardando detalle', updErr)
         return
       }
 
-      // 2) actualizar estado local del detalle y recalcular total desde UI
+      // 2) actualizar estado local y recalcular total desde UI
       let nextTotal = 0
 
       setDetalles(prev => {
@@ -296,7 +292,7 @@ export default function VerErogaciones() {
         const rows = [...(copy[erogId] || [])]
         const idx = rows.findIndex(r => r.id === detalle.id)
         if (idx !== -1) {
-          rows[idx] = { ...rows[idx], cantidad, precio_unitario, importe, forma_pago_id }
+          rows[idx] = { ...rows[idx], cantidad, precio_unitario, forma_pago_id }
         }
         copy[erogId] = rows
         nextTotal = calcTotalFromRows(rows)
@@ -314,8 +310,7 @@ export default function VerErogaciones() {
         .eq('id', erogId)
 
       if (updEroErr) {
-        alert('Detalle guardado, pero falló actualizar el total')
-        console.error(updEroErr)
+        showSupabaseError('Detalle guardado, pero falló actualizar el total', updEroErr)
         return
       }
 
@@ -428,7 +423,11 @@ export default function VerErogaciones() {
               </td>
 
               <td className="p-2">
-                <select className="border p-1" value={e.empresa_id} onChange={ev => handleInputChange(e.id, 'empresa_id', ev.target.value)}>
+                <select
+                  className="border p-1"
+                  value={e.empresa_id}
+                  onChange={ev => handleInputChange(e.id, 'empresa_id', ev.target.value)}
+                >
                   {empresas.map(opt => (
                     <option key={opt.id} value={opt.id}>
                       {opt.nombre}
@@ -438,7 +437,11 @@ export default function VerErogaciones() {
               </td>
 
               <td className="p-2">
-                <select className="border p-1" value={e.division_id} onChange={ev => handleInputChange(e.id, 'division_id', ev.target.value)}>
+                <select
+                  className="border p-1"
+                  value={e.division_id}
+                  onChange={ev => handleInputChange(e.id, 'division_id', ev.target.value)}
+                >
                   {divisiones.map(opt => (
                     <option key={opt.id} value={opt.id}>
                       {opt.nombre}
@@ -448,7 +451,11 @@ export default function VerErogaciones() {
               </td>
 
               <td className="p-2">
-                <select className="border p-1" value={e.categoria_id} onChange={ev => handleInputChange(e.id, 'categoria_id', ev.target.value)}>
+                <select
+                  className="border p-1"
+                  value={e.categoria_id}
+                  onChange={ev => handleInputChange(e.id, 'categoria_id', ev.target.value)}
+                >
                   {categorias.map(opt => (
                     <option key={opt.id} value={opt.id}>
                       {opt.nombre}
@@ -460,13 +467,17 @@ export default function VerErogaciones() {
               <td className="p-2">{e.proveedores?.nombre || '—'}</td>
               <td className="p-2">{e.proveedores?.nit || '—'}</td>
 
-              {/* Total SOLO LECTURA: se recalcula por los detalles */}
+              {/* Total SOLO LECTURA */}
               <td className="p-2">
                 <input type="number" className="border p-1 w-24 bg-gray-100" value={toNum(e.cantidad)} readOnly />
               </td>
 
               <td className="p-2">
-                <input className="border p-1 w-full" value={e.observaciones || ''} onChange={ev => handleInputChange(e.id, 'observaciones', ev.target.value)} />
+                <input
+                  className="border p-1 w-full"
+                  value={e.observaciones || ''}
+                  onChange={ev => handleInputChange(e.id, 'observaciones', ev.target.value)}
+                />
               </td>
 
               <td className="p-2 space-x-1">
@@ -509,6 +520,8 @@ export default function VerErogaciones() {
                     <span className="ml-2 text-[10px] bg-emerald-600 text-white px-1.5 py-0.5 rounded">inv</span>
                   ) : null
 
+                const importeUI = calcImporte(d.cantidad, d.precio_unitario)
+
                 return (
                   <tr key={d.id} className="border-t">
                     <td className="p-2">
@@ -531,7 +544,6 @@ export default function VerErogaciones() {
 
                     <td className="p-2">{d.concepto}</td>
 
-                    {/* EDITABLE: cantidad */}
                     <td className="p-2">
                       <input
                         type="number"
@@ -541,7 +553,6 @@ export default function VerErogaciones() {
                       />
                     </td>
 
-                    {/* EDITABLE: precio unitario */}
                     <td className="p-2">
                       <input
                         type="number"
@@ -551,10 +562,8 @@ export default function VerErogaciones() {
                       />
                     </td>
 
-                    {/* importe calculado */}
-                    <td className="p-2">Q{toNum(d.importe).toFixed(2)}</td>
+                    <td className="p-2">Q{importeUI.toFixed(2)}</td>
 
-                    {/* EDITABLE: forma de pago */}
                     <td className="p-2">
                       <select
                         className="border p-1"
