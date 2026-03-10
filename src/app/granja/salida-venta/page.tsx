@@ -31,10 +31,12 @@ const toNum = (v: any) => {
 
 const round2 = (n: number) => Math.round(n * 100) / 100
 
+// ✅ sin ts-ignore / ts-expect-error
 const genGrupoId = () => {
-  // browser uuid
-  // @ts-ignore
-  return (globalThis.crypto?.randomUUID?.() ?? `g_${Date.now()}_${Math.random().toString(16).slice(2)}`)
+  // crypto.randomUUID existe en la mayoría de browsers modernos; si no, fallback seguro
+  const anyCrypto = globalThis.crypto as unknown as { randomUUID?: () => string } | undefined
+  if (anyCrypto?.randomUUID) return anyCrypto.randomUUID()
+  return `g_${Date.now()}_${Math.random().toString(16).slice(2)}`
 }
 
 export default function SalidaVentaPage() {
@@ -58,7 +60,6 @@ export default function SalidaVentaPage() {
   const [saving, setSaving] = useState(false)
 
   const totalCantidad = useMemo(() => lineas.reduce((acc, l) => acc + toNum(l.cantidad), 0), [lineas])
-
   const totalVenta = useMemo(() => round2(toNum(pesoTotalLb) * toNum(precioPorLibra)), [pesoTotalLb, precioPorLibra])
 
   const deuda = useMemo(() => {
@@ -71,24 +72,6 @@ export default function SalidaVentaPage() {
     const pad = (n: number) => (n < 10 ? `0${n}` : `${n}`)
     setFecha(`${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(today.getDate())}`)
   }, [])
-
-  const cargarTodo = async () => {
-    const [uRes, cRes, lRes] = await Promise.all([
-      supabase.from('granja_ubicaciones').select('id,codigo,nombre,activo').eq('activo', true).order('codigo', { ascending: true }),
-      supabase.from('clientes').select('id,nombre').order('nombre', { ascending: true }),
-      supabase.from('granja_lotes').select('id,codigo').order('codigo', { ascending: true }),
-    ])
-
-    if (uRes.error) console.error(uRes.error)
-    if (cRes.error) console.error(cRes.error)
-    if (lRes.error) console.error(lRes.error)
-
-    setUbicaciones((uRes.data || []) as any)
-    setClientes((cRes.data || []) as any)
-    setLotes((lRes.data || []) as any)
-
-    await cargarVentasRecientes()
-  }
 
   const cargarVentasRecientes = async () => {
     const { data, error } = await supabase
@@ -109,6 +92,28 @@ export default function SalidaVentaPage() {
       return
     }
     setVentas((data || []) as any)
+  }
+
+  const cargarTodo = async () => {
+    const [uRes, cRes, lRes] = await Promise.all([
+      supabase
+        .from('granja_ubicaciones')
+        .select('id,codigo,nombre,activo')
+        .eq('activo', true)
+        .order('codigo', { ascending: true }),
+      supabase.from('clientes').select('id,nombre').order('nombre', { ascending: true }),
+      supabase.from('granja_lotes').select('id,codigo').order('codigo', { ascending: true }),
+    ])
+
+    if (uRes.error) console.error(uRes.error)
+    if (cRes.error) console.error(cRes.error)
+    if (lRes.error) console.error(lRes.error)
+
+    setUbicaciones((uRes.data || []) as any)
+    setClientes((cRes.data || []) as any)
+    setLotes((lRes.data || []) as any)
+
+    await cargarVentasRecientes()
   }
 
   useEffect(() => {
@@ -140,7 +145,6 @@ export default function SalidaVentaPage() {
     if (!fecha) return 'Falta fecha.'
     if (!clienteId) return 'Seleccione un cliente.'
 
-    // lineas válidas: solo las que tienen ubicacion y cantidad>0
     const validas = lineas
       .map(l => ({ ubicacion_id: l.ubicacion_id, cantidad: toNum(l.cantidad) }))
       .filter(l => l.ubicacion_id && l.cantidad > 0)
@@ -150,7 +154,6 @@ export default function SalidaVentaPage() {
     if (toNum(precioPorLibra) <= 0) return 'Precio por libra debe ser > 0.'
     if (toNum(pagado) < 0) return 'Pagado no puede ser negativo.'
 
-    // no permitir ubicacion repetida (para evitar doble salida accidental)
     const setU = new Set(validas.map(v => v.ubicacion_id))
     if (setU.size !== validas.length) return 'No repitas la misma ubicación; usa una sola línea por tramo.'
 
@@ -166,7 +169,6 @@ export default function SalidaVentaPage() {
 
     const grupo = genGrupoId()
 
-    // lineas válidas
     const validas = lineas
       .map(l => ({ ubicacion_id: Number(l.ubicacion_id), cantidad: toNum(l.cantidad) }))
       .filter(l => !!l.ubicacion_id && l.cantidad > 0)
@@ -185,8 +187,6 @@ export default function SalidaVentaPage() {
       const { data: userData } = await supabase.auth.getUser()
       const userId = userData?.user?.id ?? null
 
-      // repartir proporcionalmente por cantidad
-      // para evitar problemas de redondeo, ajustamos la última línea con el “resto”
       let restoPeso = pesoLbTotal
       let restoTotal = total
       let restoPagado = pagadoTotal
@@ -209,7 +209,6 @@ export default function SalidaVentaPage() {
 
         const obsFinal = `${observaciones || ''}${observaciones ? ' | ' : ''}MULTI:${grupo} (${i + 1}/${validas.length})`
 
-        // 1) insertar venta “por tramo”
         const { data: ventaIns, error: ventaErr } = await supabase
           .from('granja_ventas_cerdos')
           .insert({
@@ -237,16 +236,12 @@ export default function SalidaVentaPage() {
 
         const ventaId = ventaIns?.id as number
 
-        // 2) movimiento de inventario (salida por venta)
         const { error: movErr } = await supabase.from('granja_movimientos').insert({
-          // fecha lo maneja default now(), pero lo ponemos alineado a la fecha del form
           fecha: new Date(fecha + 'T12:00:00').toISOString(),
           ubicacion_id: l.ubicacion_id,
           tipo: 'SALIDA_VENTA',
           lote_id: loteId ? Number(loteId) : null,
           cantidad: l.cantidad,
-          // opcional: guardar peso en kg si quieres (columna es peso_total_kg)
-          // 1 lb = 0.45359237 kg
           peso_total_kg: round2(pesoPart * 0.45359237),
           referencia_tabla: 'granja_ventas_cerdos',
           referencia_id: ventaId,
@@ -278,16 +273,12 @@ export default function SalidaVentaPage() {
           <p className="text-xs text-gray-600">Registrar ventas de cerdos y debitar el inventario por ubicación.</p>
         </div>
 
-        <Link
-          href="/granja"
-          className="ml-auto inline-block bg-slate-700 hover:bg-slate-800 text-white px-3 py-2 rounded text-sm"
-        >
+        <Link href="/granja" className="ml-auto inline-block bg-slate-700 hover:bg-slate-800 text-white px-3 py-2 rounded text-sm">
           ⬅ Menú de Granja
         </Link>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Formulario */}
         <div className="border rounded-lg p-4 bg-white shadow-sm">
           <h2 className="font-semibold mb-3">Nueva venta de cerdos</h2>
 
@@ -320,7 +311,6 @@ export default function SalidaVentaPage() {
             </select>
           </div>
 
-          {/* ✅ Multi-tramo */}
           <div className="mb-3">
             <div className="flex items-center justify-between">
               <label className="block text-sm font-medium mb-1">Tramos (puede ser más de uno)</label>
@@ -333,11 +323,7 @@ export default function SalidaVentaPage() {
               {lineas.map((l, idx) => (
                 <div key={idx} className="grid grid-cols-12 gap-2 items-center">
                   <div className="col-span-7">
-                    <select
-                      className="w-full border rounded px-3 py-2"
-                      value={l.ubicacion_id}
-                      onChange={e => updateLinea(idx, 'ubicacion_id', e.target.value)}
-                    >
+                    <select className="w-full border rounded px-3 py-2" value={l.ubicacion_id} onChange={e => updateLinea(idx, 'ubicacion_id', e.target.value)}>
                       <option value="">Seleccione una ubicación</option>
                       {ubicaciones.map(u => (
                         <option key={u.id} value={u.id}>
@@ -347,13 +333,7 @@ export default function SalidaVentaPage() {
                     </select>
                   </div>
                   <div className="col-span-4">
-                    <input
-                      type="number"
-                      className="w-full border rounded px-3 py-2"
-                      placeholder="Cantidad"
-                      value={l.cantidad}
-                      onChange={e => updateLinea(idx, 'cantidad', e.target.value)}
-                    />
+                    <input type="number" className="w-full border rounded px-3 py-2" placeholder="Cantidad" value={l.cantidad} onChange={e => updateLinea(idx, 'cantidad', e.target.value)} />
                   </div>
                   <div className="col-span-1 text-right">
                     {lineas.length > 1 && (
@@ -406,12 +386,7 @@ export default function SalidaVentaPage() {
           </div>
 
           <div className="flex gap-2">
-            <button
-              type="button"
-              onClick={guardarVenta}
-              disabled={saving}
-              className="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white px-4 py-2 rounded"
-            >
+            <button type="button" onClick={guardarVenta} disabled={saving} className="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white px-4 py-2 rounded">
               {saving ? 'Guardando...' : 'Guardar venta'}
             </button>
             <button type="button" onClick={limpiar} className="bg-slate-200 hover:bg-slate-300 px-4 py-2 rounded">
@@ -420,7 +395,6 @@ export default function SalidaVentaPage() {
           </div>
         </div>
 
-        {/* Ventas recientes */}
         <div className="border rounded-lg p-4 bg-white shadow-sm">
           <h2 className="font-semibold mb-3">Ventas recientes</h2>
 
