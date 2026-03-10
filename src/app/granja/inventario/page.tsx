@@ -1,12 +1,6 @@
 'use client'
 
-import {
-  Fragment,
-  useCallback,
-  useEffect,
-  useMemo,
-  useState,
-} from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabaseClient'
 
@@ -20,6 +14,7 @@ type Ubicacion = {
 type StockRow = {
   ubicacion_id: number
   cantidad: number | null
+  tipo: string
 }
 
 type StockMap = Record<number, number>
@@ -27,9 +22,7 @@ type StockMap = Record<number, number>
 export default function GranjaInventarioPage() {
   const [ubicaciones, setUbicaciones] = useState<Ubicacion[]>([])
   const [stockTeorico, setStockTeorico] = useState<StockMap>({})
-  const [valoresEditados, setValoresEditados] = useState<Record<number, string>>(
-    {}
-  )
+  const [valoresEditados, setValoresEditados] = useState<Record<number, string>>({})
   const [loading, setLoading] = useState(false)
   const [guardando, setGuardando] = useState(false)
 
@@ -90,32 +83,33 @@ export default function GranjaInventarioPage() {
         setValoresEditados({})
         return
       }
-// 2) inventario teorico por movimientos
-const { data: movData, error: movError } = await supabase
-  .from('granja_movimientos')
-  .select('ubicacion_id, cantidad, tipo')
 
-if (movError) {
-  console.error('Error cargando movimientos', movError)
-  return
-}
+      // 2) inventario teorico por movimientos (aplicando signo por tipo)
+      const { data: movData, error: movError } = await supabase
+        .from('granja_movimientos')
+        .select('ubicacion_id, cantidad, tipo')
 
-const mapa: StockMap = {}
-;(movData as Array<{ ubicacion_id: number; cantidad: number | null; tipo: string }>).forEach((row) => {
-  const id = row.ubicacion_id
-  const cant = Number(row.cantidad || 0)
-  if (!mapa[id]) mapa[id] = 0
+      if (movError) {
+        console.error('Error cargando movimientos', movError)
+        return
+      }
 
-  // ✅ salidas RESTAN, entradas y ajustes SUMAN
-  if (row.tipo === 'SALIDA_VENTA' || row.tipo === 'SALIDA_MUERTE') {
-    mapa[id] -= cant
-  } else {
-    // ENTRADA_COMPRA, ENTRADA_PARTO, AJUSTE
-    mapa[id] += cant
-  }
-})
+      const mapa: StockMap = {}
+      ;(movData as StockRow[]).forEach((row) => {
+        const id = row.ubicacion_id
+        const cant = Number(row.cantidad || 0)
+        if (!mapa[id]) mapa[id] = 0
 
-setStockTeorico(mapa)
+        // ✅ salidas RESTAN, entradas y ajustes SUMAN
+        if (row.tipo === 'SALIDA_VENTA' || row.tipo === 'SALIDA_MUERTE') {
+          mapa[id] -= cant
+        } else {
+          // ENTRADA_COMPRA, ENTRADA_PARTO, AJUSTE
+          mapa[id] += cant
+        }
+      })
+
+      setStockTeorico(mapa)
 
       // 3) valores editados iniciales (como strings en inputs)
       const inicial: Record<number, string> = {}
@@ -169,9 +163,7 @@ setStockTeorico(mapa)
         const nuevoNumero = texto.trim() === '' ? 0 : Number(texto)
 
         if (Number.isNaN(nuevoNumero)) {
-          alert(
-            `El valor para la ubicación ${u.codigo} no es un número válido.`
-          )
+          alert(`El valor para la ubicación ${u.codigo} no es un número válido.`)
           setGuardando(false)
           return
         }
@@ -184,8 +176,7 @@ setStockTeorico(mapa)
             cantidad: diff, // positivo agrega, negativo descuenta
             referencia_tabla: 'INVENTARIO_MANUAL',
             referencia_id: null,
-            observaciones:
-              'Ajuste manual desde pantalla de inventario de granja',
+            observaciones: 'Ajuste manual desde pantalla de inventario de granja',
             user_id: userId,
           })
         }
@@ -197,9 +188,7 @@ setStockTeorico(mapa)
         return
       }
 
-      const { error: insertError } = await supabase
-        .from('granja_movimientos')
-        .insert(ajustes)
+      const { error: insertError } = await supabase.from('granja_movimientos').insert(ajustes)
 
       if (insertError) {
         console.error('Error registrando ajustes', insertError)
@@ -225,8 +214,7 @@ setStockTeorico(mapa)
         <div>
           <h1 className="text-2xl font-bold">Granja — Inventario</h1>
           <p className="text-xs text-gray-600">
-            Ajuste manual del inventario por tramo o jaula. Cada cambio se
-            registra como movimiento de tipo ajuste.
+            Ajuste manual del inventario por tramo o jaula. Cada cambio se registra como movimiento de tipo ajuste.
           </p>
         </div>
         <Link
@@ -239,13 +227,9 @@ setStockTeorico(mapa)
 
       <div className="mb-4 flex items-center justify-between">
         {loading ? (
-          <p className="text-xs text-gray-500">
-            Cargando ubicaciones e inventario…
-          </p>
+          <p className="text-xs text-gray-500">Cargando ubicaciones e inventario…</p>
         ) : (
-          <p className="text-xs text-gray-500">
-            Ubicaciones activas: {ubicaciones.length}
-          </p>
+          <p className="text-xs text-gray-500">Ubicaciones activas: {ubicaciones.length}</p>
         )}
 
         <button
@@ -257,30 +241,21 @@ setStockTeorico(mapa)
         </button>
       </div>
 
-      {/* grid de tarjetas de inventario, parecido al diseño original */}
+      {/* grid de tarjetas de inventario */}
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         {Object.entries(grupos).map(([grupo, lista]) => (
-          <div
-            key={grupo}
-            className="border rounded-lg bg-white shadow-sm p-3"
-          >
-            <h2 className="text-xs font-semibold mb-2 uppercase tracking-wide">
-              {grupo}
-            </h2>
+          <div key={grupo} className="border rounded-lg bg-white shadow-sm p-3">
+            <h2 className="text-xs font-semibold mb-2 uppercase tracking-wide">{grupo}</h2>
 
             <div className="grid grid-cols-[auto,1fr] gap-x-2 gap-y-1 text-xs">
               {lista.map((u) => (
                 <Fragment key={u.id}>
-                  <div className="py-1 pr-1 text-right font-medium">
-                    {u.codigo}
-                  </div>
+                  <div className="py-1 pr-1 text-right font-medium">{u.codigo}</div>
                   <input
                     type="number"
                     className="border rounded w-full px-2 py-1 text-right"
                     value={valoresEditados[u.id] ?? ''}
-                    onChange={(e) =>
-                      actualizarValor(u.id, e.target.value)
-                    }
+                    onChange={(e) => actualizarValor(u.id, e.target.value)}
                   />
                 </Fragment>
               ))}
@@ -291,4 +266,3 @@ setStockTeorico(mapa)
     </div>
   )
 }
-
