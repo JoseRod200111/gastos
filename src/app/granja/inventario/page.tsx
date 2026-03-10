@@ -90,26 +90,32 @@ export default function GranjaInventarioPage() {
         setValoresEditados({})
         return
       }
+// 2) inventario teorico por movimientos
+const { data: movData, error: movError } = await supabase
+  .from('granja_movimientos')
+  .select('ubicacion_id, cantidad, tipo')
 
-      // 2) inventario teorico por movimientos
-      const { data: movData, error: movError } = await supabase
-        .from('granja_movimientos')
-        .select('ubicacion_id, cantidad')
+if (movError) {
+  console.error('Error cargando movimientos', movError)
+  return
+}
 
-      if (movError) {
-        console.error('Error cargando movimientos', movError)
-        return
-      }
+const mapa: StockMap = {}
+;(movData as Array<{ ubicacion_id: number; cantidad: number | null; tipo: string }>).forEach((row) => {
+  const id = row.ubicacion_id
+  const cant = Number(row.cantidad || 0)
+  if (!mapa[id]) mapa[id] = 0
 
-      const mapa: StockMap = {}
-      ;(movData as StockRow[]).forEach((row) => {
-        const id = row.ubicacion_id
-        const cant = Number(row.cantidad || 0)
-        if (!mapa[id]) mapa[id] = 0
-        mapa[id] += cant
-      })
+  // ✅ salidas RESTAN, entradas y ajustes SUMAN
+  if (row.tipo === 'SALIDA_VENTA' || row.tipo === 'SALIDA_MUERTE') {
+    mapa[id] -= cant
+  } else {
+    // ENTRADA_COMPRA, ENTRADA_PARTO, AJUSTE
+    mapa[id] += cant
+  }
+})
 
-      setStockTeorico(mapa)
+setStockTeorico(mapa)
 
       // 3) valores editados iniciales (como strings en inputs)
       const inicial: Record<number, string> = {}
@@ -285,3 +291,4 @@ export default function GranjaInventarioPage() {
     </div>
   )
 }
+
