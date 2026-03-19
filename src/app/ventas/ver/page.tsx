@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import Image from 'next/image'
 import { supabase } from '@/lib/supabaseClient'
 
@@ -63,7 +63,12 @@ const calcImporte = (cant: any, precio: any) => toNum(cant) * toNum(precio)
 
 const cloneDetalles = (src: Record<number, Detalle[]>) => {
   const out: Record<number, Detalle[]> = {}
-  for (const [k, arr] of Object.entries(src)) out[Number(k)] = arr.map(d => ({ ...d, productos: d.productos ? { ...d.productos } : null }))
+  for (const [k, arr] of Object.entries(src)) {
+    out[Number(k)] = arr.map(d => ({
+      ...d,
+      productos: d.productos ? { ...d.productos } : null,
+    }))
+  }
   return out
 }
 
@@ -73,7 +78,6 @@ const detalleEqual = (a: Detalle, b: Detalle) => {
     (a.concepto ?? '') === (b.concepto ?? '') &&
     toNum(a.cantidad) === toNum(b.cantidad) &&
     toNum(a.precio_unitario) === toNum(b.precio_unitario) &&
-    // importe lo tratamos como derivado (cantidad*precio), pero igual comparamos por seguridad:
     toNum(a.importe) === toNum(b.importe) &&
     (a.forma_pago_id ?? null) === (b.forma_pago_id ?? null) &&
     (a.documento ?? '') === (b.documento ?? '')
@@ -84,7 +88,7 @@ const detalleEqual = (a: Detalle, b: Detalle) => {
 export default function VerVentas() {
   const [ventas, setVentas] = useState<VentaCab[]>([])
   const [detalles, setDetalles] = useState<Record<number, Detalle[]>>({})
-  const [detallesOriginal, setDetallesOriginal] = useState<Record<number, Detalle[]>>({}) // snapshot para saber qué cambió
+  const [detallesOriginal, setDetallesOriginal] = useState<Record<number, Detalle[]>>({})
 
   const [empresas, setEmpresas] = useState<any[]>([])
   const [divisiones, setDivisiones] = useState<any[]>([])
@@ -103,7 +107,6 @@ export default function VerVentas() {
 
   const [mostrarIncompletas, setMostrarIncompletas] = useState(false)
 
-  // ✅ Ventas con detalles “pendientes de guardar”
   const [ventasConPendientes, setVentasConPendientes] = useState<Record<number, boolean>>({})
 
   const marcarPendiente = (ventaId: number, val: boolean) => {
@@ -147,10 +150,7 @@ export default function VerVentas() {
 
     const selectString = `${selectCamposBasicos}${selectClientes}`
 
-    let query = supabase
-      .from('ventas')
-      .select(selectString)
-      .order('fecha', { ascending: false })
+    let query = supabase.from('ventas').select(selectString).order('fecha', { ascending: false })
 
     if (filtros.id) query = query.eq('id', filtros.id)
     if (filtros.empresa_id) query = query.eq('empresa_id', filtros.empresa_id)
@@ -221,12 +221,10 @@ export default function VerVentas() {
     const grouped: Record<number, Detalle[]> = {}
     for (const row of (detAll ?? []) as any[]) {
       const d = row as Detalle
-      // normaliza importe por si viene null
       const imp = d.importe ?? calcImporte(d.cantidad, d.precio_unitario)
       ;(grouped[d.venta_id] ||= []).push({ ...d, importe: imp })
     }
 
-    // importante: guardamos snapshot original
     setDetalles(grouped)
     setDetallesOriginal(cloneDetalles(grouped))
     setVentasConPendientes({})
@@ -250,14 +248,12 @@ export default function VerVentas() {
     setVentas(prev =>
       prev.map(v => {
         if (v.id !== id) return v
-        // cantidad = TOTAL, no debería editarse a mano
-        if (field === 'cantidad') return v
+        if (field === 'cantidad') return v // total no editable
         return { ...v, [field]: val }
       })
     )
   }
 
-  /* Recalcular total de la venta desde los detalles (DB) */
   const recalcularTotal = async (ventaId: number) => {
     const { data: sumRows, error: sumErr } = await supabase
       .from('detalle_venta')
@@ -271,38 +267,28 @@ export default function VerVentas() {
 
     const total = (sumRows || []).reduce((acc, r: any) => acc + Number(r.importe || 0), 0)
 
-    const { error: updErr } = await supabase
-      .from('ventas')
-      .update({ cantidad: total })
-      .eq('id', ventaId)
-
+    const { error: updErr } = await supabase.from('ventas').update({ cantidad: total }).eq('id', ventaId)
     if (updErr) {
       console.error('No se pudo actualizar el total de la venta', updErr)
-      return
     }
   }
 
-  /* Guardar detalles pendientes de UNA venta */
   const guardarDetallesPendientes = async (ventaId: number) => {
     const actuales = detalles[ventaId] || []
     const orig = detallesOriginal[ventaId] || []
 
-    // mapa por id para comparar
     const origById = new Map<number, Detalle>()
     orig.forEach(d => origById.set(d.id, d))
 
-    // solo actualiza los que realmente cambiaron
     for (const d of actuales) {
       const dOrig = origById.get(d.id)
       if (!dOrig) continue
 
-      // recalcular importe local (por consistencia)
       const importeCalc = calcImporte(d.cantidad, d.precio_unitario)
       const detFinal: Detalle = { ...d, importe: importeCalc }
 
       if (detalleEqual(detFinal, dOrig)) continue
 
-      // OJO: si tu columna importe es generada/trigger y no permite update, quítala aquí
       const payload = {
         producto_id: detFinal.producto_id,
         concepto: detFinal.concepto,
@@ -313,36 +299,28 @@ export default function VerVentas() {
         documento: detFinal.documento,
       }
 
-      const { error } = await supabase
-        .from('detalle_venta')
-        .update(payload)
-        .eq('id', detFinal.id)
-
-      if (error) {
-        console.error('Error guardando detalle pendiente', error)
-        throw error
-      }
+      const { error } = await supabase.from('detalle_venta').update(payload).eq('id', detFinal.id)
+      if (error) throw error
     }
 
-    // si llegamos aquí, consideramos que ya no hay pendientes
     marcarPendiente(ventaId, false)
 
-    // refrescar snapshot original localmente (sin recargar toda la página)
     setDetallesOriginal(prev => {
       const copy = { ...prev }
-      copy[ventaId] = (detalles[ventaId] || []).map(d => ({ ...d, productos: d.productos ? { ...d.productos } : null }))
+      copy[ventaId] = (detalles[ventaId] || []).map(d => ({
+        ...d,
+        productos: d.productos ? { ...d.productos } : null,
+      }))
       return copy
     })
   }
 
   const guardarCabecera = async (venta: VentaCab) => {
     try {
-      // ✅ 1) guardar detalles modificados de esta venta (si hay)
       if (ventasConPendientes[venta.id]) {
         await guardarDetallesPendientes(venta.id)
       }
 
-      // ✅ 2) guardar cabecera (sin tocar "cantidad" a mano)
       const { error } = await supabase
         .from('ventas')
         .update({
@@ -360,9 +338,7 @@ export default function VerVentas() {
         return
       }
 
-      // ✅ 3) recalcular total SIEMPRE desde detalles
       await recalcularTotal(venta.id)
-
       await cargarDatos()
       alert('Venta guardada')
     } catch (e) {
@@ -400,7 +376,6 @@ export default function VerVentas() {
       return copia
     })
 
-    // ✅ marcar venta con pendientes
     marcarPendiente(ventaId, true)
   }
 
@@ -425,7 +400,6 @@ export default function VerVentas() {
         return
       }
 
-      // ✅ actualizar snapshot original SOLO para este detalle
       setDetallesOriginal(prev => {
         const copy = { ...prev }
         const arr = [...(copy[ventaId] || [])]
@@ -468,12 +442,12 @@ export default function VerVentas() {
     await cargarDatos()
   }
 
-  /* UI */
   const totalLocalVenta = (ventaId: number) => {
     const arr = detalles[ventaId] || []
     return arr.reduce((acc, d) => acc + calcImporte(d.cantidad, d.precio_unitario), 0)
   }
 
+  /* UI */
   return (
     <div className="p-6 max-w-7xl mx-auto">
       <div className="flex justify-center mb-4">
@@ -482,7 +456,6 @@ export default function VerVentas() {
 
       <h1 className="text-2xl font-bold mb-4">🧾 Ventas Registradas</h1>
 
-      {/* Filtros */}
       <div className="grid grid-cols-1 md:grid-cols-8 gap-4 mb-4">
         <select name="empresa_id" value={filtros.empresa_id} onChange={handleChange} className="border p-2">
           <option value="">Todas las Empresas</option>
@@ -526,7 +499,6 @@ export default function VerVentas() {
         </a>
       </div>
 
-      {/* Tabla principal */}
       <table className="w-full border text-sm text-left mb-8">
         <thead className="bg-gray-200">
           <tr>
@@ -565,7 +537,6 @@ export default function VerVentas() {
               <td className="p-2">{v.clientes?.nombre ?? '—'}</td>
               <td className="p-2">{v.clientes?.nit ?? '—'}</td>
 
-              {/* ✅ Total (solo lectura): viene de detalles */}
               <td className="p-2">
                 <input
                   type="number"
@@ -590,7 +561,6 @@ export default function VerVentas() {
         </tbody>
       </table>
 
-      {/* Detalles */}
       {ventas.map(v => (
         <div key={`det-${v.id}`} className="mb-6 border p-3 rounded bg-gray-50">
           <div className="flex items-center justify-between mb-2">
@@ -670,9 +640,7 @@ export default function VerVentas() {
                       />
                     </td>
 
-                    <td className="p-2">
-                      Q{importeUI.toFixed(2)}
-                    </td>
+                    <td className="p-2">Q{importeUI.toFixed(2)}</td>
 
                     <td className="p-2">
                       <select
@@ -696,16 +664,10 @@ export default function VerVentas() {
                     </td>
 
                     <td className="p-2 space-x-1">
-                      <button
-                        onClick={() => guardarDetalle(v.id, d)}
-                        className="bg-green-600 text-white px-2 py-1 rounded text-xs"
-                      >
+                      <button onClick={() => guardarDetalle(v.id, d)} className="bg-green-600 text-white px-2 py-1 rounded text-xs">
                         Guardar
                       </button>
-                      <button
-                        onClick={() => eliminarDetalle(v.id, d.id)}
-                        className="bg-red-600 text-white px-2 py-1 rounded text-xs"
-                      >
+                      <button onClick={() => eliminarDetalle(v.id, d.id)} className="bg-red-600 text-white px-2 py-1 rounded text-xs">
                         Eliminar
                       </button>
                     </td>
