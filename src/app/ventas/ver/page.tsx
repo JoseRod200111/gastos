@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import Image from 'next/image'
 import { supabase } from '@/lib/supabaseClient'
 
@@ -22,7 +22,7 @@ type ClienteRel = { nombre: string | null; nit: string | null }
 type VentaCab = {
   id: number
   fecha: string
-  cantidad: number | null
+  cantidad: number | null // lo usamos como TOTAL (suma de detalles)
   observaciones: string | null
   empresa_id: number | null
   division_id: number | null
@@ -53,10 +53,39 @@ type Detalle = {
   productos?: Producto | null
 }
 
+/* ─────────────────────── Utils ─────────────────────── */
+const toNum = (v: any) => {
+  const n = Number(v)
+  return Number.isFinite(n) ? n : 0
+}
+
+const calcImporte = (cant: any, precio: any) => toNum(cant) * toNum(precio)
+
+const cloneDetalles = (src: Record<number, Detalle[]>) => {
+  const out: Record<number, Detalle[]> = {}
+  for (const [k, arr] of Object.entries(src)) out[Number(k)] = arr.map(d => ({ ...d, productos: d.productos ? { ...d.productos } : null }))
+  return out
+}
+
+const detalleEqual = (a: Detalle, b: Detalle) => {
+  return (
+    (a.producto_id ?? null) === (b.producto_id ?? null) &&
+    (a.concepto ?? '') === (b.concepto ?? '') &&
+    toNum(a.cantidad) === toNum(b.cantidad) &&
+    toNum(a.precio_unitario) === toNum(b.precio_unitario) &&
+    // importe lo tratamos como derivado (cantidad*precio), pero igual comparamos por seguridad:
+    toNum(a.importe) === toNum(b.importe) &&
+    (a.forma_pago_id ?? null) === (b.forma_pago_id ?? null) &&
+    (a.documento ?? '') === (b.documento ?? '')
+  )
+}
+
 /* ─────────────────────── Página ─────────────────────── */
 export default function VerVentas() {
   const [ventas, setVentas] = useState<VentaCab[]>([])
   const [detalles, setDetalles] = useState<Record<number, Detalle[]>>({})
+  const [detallesOriginal, setDetallesOriginal] = useState<Record<number, Detalle[]>>({}) // snapshot para saber qué cambió
+
   const [empresas, setEmpresas] = useState<any[]>([])
   const [divisiones, setDivisiones] = useState<any[]>([])
   const [formasPago, setFormasPago] = useState<any[]>([])
@@ -73,6 +102,13 @@ export default function VerVentas() {
   })
 
   const [mostrarIncompletas, setMostrarIncompletas] = useState(false)
+
+  // ✅ Ventas con detalles “pendientes de guardar”
+  const [ventasConPendientes, setVentasConPendientes] = useState<Record<number, boolean>>({})
+
+  const marcarPendiente = (ventaId: number, val: boolean) => {
+    setVentasConPendientes(prev => ({ ...prev, [ventaId]: val }))
+  }
 
   /* catálogos */
   useEffect(() => {
@@ -135,6 +171,8 @@ export default function VerVentas() {
       console.error('Error cargando ventas', error)
       setVentas([])
       setDetalles({})
+      setDetallesOriginal({})
+      setVentasConPendientes({})
       return
     }
 
@@ -155,6 +193,8 @@ export default function VerVentas() {
     if (ids.length === 0) {
       setVentas([])
       setDetalles({})
+      setDetallesOriginal({})
+      setVentasConPendientes({})
       return
     }
 
@@ -172,15 +212,24 @@ export default function VerVentas() {
     if (detErr) {
       console.error('Error cargando detalles', detErr)
       setDetalles({})
+      setDetallesOriginal({})
       setVentas(cabList)
+      setVentasConPendientes({})
       return
     }
 
     const grouped: Record<number, Detalle[]> = {}
     for (const row of (detAll ?? []) as any[]) {
-      (grouped[row.venta_id] ||= []).push(row as Detalle)
+      const d = row as Detalle
+      // normaliza importe por si viene null
+      const imp = d.importe ?? calcImporte(d.cantidad, d.precio_unitario)
+      ;(grouped[d.venta_id] ||= []).push({ ...d, importe: imp })
     }
+
+    // importante: guardamos snapshot original
     setDetalles(grouped)
+    setDetallesOriginal(cloneDetalles(grouped))
+    setVentasConPendientes({})
 
     const filtradas = cabList.filter(v =>
       mostrarIncompletas ? true : ((grouped[v.id] ?? []).length > 0)
@@ -199,32 +248,127 @@ export default function VerVentas() {
   /* edición CABECERA */
   const handleInputChangeCab = (id: number, field: keyof VentaCab, val: any) => {
     setVentas(prev =>
-      prev.map(v => (v.id === id ? { ...v, [field]: field === 'cantidad' ? Number(val) : val } : v))
+      prev.map(v => {
+        if (v.id !== id) return v
+        // cantidad = TOTAL, no debería editarse a mano
+        if (field === 'cantidad') return v
+        return { ...v, [field]: val }
+      })
     )
   }
 
-  const guardarCabecera = async (venta: VentaCab) => {
-    const { error } = await supabase
-      .from('ventas')
-      .update({
-        fecha: venta.fecha,
-        cantidad: venta.cantidad,
-        observaciones: venta.observaciones,
-        empresa_id: venta.empresa_id,
-        division_id: venta.division_id,
-        cliente_id: venta.cliente_id,
-      })
-      .eq('id', venta.id)
+  /* Recalcular total de la venta desde los detalles (DB) */
+  const recalcularTotal = async (ventaId: number) => {
+    const { data: sumRows, error: sumErr } = await supabase
+      .from('detalle_venta')
+      .select('importe')
+      .eq('venta_id', ventaId)
 
-    if (error) {
-      alert('Error al guardar la venta')
-      console.error(error)
+    if (sumErr) {
+      console.error('No se pudo obtener los importes para recalcular total', sumErr)
       return
     }
 
-    await recalcularTotal(venta.id)
-    await cargarDatos()
-    alert('Venta guardada')
+    const total = (sumRows || []).reduce((acc, r: any) => acc + Number(r.importe || 0), 0)
+
+    const { error: updErr } = await supabase
+      .from('ventas')
+      .update({ cantidad: total })
+      .eq('id', ventaId)
+
+    if (updErr) {
+      console.error('No se pudo actualizar el total de la venta', updErr)
+      return
+    }
+  }
+
+  /* Guardar detalles pendientes de UNA venta */
+  const guardarDetallesPendientes = async (ventaId: number) => {
+    const actuales = detalles[ventaId] || []
+    const orig = detallesOriginal[ventaId] || []
+
+    // mapa por id para comparar
+    const origById = new Map<number, Detalle>()
+    orig.forEach(d => origById.set(d.id, d))
+
+    // solo actualiza los que realmente cambiaron
+    for (const d of actuales) {
+      const dOrig = origById.get(d.id)
+      if (!dOrig) continue
+
+      // recalcular importe local (por consistencia)
+      const importeCalc = calcImporte(d.cantidad, d.precio_unitario)
+      const detFinal: Detalle = { ...d, importe: importeCalc }
+
+      if (detalleEqual(detFinal, dOrig)) continue
+
+      // OJO: si tu columna importe es generada/trigger y no permite update, quítala aquí
+      const payload = {
+        producto_id: detFinal.producto_id,
+        concepto: detFinal.concepto,
+        cantidad: detFinal.cantidad,
+        precio_unitario: detFinal.precio_unitario,
+        importe: detFinal.importe,
+        forma_pago_id: detFinal.forma_pago_id,
+        documento: detFinal.documento,
+      }
+
+      const { error } = await supabase
+        .from('detalle_venta')
+        .update(payload)
+        .eq('id', detFinal.id)
+
+      if (error) {
+        console.error('Error guardando detalle pendiente', error)
+        throw error
+      }
+    }
+
+    // si llegamos aquí, consideramos que ya no hay pendientes
+    marcarPendiente(ventaId, false)
+
+    // refrescar snapshot original localmente (sin recargar toda la página)
+    setDetallesOriginal(prev => {
+      const copy = { ...prev }
+      copy[ventaId] = (detalles[ventaId] || []).map(d => ({ ...d, productos: d.productos ? { ...d.productos } : null }))
+      return copy
+    })
+  }
+
+  const guardarCabecera = async (venta: VentaCab) => {
+    try {
+      // ✅ 1) guardar detalles modificados de esta venta (si hay)
+      if (ventasConPendientes[venta.id]) {
+        await guardarDetallesPendientes(venta.id)
+      }
+
+      // ✅ 2) guardar cabecera (sin tocar "cantidad" a mano)
+      const { error } = await supabase
+        .from('ventas')
+        .update({
+          fecha: venta.fecha,
+          observaciones: venta.observaciones,
+          empresa_id: venta.empresa_id,
+          division_id: venta.division_id,
+          cliente_id: venta.cliente_id,
+        })
+        .eq('id', venta.id)
+
+      if (error) {
+        alert('Error al guardar la venta')
+        console.error(error)
+        return
+      }
+
+      // ✅ 3) recalcular total SIEMPRE desde detalles
+      await recalcularTotal(venta.id)
+
+      await cargarDatos()
+      alert('Venta guardada')
+    } catch (e) {
+      alert('Error al guardar (cabecera o detalles). Revisa consola.')
+      console.error(e)
+    }
   }
 
   /* edición DETALLE */
@@ -239,9 +383,7 @@ export default function VerVentas() {
         if (field === 'cantidad' || field === 'precio_unitario') {
           if (field === 'cantidad') d.cantidad = Number(value)
           if (field === 'precio_unitario') d.precio_unitario = Number(value)
-          const q = Number(d.cantidad || 0)
-          const p = Number(d.precio_unitario || 0)
-          d.importe = q * p
+          d.importe = calcImporte(d.cantidad, d.precio_unitario)
         } else if (field === 'producto_id') {
           d.producto_id = value ? Number(value) : null
           const prod = productos.find(p => p.id === Number(value)) || null
@@ -257,28 +399,50 @@ export default function VerVentas() {
       }
       return copia
     })
+
+    // ✅ marcar venta con pendientes
+    marcarPendiente(ventaId, true)
   }
 
   const guardarDetalle = async (ventaId: number, det: Detalle) => {
-    const payload = {
-      producto_id: det.producto_id,
-      concepto: det.concepto,
-      cantidad: det.cantidad,
-      precio_unitario: det.precio_unitario,
-      importe: det.importe,
-      forma_pago_id: det.forma_pago_id,
-      documento: det.documento,
-    }
+    try {
+      const detFinal = { ...det, importe: calcImporte(det.cantidad, det.precio_unitario) }
 
-    const { error } = await supabase.from('detalle_venta').update(payload).eq('id', det.id)
-    if (error) {
-      alert('Error al guardar el detalle')
-      console.error(error)
-      return
-    }
+      const payload = {
+        producto_id: detFinal.producto_id,
+        concepto: detFinal.concepto,
+        cantidad: detFinal.cantidad,
+        precio_unitario: detFinal.precio_unitario,
+        importe: detFinal.importe,
+        forma_pago_id: detFinal.forma_pago_id,
+        documento: detFinal.documento,
+      }
 
-    await recalcularTotal(ventaId)
-    await cargarDatos()
+      const { error } = await supabase.from('detalle_venta').update(payload).eq('id', detFinal.id)
+      if (error) {
+        alert('Error al guardar el detalle')
+        console.error(error)
+        return
+      }
+
+      // ✅ actualizar snapshot original SOLO para este detalle
+      setDetallesOriginal(prev => {
+        const copy = { ...prev }
+        const arr = [...(copy[ventaId] || [])]
+        const idx = arr.findIndex(x => x.id === detFinal.id)
+        if (idx >= 0) arr[idx] = { ...arr[idx], ...detFinal }
+        copy[ventaId] = arr
+        return copy
+      })
+
+      marcarPendiente(ventaId, false)
+
+      await recalcularTotal(ventaId)
+      await cargarDatos()
+    } catch (e) {
+      alert('Error al guardar el detalle. Revisa consola.')
+      console.error(e)
+    }
   }
 
   const eliminarDetalle = async (ventaId: number, detId: number) => {
@@ -304,32 +468,12 @@ export default function VerVentas() {
     await cargarDatos()
   }
 
-  /* Recalcular total de la venta desde los detalles */
-  const recalcularTotal = async (ventaId: number) => {
-    const { data: sumRows, error: sumErr } = await supabase
-      .from('detalle_venta')
-      .select('importe')
-      .eq('venta_id', ventaId)
-
-    if (sumErr) {
-      console.error('No se pudo obtener los importes para recalcular total', sumErr)
-      return
-    }
-
-    const total = (sumRows || []).reduce((acc, r: any) => acc + Number(r.importe || 0), 0)
-
-    const { error: updErr } = await supabase
-      .from('ventas')
-      .update({ cantidad: total })
-      .eq('id', ventaId)
-
-    if (updErr) {
-      console.error('No se pudo actualizar el total de la venta', updErr)
-      return
-    }
+  /* UI */
+  const totalLocalVenta = (ventaId: number) => {
+    const arr = detalles[ventaId] || []
+    return arr.reduce((acc, d) => acc + calcImporte(d.cantidad, d.precio_unitario), 0)
   }
 
-  /* UI */
   return (
     <div className="p-6 max-w-7xl mx-auto">
       <div className="flex justify-center mb-4">
@@ -421,15 +565,24 @@ export default function VerVentas() {
               <td className="p-2">{v.clientes?.nombre ?? '—'}</td>
               <td className="p-2">{v.clientes?.nit ?? '—'}</td>
 
+              {/* ✅ Total (solo lectura): viene de detalles */}
               <td className="p-2">
-                <input type="number" className="border p-1 w-24" value={Number(v.cantidad ?? 0)} onChange={ev => handleInputChangeCab(v.id, 'cantidad', Number(ev.target.value))} />
+                <input
+                  type="number"
+                  className="border p-1 w-24 bg-gray-100"
+                  value={Number((detalles[v.id]?.length ? totalLocalVenta(v.id) : (v.cantidad ?? 0)).toFixed(2))}
+                  readOnly
+                />
               </td>
 
               <td className="p-2">
                 <input className="border p-1 w-56" value={v.observaciones ?? ''} onChange={ev => handleInputChangeCab(v.id, 'observaciones', ev.target.value)} />
               </td>
 
-              <td className="p-2 space-x-1">
+              <td className="p-2 space-x-2">
+                {ventasConPendientes[v.id] ? (
+                  <span className="text-[11px] text-amber-700">Detalles sin guardar</span>
+                ) : null}
                 <button onClick={() => guardarCabecera(v)} className="bg-green-600 text-white px-2 py-1 rounded text-xs">Guardar</button>
               </td>
             </tr>
@@ -464,13 +617,15 @@ export default function VerVentas() {
                     ? <span className="ml-2 text-[10px] bg-emerald-600 text-white px-1.5 py-0.5 rounded">inv</span>
                     : null
 
+                const importeUI = calcImporte(d.cantidad, d.precio_unitario)
+
                 return (
                   <tr key={d.id} className="border-t">
                     <td className="p-2">
                       <select
                         className="border p-1 w-full"
                         value={d.producto_id ?? ''}
-                        onChange={ev => handleInputChangeDet(v.id, d.id, 'producto_id', Number(ev.target.value))}
+                        onChange={ev => handleInputChangeDet(v.id, d.id, 'producto_id', ev.target.value ? Number(ev.target.value) : null)}
                       >
                         <option value="">— Sin producto —</option>
                         {productos.map(p => (
@@ -501,7 +656,7 @@ export default function VerVentas() {
                       <input
                         type="number"
                         className="border p-1 w-20"
-                        value={Number(d.cantidad ?? 0)}
+                        value={toNum(d.cantidad)}
                         onChange={ev => handleInputChangeDet(v.id, d.id, 'cantidad', Number(ev.target.value))}
                       />
                     </td>
@@ -510,13 +665,13 @@ export default function VerVentas() {
                       <input
                         type="number"
                         className="border p-1 w-24"
-                        value={Number(d.precio_unitario ?? 0)}
+                        value={toNum(d.precio_unitario)}
                         onChange={ev => handleInputChangeDet(v.id, d.id, 'precio_unitario', Number(ev.target.value))}
                       />
                     </td>
 
                     <td className="p-2">
-                      Q{Number(d.importe || 0).toFixed(2)}
+                      Q{importeUI.toFixed(2)}
                     </td>
 
                     <td className="p-2">
