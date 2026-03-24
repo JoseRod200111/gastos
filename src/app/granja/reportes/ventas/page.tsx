@@ -21,6 +21,11 @@ type VentaRow = {
   deuda: number
   observaciones: string | null
   created_at: string | null
+
+  // ✅ NUEVO: para multis reales
+  multi_id: string | null
+  multi_folio: number | null
+
   clientes?: { nombre?: string; nit?: string } | null
   granja_ubicaciones?: { codigo?: string; nombre?: string } | null
   granja_lotes?: { codigo?: string } | null
@@ -43,6 +48,7 @@ const toNum = (v: any) => {
 }
 const round2 = (n: number) => Math.round(n * 100) / 100
 
+// Mantengo esto solo como fallback (por si hay registros viejos sin multi_id)
 const extraerMulti = (obs: string | null | undefined) => {
   if (!obs) return null
   const m = obs.match(/MULTI:([a-zA-Z0-9_-]+)/)
@@ -67,10 +73,13 @@ async function fetchLogoDataUrl(): Promise<string | null> {
 const fmtQ = (n: number) => `Q${round2(n).toFixed(2)}`
 const fmtN = (n: number) => `${round2(n).toFixed(2)}`
 
-const safeDate = (iso: string | null | undefined) => {
-  if (!iso) return null
-  const d = new Date(iso)
-  return Number.isNaN(d.getTime()) ? null : d
+// ✅ aquí defines el formato del folio
+const multiLabel = (folio: number | null) => {
+  if (!folio) return null
+  // opción simple:
+  return `M${folio}`
+  // si lo quieres con ceros:
+  // return `M-${String(folio).padStart(6, '0')}`
 }
 
 export default function ReporteVentasGranjaPage() {
@@ -93,7 +102,7 @@ export default function ReporteVentasGranjaPage() {
     const hoy = new Date()
     const pad = (n: number) => (n < 10 ? `0${n}` : `${n}`)
     const f = `${hoy.getFullYear()}-${pad(hoy.getMonth() + 1)}-${pad(hoy.getDate())}`
-    setFiltros(prev => ({ ...prev, desde: f, hasta: f }))
+    setFiltros((prev) => ({ ...prev, desde: f, hasta: f }))
   }, [])
 
   const cargarDatos = useCallback(async () => {
@@ -105,6 +114,7 @@ export default function ReporteVentasGranjaPage() {
           id, fecha, cliente_id, ubicacion_id, lote_id,
           cantidad, peso_total_lb, precio_por_libra, total, pagado, deuda,
           observaciones, created_at,
+          multi_id, multi_folio,
           clientes ( nombre, nit ),
           granja_ubicaciones ( codigo, nombre ),
           granja_lotes ( codigo )
@@ -130,12 +140,14 @@ export default function ReporteVentasGranjaPage() {
       const ub = filtros.ubicacion.trim().toLowerCase()
       const lt = filtros.lote.trim().toLowerCase()
 
-      if (cn) rows = rows.filter(r => (r.clientes?.nombre || '').toLowerCase().includes(cn))
-      if (cnit) rows = rows.filter(r => (r.clientes?.nit || '').toLowerCase().includes(cnit))
-      if (ub) rows = rows.filter(r => (r.granja_ubicaciones?.codigo || '').toLowerCase().includes(ub))
-      if (lt) rows = rows.filter(r => (r.granja_lotes?.codigo || '').toLowerCase().includes(lt))
+      if (cn) rows = rows.filter((r) => (r.clientes?.nombre || '').toLowerCase().includes(cn))
+      if (cnit) rows = rows.filter((r) => (r.clientes?.nit || '').toLowerCase().includes(cnit))
+      if (ub) rows = rows.filter((r) => (r.granja_ubicaciones?.codigo || '').toLowerCase().includes(ub))
+      if (lt) rows = rows.filter((r) => (r.granja_lotes?.codigo || '').toLowerCase().includes(lt))
 
-      if (filtros.solo_multi) rows = rows.filter(r => !!extraerMulti(r.observaciones))
+      if (filtros.solo_multi) {
+        rows = rows.filter((r) => r.multi_id !== null || r.multi_folio !== null || !!extraerMulti(r.observaciones))
+      }
 
       setVentas(rows)
     } finally {
@@ -148,10 +160,9 @@ export default function ReporteVentasGranjaPage() {
   }, [cargarDatos])
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
-    setFiltros(prev => ({ ...prev, [e.target.name]: e.target.value }))
+    setFiltros((prev) => ({ ...prev, [e.target.name]: e.target.value }))
   }
 
-  // ✅ Regresamos resumen en pantalla
   const resumen = useMemo(() => {
     const totalCerdos = ventas.reduce((a, v) => a + toNum(v.cantidad), 0)
     const totalPeso = ventas.reduce((a, v) => a + toNum(v.peso_total_lb), 0)
@@ -160,7 +171,7 @@ export default function ReporteVentasGranjaPage() {
     const deudaQ = ventas.reduce((a, v) => a + toNum(v.deuda), 0)
 
     const porUbic: Record<string, number> = {}
-    ventas.forEach(v => {
+    ventas.forEach((v) => {
       const key = v.granja_ubicaciones?.codigo || `UBI#${v.ubicacion_id}`
       porUbic[key] = (porUbic[key] || 0) + toNum(v.cantidad)
     })
@@ -211,7 +222,7 @@ export default function ReporteVentasGranjaPage() {
         'Fecha', 'ID', 'Cliente', 'NIT', 'Ubicación', 'Lote',
         'Cant.', 'Peso(lb)', 'Q/lb', 'Total(Q)', 'Pagado(Q)', 'Deuda(Q)', 'MULTI'
       ]],
-      body: ventas.map(v => [
+      body: ventas.map((v) => [
         v.fecha,
         String(v.id),
         v.clientes?.nombre || '—',
@@ -224,7 +235,7 @@ export default function ReporteVentasGranjaPage() {
         fmtQ(toNum(v.total)),
         fmtQ(toNum(v.pagado)),
         fmtQ(toNum(v.deuda)),
-        extraerMulti(v.observaciones) || '—',
+        multiLabel(v.multi_folio) || (v.multi_id ? 'M' : '—'),
       ]),
       styles: { fontSize: 7 },
       columnStyles: { 2: { cellWidth: 30 } },
@@ -236,93 +247,7 @@ export default function ReporteVentasGranjaPage() {
     doc.save(name)
   }
 
-  // ✅ AGRUPAR MULTI PARA RECIBO (robusto + fallback por tiempo)
-  const obtenerFilasParaRecibo = async (baseRow: VentaRow) => {
-    const multi = extraerMulti(baseRow.observaciones)
-
-    // Caso normal
-    if (!multi) return { filas: [baseRow], multi: null }
-
-    // 1) Intento #1: por MULTI exacto
-    const { data: multiRows, error: multiErr } = await supabase
-      .from('granja_ventas_cerdos')
-      .select(`
-        id, fecha, cliente_id, ubicacion_id, lote_id,
-        cantidad, peso_total_lb, precio_por_libra, total, pagado, deuda,
-        observaciones, created_at,
-        clientes ( nombre, nit ),
-        granja_ubicaciones ( codigo, nombre ),
-        granja_lotes ( codigo )
-      `)
-      .ilike('observaciones', `%MULTI:${multi}%`)
-      .order('id', { ascending: true })
-
-    if (!multiErr && (multiRows || []).length > 0) {
-      const all = (multiRows as any as VentaRow[]) || []
-      const sameClient = all.filter(r => r.cliente_id === baseRow.cliente_id)
-
-      // si hay por misma fecha, prioriza
-      const sameFecha = sameClient.filter(r => r.fecha === baseRow.fecha)
-      let filas = sameFecha.length > 0 ? sameFecha : (sameClient.length > 0 ? sameClient : [baseRow])
-
-      filas = [...filas].sort((a, b) => {
-        const ca = a.granja_ubicaciones?.codigo || ''
-        const cb = b.granja_ubicaciones?.codigo || ''
-        return ca.localeCompare(cb, 'es')
-      })
-
-      // Si de verdad encontramos más de 1 fila, perfecto
-      if (filas.length > 1) return { filas, multi }
-
-      // si solo 1, pasamos al plan B
-    }
-
-    // 2) Plan B: agrupar por mismo cliente + fecha + created_at cercano + mismo precio
-    // (útil cuando algunas filas no guardaron el MULTI correctamente)
-    const baseCreated = safeDate(baseRow.created_at)
-    if (!baseCreated) return { filas: [baseRow], multi } // no podemos agrupar por tiempo sin created_at
-
-    const windowMinutes = 3
-    const minT = new Date(baseCreated.getTime() - windowMinutes * 60 * 1000)
-    const maxT = new Date(baseCreated.getTime() + windowMinutes * 60 * 1000)
-
-    const { data: candRows, error: candErr } = await supabase
-      .from('granja_ventas_cerdos')
-      .select(`
-        id, fecha, cliente_id, ubicacion_id, lote_id,
-        cantidad, peso_total_lb, precio_por_libra, total, pagado, deuda,
-        observaciones, created_at,
-        clientes ( nombre, nit ),
-        granja_ubicaciones ( codigo, nombre ),
-        granja_lotes ( codigo )
-      `)
-      .eq('cliente_id', baseRow.cliente_id)
-      .eq('fecha', baseRow.fecha)
-      .gte('created_at', minT.toISOString())
-      .lte('created_at', maxT.toISOString())
-      .order('id', { ascending: true })
-
-    if (candErr || !candRows || candRows.length === 0) {
-      return { filas: [baseRow], multi }
-    }
-
-    let filas = (candRows as any as VentaRow[]).filter(r => {
-      // mismo precio por libra para no mezclar ventas diferentes
-      return round2(toNum(r.precio_por_libra)) === round2(toNum(baseRow.precio_por_libra))
-    })
-
-    // si con eso hay más de 1, usamos esas
-    if (filas.length <= 1) filas = [baseRow]
-
-    filas = [...filas].sort((a, b) => {
-      const ca = a.granja_ubicaciones?.codigo || ''
-      const cb = b.granja_ubicaciones?.codigo || ''
-      return ca.localeCompare(cb, 'es')
-    })
-
-    return { filas, multi }
-  }
-
+  // ✅ Recibo: ahora agrupa por multi_id (la forma correcta)
   const generarReciboPDF = async (ventaId: number) => {
     setGenerandoReciboId(ventaId)
     try {
@@ -332,6 +257,7 @@ export default function ReporteVentasGranjaPage() {
           id, fecha, cliente_id, ubicacion_id, lote_id,
           cantidad, peso_total_lb, precio_por_libra, total, pagado, deuda,
           observaciones, created_at,
+          multi_id, multi_folio,
           clientes ( nombre, nit ),
           granja_ubicaciones ( codigo, nombre ),
           granja_lotes ( codigo )
@@ -346,7 +272,34 @@ export default function ReporteVentasGranjaPage() {
       }
 
       const baseRow = base as any as VentaRow
-      const { filas, multi } = await obtenerFilasParaRecibo(baseRow)
+      let filas: VentaRow[] = [baseRow]
+
+      if (baseRow.multi_id) {
+        const { data: grupo, error: gErr } = await supabase
+          .from('granja_ventas_cerdos')
+          .select(`
+            id, fecha, cliente_id, ubicacion_id, lote_id,
+            cantidad, peso_total_lb, precio_por_libra, total, pagado, deuda,
+            observaciones, created_at,
+            multi_id, multi_folio,
+            clientes ( nombre, nit ),
+            granja_ubicaciones ( codigo, nombre ),
+            granja_lotes ( codigo )
+          `)
+          .eq('multi_id', baseRow.multi_id)
+          .order('id', { ascending: true })
+
+        if (!gErr && grupo && grupo.length > 0) {
+          filas = (grupo as any as VentaRow[])
+        }
+      }
+
+      // Orden por ubicación para que se vea “juntito”
+      filas = [...filas].sort((a, b) => {
+        const ca = a.granja_ubicaciones?.codigo || ''
+        const cb = b.granja_ubicaciones?.codigo || ''
+        return ca.localeCompare(cb, 'es')
+      })
 
       const totalCant = filas.reduce((a, r) => a + toNum(r.cantidad), 0)
       const totalPeso = filas.reduce((a, r) => a + toNum(r.peso_total_lb), 0)
@@ -354,7 +307,8 @@ export default function ReporteVentasGranjaPage() {
       const totalPagado = filas.reduce((a, r) => a + toNum(r.pagado), 0)
       const totalDeuda = filas.reduce((a, r) => a + toNum(r.deuda), 0)
 
-      const reciboNo = multi ? `MULTI-${multi.slice(0, 8).toUpperCase()}` : `V-${baseRow.id}`
+      const folioTxt = multiLabel(baseRow.multi_folio)
+      const reciboNo = folioTxt ? folioTxt : (baseRow.multi_id ? 'M' : `V-${baseRow.id}`)
 
       const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
       const logo = await fetchLogoDataUrl()
@@ -376,19 +330,18 @@ export default function ReporteVentasGranjaPage() {
         body: [[
           clienteNom,
           clienteNit,
-          multi ? 'Multi-tramo' : 'Normal',
-          multi ? `MULTI:${multi}` : `ID:${baseRow.id}`,
+          baseRow.multi_id ? 'Multi-tramo' : 'Normal',
+          baseRow.multi_id ? (folioTxt ? `${folioTxt}` : 'MULTI') : `ID:${baseRow.id}`,
         ]],
         styles: { fontSize: 9 },
       })
 
       const yInfo = (doc as any).lastAutoTable.finalY + 4
 
-      // ✅ tabla de detalle (todas juntas)
       autoTable(doc, {
         startY: yInfo,
         head: [[ 'Ubicación', 'Lote', 'Cant.', 'Peso(lb)', 'Q/lb', 'Subtotal (Q)' ]],
-        body: filas.map(r => [
+        body: filas.map((r) => [
           r.granja_ubicaciones?.codigo || `#${r.ubicacion_id}`,
           r.granja_lotes?.codigo || '—',
           String(toNum(r.cantidad)),
@@ -407,7 +360,6 @@ export default function ReporteVentasGranjaPage() {
 
       const yTot = (doc as any).lastAutoTable.finalY + 6
 
-      // ✅ Totales alineados (ya NO se corre a la derecha)
       autoTable(doc, {
         startY: yTot,
         head: [['Totales', 'Valor']],
@@ -421,33 +373,6 @@ export default function ReporteVentasGranjaPage() {
         styles: { fontSize: 9 },
         columnStyles: { 1: { halign: 'right' } },
       })
-
-      const yObs = (doc as any).lastAutoTable.finalY + 6
-      doc.setFontSize(9)
-
-      const obs = (baseRow.observaciones || '')
-        .replace(/MULTI:[a-zA-Z0-9_-]+/g, '')
-        .replace(/\(\d+\/\d+\)/g, '')
-        .trim()
-
-      if (obs) {
-        doc.text('Observaciones:', 14, yObs)
-        doc.setFontSize(8)
-        doc.text(doc.splitTextToSize(obs, 180), 14, yObs + 4)
-      }
-
-      // Nota si era multi pero no se lograron encontrar más filas
-      if (multi && filas.length === 1) {
-        doc.setFontSize(8)
-        doc.text(
-          'Nota: Esta venta está marcada como MULTI, pero solo se encontró 1 fila relacionada para el recibo.',
-          14,
-          285
-        )
-      } else {
-        doc.setFontSize(8)
-        doc.text('Este recibo corresponde a una venta registrada en el sistema.', 14, 285)
-      }
 
       const now = new Date()
       const pad = (n: number) => (n < 10 ? `0${n}` : `${n}`)
@@ -466,10 +391,9 @@ export default function ReporteVentasGranjaPage() {
 
       <h1 className="text-2xl font-bold mb-2">📄 Reporte de ventas de cerdos</h1>
       <p className="text-sm text-gray-600 mb-4">
-        Incluye reporte PDF y recibo (factura) por venta. Si es multi-tramo, intenta agrupar todas las líneas.
+        Reporte PDF + recibos. MULTI se muestra como M + número (folio).
       </p>
 
-      {/* Filtros */}
       <div className="grid grid-cols-1 md:grid-cols-8 gap-3 mb-4">
         <input type="date" name="desde" value={filtros.desde} onChange={handleChange} className="border p-2" />
         <input type="date" name="hasta" value={filtros.hasta} onChange={handleChange} className="border p-2" />
@@ -507,7 +431,7 @@ export default function ReporteVentasGranjaPage() {
         </Link>
       </div>
 
-      {/* ✅ Resumen en pantalla (regresado) */}
+      {/* Resumen */}
       <div className="grid md:grid-cols-5 gap-3 mb-6">
         <div className="border rounded p-3 bg-white">
           <div className="text-xs text-gray-500">Total cerdos vendidos</div>
@@ -531,7 +455,6 @@ export default function ReporteVentasGranjaPage() {
         </div>
       </div>
 
-      {/* Tabla */}
       <div className="border rounded bg-white overflow-auto">
         <table className="w-full text-sm">
           <thead className="bg-gray-200 sticky top-0">
@@ -558,8 +481,8 @@ export default function ReporteVentasGranjaPage() {
             ) : ventas.length === 0 ? (
               <tr><td className="p-4 text-gray-500" colSpan={14}>No hay datos con esos filtros.</td></tr>
             ) : (
-              ventas.map(v => {
-                const multi = extraerMulti(v.observaciones)
+              ventas.map((v) => {
+                const multiTxt = multiLabel(v.multi_folio) || (v.multi_id ? 'M' : '—')
                 return (
                   <tr key={v.id} className="border-t">
                     <td className="p-2">{v.fecha}</td>
@@ -574,7 +497,7 @@ export default function ReporteVentasGranjaPage() {
                     <td className="p-2 text-right">{fmtQ(toNum(v.total))}</td>
                     <td className="p-2 text-right">{fmtQ(toNum(v.pagado))}</td>
                     <td className="p-2 text-right">{fmtQ(toNum(v.deuda))}</td>
-                    <td className="p-2">{multi ? `MULTI-${multi.slice(0, 8).toUpperCase()}` : '—'}</td>
+                    <td className="p-2">{multiTxt}</td>
                     <td className="p-2">
                       <button
                         onClick={() => generarReciboPDF(v.id)}
@@ -594,12 +517,11 @@ export default function ReporteVentasGranjaPage() {
         </table>
       </div>
 
-      {/* ✅ Resumen por ubicación (regresado) */}
       {resumen.ubicArr.length > 0 && (
         <div className="mt-6 border rounded bg-white p-4">
           <h2 className="font-semibold mb-2">Resumen por ubicación (cerdos vendidos)</h2>
           <div className="grid md:grid-cols-3 gap-2">
-            {resumen.ubicArr.map(u => (
+            {resumen.ubicArr.map((u) => (
               <div key={u.codigo} className="border rounded p-2 flex justify-between text-sm">
                 <span className="font-medium">{u.codigo}</span>
                 <span>{u.cant}</span>
