@@ -41,7 +41,6 @@ const toNum = (v: any) => {
   const n = Number(v)
   return Number.isFinite(n) ? n : 0
 }
-
 const round2 = (n: number) => Math.round(n * 100) / 100
 
 const extraerMulti = (obs: string | null | undefined) => {
@@ -175,7 +174,6 @@ export default function ReporteVentasGranjaPage() {
 
   const generarPDFReporte = async () => {
     const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
-
     const logo = await fetchLogoDataUrl()
     if (logo) doc.addImage(logo, 'PNG', 80, 10, 50, 18)
 
@@ -186,19 +184,8 @@ export default function ReporteVentasGranjaPage() {
     const rango = `${filtros.desde || '—'}  a  ${filtros.hasta || '—'}`
     doc.text(`Rango: ${rango}`, 14, 41)
 
-    const filtrosTxt = [
-      filtros.id ? `ID: ${filtros.id}` : null,
-      filtros.cliente_nombre ? `Cliente: ${filtros.cliente_nombre}` : null,
-      filtros.cliente_nit ? `NIT: ${filtros.cliente_nit}` : null,
-      filtros.ubicacion ? `Ubicación: ${filtros.ubicacion}` : null,
-      filtros.lote ? `Lote: ${filtros.lote}` : null,
-      filtros.solo_multi ? `Solo multi-tramo` : null,
-    ].filter(Boolean) as string[]
-
-    if (filtrosTxt.length) doc.text(`Filtros: ${filtrosTxt.join(' | ')}`, 14, 46)
-
     autoTable(doc, {
-      startY: 52,
+      startY: 46,
       head: [['Resumen', 'Valor']],
       body: [
         ['Total cerdos vendidos', String(resumen.totalCerdos)],
@@ -210,17 +197,9 @@ export default function ReporteVentasGranjaPage() {
       styles: { fontSize: 9 },
     })
 
-    const yAfterResumen = (doc as any).lastAutoTable.finalY + 4
+    const yAfterResumen = (doc as any).lastAutoTable.finalY + 6
     autoTable(doc, {
       startY: yAfterResumen,
-      head: [['Ubicación', 'Cerdos vendidos']],
-      body: resumen.ubicArr.map(u => [u.codigo, String(u.cant)]),
-      styles: { fontSize: 9 },
-    })
-
-    const yAfterUbic = (doc as any).lastAutoTable.finalY + 6
-    autoTable(doc, {
-      startY: yAfterUbic,
       head: [[
         'Fecha', 'ID', 'Cliente', 'NIT', 'Ubicación', 'Lote',
         'Cant.', 'Peso(lb)', 'Q/lb', 'Total(Q)', 'Pagado(Q)', 'Deuda(Q)', 'MULTI'
@@ -241,14 +220,7 @@ export default function ReporteVentasGranjaPage() {
         extraerMulti(v.observaciones) || '—',
       ]),
       styles: { fontSize: 7 },
-      columnStyles: {
-        0: { cellWidth: 14 },
-        1: { cellWidth: 10 },
-        2: { cellWidth: 26 },
-        3: { cellWidth: 14 },
-        4: { cellWidth: 14 },
-        5: { cellWidth: 12 },
-      },
+      columnStyles: { 2: { cellWidth: 30 } },
     })
 
     const now = new Date()
@@ -257,11 +229,11 @@ export default function ReporteVentasGranjaPage() {
     doc.save(name)
   }
 
-  // ✅ RECIBO / FACTURA (por venta o por grupo MULTI)
+  // ✅ RECIBO / FACTURA agrupando multi-tramo de verdad
   const generarReciboPDF = async (ventaId: number) => {
     setGenerandoReciboId(ventaId)
     try {
-      // 1) obtener venta base
+      // 1) venta base
       const { data: base, error: baseErr } = await supabase
         .from('granja_ventas_cerdos')
         .select(`
@@ -284,10 +256,11 @@ export default function ReporteVentasGranjaPage() {
       const baseRow = base as any as VentaRow
       const multi = extraerMulti(baseRow.observaciones)
 
-      // 2) si es MULTI, traer todas las filas del mismo cliente+fecha con ese MULTI
+      // 2) filas a imprimir
       let filas: VentaRow[] = [baseRow]
 
       if (multi) {
+        // 👇 robusto: trae TODAS las filas que tengan ese MULTI, sin depender de fecha
         const { data: multiRows, error: multiErr } = await supabase
           .from('granja_ventas_cerdos')
           .select(`
@@ -298,8 +271,6 @@ export default function ReporteVentasGranjaPage() {
             granja_ubicaciones ( codigo, nombre ),
             granja_lotes ( codigo )
           `)
-          .eq('cliente_id', baseRow.cliente_id)
-          .eq('fecha', baseRow.fecha)
           .ilike('observaciones', `%MULTI:${multi}%`)
           .order('id', { ascending: true })
 
@@ -309,23 +280,31 @@ export default function ReporteVentasGranjaPage() {
           return
         }
 
-        filas = (multiRows as any as VentaRow[]) || [baseRow]
-        if (filas.length === 0) filas = [baseRow]
+        const all = (multiRows as any as VentaRow[]) || []
+        // filtra por mismo cliente (y prioriza misma fecha si existen)
+        const sameClient = all.filter(r => r.cliente_id === baseRow.cliente_id)
+
+        const sameFecha = sameClient.filter(r => r.fecha === baseRow.fecha)
+        filas = sameFecha.length > 0 ? sameFecha : (sameClient.length > 0 ? sameClient : [baseRow])
+
+        // orden por ubicación para que se vea “juntito”
+        filas = [...filas].sort((a, b) => {
+          const ca = a.granja_ubicaciones?.codigo || ''
+          const cb = b.granja_ubicaciones?.codigo || ''
+          return ca.localeCompare(cb, 'es')
+        })
       }
 
-      // 3) Totales del recibo (si multi, sumado)
+      // 3) totales
       const totalCant = filas.reduce((a, r) => a + toNum(r.cantidad), 0)
       const totalPeso = filas.reduce((a, r) => a + toNum(r.peso_total_lb), 0)
       const totalQ = filas.reduce((a, r) => a + toNum(r.total), 0)
       const totalPagado = filas.reduce((a, r) => a + toNum(r.pagado), 0)
       const totalDeuda = filas.reduce((a, r) => a + toNum(r.deuda), 0)
 
-      // 4) Número de recibo
-      // - si multi: se usa MULTI-XXXXXXXX (más corto)
-      // - si no: V-<id>
       const reciboNo = multi ? `MULTI-${multi.slice(0, 8).toUpperCase()}` : `V-${baseRow.id}`
 
-      // 5) PDF “tipo factura”
+      // 4) PDF tipo factura
       const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
       const logo = await fetchLogoDataUrl()
       if (logo) doc.addImage(logo, 'PNG', 14, 10, 35, 14)
@@ -354,12 +333,10 @@ export default function ReporteVentasGranjaPage() {
 
       const yInfo = (doc as any).lastAutoTable.finalY + 4
 
-      // Detalle
+      // ✅ tabla de líneas (todas juntas)
       autoTable(doc, {
         startY: yInfo,
-        head: [[
-          'Ubicación', 'Lote', 'Cant.', 'Peso(lb)', 'Q/lb', 'Subtotal (Q)'
-        ]],
+        head: [[ 'Ubicación', 'Lote', 'Cant.', 'Peso(lb)', 'Q/lb', 'Subtotal (Q)' ]],
         body: filas.map(r => [
           r.granja_ubicaciones?.codigo || `#${r.ubicacion_id}`,
           r.granja_lotes?.codigo || '—',
@@ -370,17 +347,14 @@ export default function ReporteVentasGranjaPage() {
         ]),
         styles: { fontSize: 9 },
         columnStyles: {
-          0: { cellWidth: 26 },
-          1: { cellWidth: 22 },
-          2: { cellWidth: 16, halign: 'right' },
-          3: { cellWidth: 22, halign: 'right' },
-          4: { cellWidth: 16, halign: 'right' },
-          5: { cellWidth: 28, halign: 'right' },
+          2: { halign: 'right' },
+          3: { halign: 'right' },
+          4: { halign: 'right' },
+          5: { halign: 'right' },
         },
       })
 
       const yTot = (doc as any).lastAutoTable.finalY + 4
-
       autoTable(doc, {
         startY: yTot,
         head: [['Totales', 'Valor']],
@@ -392,22 +366,23 @@ export default function ReporteVentasGranjaPage() {
           ['Deuda (Q)', fmtQ(totalDeuda)],
         ],
         styles: { fontSize: 9 },
-        columnStyles: {
-          0: { cellWidth: 50 },
-          1: { cellWidth: 40, halign: 'right' },
-        },
+        columnStyles: { 1: { halign: 'right' } },
         margin: { left: 120 },
       })
 
       const yObs = (doc as any).lastAutoTable.finalY + 6
       doc.setFontSize(9)
-      const obs = baseRow.observaciones ? baseRow.observaciones : ''
-      const obsClean = obs.replace(/MULTI:[a-zA-Z0-9_-]+/g, '').trim()
-      if (obsClean) {
+
+      // limpiamos MULTI:xxx y (i/n)
+      const obs = (baseRow.observaciones || '')
+        .replace(/MULTI:[a-zA-Z0-9_-]+/g, '')
+        .replace(/\(\d+\/\d+\)/g, '')
+        .trim()
+
+      if (obs) {
         doc.text('Observaciones:', 14, yObs)
         doc.setFontSize(8)
-        const lines = doc.splitTextToSize(obsClean, 180)
-        doc.text(lines, 14, yObs + 4)
+        doc.text(doc.splitTextToSize(obs, 180), 14, yObs + 4)
       }
 
       doc.setFontSize(8)
@@ -430,20 +405,16 @@ export default function ReporteVentasGranjaPage() {
 
       <h1 className="text-2xl font-bold mb-2">📄 Reporte de ventas de cerdos</h1>
       <p className="text-sm text-gray-600 mb-4">
-        Reporte con filtros + PDF profesional. Incluye recibos (tipo factura) por venta o por grupo multi-tramo.
+        Incluye recibos (factura) por venta normal o agrupado por MULTI para multi-tramo.
       </p>
 
-      {/* Filtros */}
       <div className="grid grid-cols-1 md:grid-cols-8 gap-3 mb-4">
         <input type="date" name="desde" value={filtros.desde} onChange={handleChange} className="border p-2" />
         <input type="date" name="hasta" value={filtros.hasta} onChange={handleChange} className="border p-2" />
-
         <input name="cliente_nombre" placeholder="Cliente" value={filtros.cliente_nombre} onChange={handleChange} className="border p-2" />
         <input name="cliente_nit" placeholder="NIT" value={filtros.cliente_nit} onChange={handleChange} className="border p-2" />
-
         <input name="ubicacion" placeholder="Ubicación (TR13...)" value={filtros.ubicacion} onChange={handleChange} className="border p-2" />
         <input name="lote" placeholder="Lote" value={filtros.lote} onChange={handleChange} className="border p-2" />
-
         <input name="id" placeholder="ID" value={filtros.id} onChange={handleChange} className="border p-2" />
 
         <label className="flex items-center gap-2 text-sm border p-2">
@@ -456,7 +427,6 @@ export default function ReporteVentasGranjaPage() {
         </label>
       </div>
 
-      {/* Botones */}
       <div className="mb-6 flex items-center gap-3">
         <button onClick={cargarDatos} className="bg-blue-600 text-white px-4 py-2 rounded">
           🔍 Aplicar filtros
@@ -466,7 +436,6 @@ export default function ReporteVentasGranjaPage() {
           onClick={generarPDFReporte}
           className="bg-green-600 text-white px-4 py-2 rounded"
           disabled={ventas.length === 0}
-          title={ventas.length === 0 ? 'No hay datos para generar PDF' : ''}
         >
           📄 Generar PDF (reporte)
         </button>
@@ -476,31 +445,6 @@ export default function ReporteVentasGranjaPage() {
         </Link>
       </div>
 
-      {/* Resumen */}
-      <div className="grid md:grid-cols-5 gap-3 mb-6">
-        <div className="border rounded p-3 bg-white">
-          <div className="text-xs text-gray-500">Total cerdos vendidos</div>
-          <div className="text-lg font-bold">{resumen.totalCerdos}</div>
-        </div>
-        <div className="border rounded p-3 bg-white">
-          <div className="text-xs text-gray-500">Peso total (lb)</div>
-          <div className="text-lg font-bold">{resumen.totalPeso}</div>
-        </div>
-        <div className="border rounded p-3 bg-white">
-          <div className="text-xs text-gray-500">Total (Q)</div>
-          <div className="text-lg font-bold">Q{resumen.totalQ.toFixed(2)}</div>
-        </div>
-        <div className="border rounded p-3 bg-white">
-          <div className="text-xs text-gray-500">Pagado (Q)</div>
-          <div className="text-lg font-bold">Q{resumen.pagadoQ.toFixed(2)}</div>
-        </div>
-        <div className="border rounded p-3 bg-white">
-          <div className="text-xs text-gray-500">Deuda (Q)</div>
-          <div className="text-lg font-bold">Q{resumen.deudaQ.toFixed(2)}</div>
-        </div>
-      </div>
-
-      {/* Tabla */}
       <div className="border rounded bg-white overflow-auto">
         <table className="w-full text-sm">
           <thead className="bg-gray-200 sticky top-0">
@@ -535,24 +479,22 @@ export default function ReporteVentasGranjaPage() {
                     <td className="p-2">{v.id}</td>
                     <td className="p-2">{v.clientes?.nombre || '—'}</td>
                     <td className="p-2">{v.clientes?.nit || '—'}</td>
-                    <td className="p-2">
-                      <div className="font-medium">{v.granja_ubicaciones?.codigo || '—'}</div>
-                      <div className="text-[11px] text-gray-500">{v.granja_ubicaciones?.nombre || ''}</div>
-                    </td>
+                    <td className="p-2">{v.granja_ubicaciones?.codigo || '—'}</td>
                     <td className="p-2">{v.granja_lotes?.codigo || '—'}</td>
                     <td className="p-2 text-right">{toNum(v.cantidad)}</td>
                     <td className="p-2 text-right">{toNum(v.peso_total_lb)}</td>
                     <td className="p-2 text-right">{toNum(v.precio_por_libra)}</td>
-                    <td className="p-2 text-right">Q{round2(toNum(v.total)).toFixed(2)}</td>
-                    <td className="p-2 text-right">Q{round2(toNum(v.pagado)).toFixed(2)}</td>
-                    <td className="p-2 text-right">Q{round2(toNum(v.deuda)).toFixed(2)}</td>
+                    <td className="p-2 text-right">{fmtQ(toNum(v.total))}</td>
+                    <td className="p-2 text-right">{fmtQ(toNum(v.pagado))}</td>
+                    <td className="p-2 text-right">{fmtQ(toNum(v.deuda))}</td>
                     <td className="p-2">{multi ? `MULTI-${multi.slice(0, 8).toUpperCase()}` : '—'}</td>
                     <td className="p-2">
                       <button
                         onClick={() => generarReciboPDF(v.id)}
                         disabled={generandoReciboId === v.id}
-                        className={`px-3 py-1 rounded text-xs text-white ${generandoReciboId === v.id ? 'bg-gray-500' : 'bg-slate-800 hover:bg-slate-900'}`}
-                        title={multi ? 'Genera recibo del grupo multi-tramo (mismo cliente y fecha)' : 'Genera recibo de esta venta'}
+                        className={`px-3 py-1 rounded text-xs text-white ${
+                          generandoReciboId === v.id ? 'bg-gray-500' : 'bg-slate-800 hover:bg-slate-900'
+                        }`}
                       >
                         {generandoReciboId === v.id ? 'Generando…' : 'Recibo PDF'}
                       </button>
@@ -564,21 +506,6 @@ export default function ReporteVentasGranjaPage() {
           </tbody>
         </table>
       </div>
-
-      {/* Resumen por ubicación */}
-      {resumen.ubicArr.length > 0 && (
-        <div className="mt-6 border rounded bg-white p-4">
-          <h2 className="font-semibold mb-2">Resumen por ubicación (cerdos vendidos)</h2>
-          <div className="grid md:grid-cols-3 gap-2">
-            {resumen.ubicArr.map(u => (
-              <div key={u.codigo} className="border rounded p-2 flex justify-between text-sm">
-                <span className="font-medium">{u.codigo}</span>
-                <span>{u.cant}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
     </div>
   )
 }
