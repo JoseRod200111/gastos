@@ -67,6 +67,12 @@ async function fetchLogoDataUrl(): Promise<string | null> {
 const fmtQ = (n: number) => `Q${round2(n).toFixed(2)}`
 const fmtN = (n: number) => `${round2(n).toFixed(2)}`
 
+const safeDate = (iso: string | null | undefined) => {
+  if (!iso) return null
+  const d = new Date(iso)
+  return Number.isNaN(d.getTime()) ? null : d
+}
+
 export default function ReporteVentasGranjaPage() {
   const [ventas, setVentas] = useState<VentaRow[]>([])
   const [loading, setLoading] = useState(false)
@@ -145,6 +151,7 @@ export default function ReporteVentasGranjaPage() {
     setFiltros(prev => ({ ...prev, [e.target.name]: e.target.value }))
   }
 
+  // ✅ Regresamos resumen en pantalla
   const resumen = useMemo(() => {
     const totalCerdos = ventas.reduce((a, v) => a + toNum(v.cantidad), 0)
     const totalPeso = ventas.reduce((a, v) => a + toNum(v.peso_total_lb), 0)
@@ -160,7 +167,7 @@ export default function ReporteVentasGranjaPage() {
 
     const ubicArr = Object.entries(porUbic)
       .map(([codigo, cant]) => ({ codigo, cant }))
-      .sort((a, b) => a.codigo.localeCompare(b.codigo))
+      .sort((a, b) => a.codigo.localeCompare(b.codigo, 'es'))
 
     return {
       totalCerdos,
@@ -190,16 +197,16 @@ export default function ReporteVentasGranjaPage() {
       body: [
         ['Total cerdos vendidos', String(resumen.totalCerdos)],
         ['Peso total (lb)', String(resumen.totalPeso)],
-        ['Total (Q)', String(resumen.totalQ)],
-        ['Pagado (Q)', String(resumen.pagadoQ)],
-        ['Deuda (Q)', String(resumen.deudaQ)],
+        ['Total (Q)', fmtQ(resumen.totalQ)],
+        ['Pagado (Q)', fmtQ(resumen.pagadoQ)],
+        ['Deuda (Q)', fmtQ(resumen.deudaQ)],
       ],
       styles: { fontSize: 9 },
     })
 
-    const yAfterResumen = (doc as any).lastAutoTable.finalY + 6
+    const y = (doc as any).lastAutoTable.finalY + 6
     autoTable(doc, {
-      startY: yAfterResumen,
+      startY: y,
       head: [[
         'Fecha', 'ID', 'Cliente', 'NIT', 'Ubicación', 'Lote',
         'Cant.', 'Peso(lb)', 'Q/lb', 'Total(Q)', 'Pagado(Q)', 'Deuda(Q)', 'MULTI'
@@ -212,11 +219,11 @@ export default function ReporteVentasGranjaPage() {
         v.granja_ubicaciones?.codigo || '—',
         v.granja_lotes?.codigo || '—',
         String(toNum(v.cantidad)),
-        String(toNum(v.peso_total_lb)),
-        String(toNum(v.precio_por_libra)),
-        String(round2(toNum(v.total))),
-        String(round2(toNum(v.pagado))),
-        String(round2(toNum(v.deuda))),
+        fmtN(toNum(v.peso_total_lb)),
+        fmtN(toNum(v.precio_por_libra)),
+        fmtQ(toNum(v.total)),
+        fmtQ(toNum(v.pagado)),
+        fmtQ(toNum(v.deuda)),
         extraerMulti(v.observaciones) || '—',
       ]),
       styles: { fontSize: 7 },
@@ -229,11 +236,96 @@ export default function ReporteVentasGranjaPage() {
     doc.save(name)
   }
 
-  // ✅ RECIBO / FACTURA agrupando multi-tramo de verdad
+  // ✅ AGRUPAR MULTI PARA RECIBO (robusto + fallback por tiempo)
+  const obtenerFilasParaRecibo = async (baseRow: VentaRow) => {
+    const multi = extraerMulti(baseRow.observaciones)
+
+    // Caso normal
+    if (!multi) return { filas: [baseRow], multi: null }
+
+    // 1) Intento #1: por MULTI exacto
+    const { data: multiRows, error: multiErr } = await supabase
+      .from('granja_ventas_cerdos')
+      .select(`
+        id, fecha, cliente_id, ubicacion_id, lote_id,
+        cantidad, peso_total_lb, precio_por_libra, total, pagado, deuda,
+        observaciones, created_at,
+        clientes ( nombre, nit ),
+        granja_ubicaciones ( codigo, nombre ),
+        granja_lotes ( codigo )
+      `)
+      .ilike('observaciones', `%MULTI:${multi}%`)
+      .order('id', { ascending: true })
+
+    if (!multiErr && (multiRows || []).length > 0) {
+      const all = (multiRows as any as VentaRow[]) || []
+      const sameClient = all.filter(r => r.cliente_id === baseRow.cliente_id)
+
+      // si hay por misma fecha, prioriza
+      const sameFecha = sameClient.filter(r => r.fecha === baseRow.fecha)
+      let filas = sameFecha.length > 0 ? sameFecha : (sameClient.length > 0 ? sameClient : [baseRow])
+
+      filas = [...filas].sort((a, b) => {
+        const ca = a.granja_ubicaciones?.codigo || ''
+        const cb = b.granja_ubicaciones?.codigo || ''
+        return ca.localeCompare(cb, 'es')
+      })
+
+      // Si de verdad encontramos más de 1 fila, perfecto
+      if (filas.length > 1) return { filas, multi }
+
+      // si solo 1, pasamos al plan B
+    }
+
+    // 2) Plan B: agrupar por mismo cliente + fecha + created_at cercano + mismo precio
+    // (útil cuando algunas filas no guardaron el MULTI correctamente)
+    const baseCreated = safeDate(baseRow.created_at)
+    if (!baseCreated) return { filas: [baseRow], multi } // no podemos agrupar por tiempo sin created_at
+
+    const windowMinutes = 3
+    const minT = new Date(baseCreated.getTime() - windowMinutes * 60 * 1000)
+    const maxT = new Date(baseCreated.getTime() + windowMinutes * 60 * 1000)
+
+    const { data: candRows, error: candErr } = await supabase
+      .from('granja_ventas_cerdos')
+      .select(`
+        id, fecha, cliente_id, ubicacion_id, lote_id,
+        cantidad, peso_total_lb, precio_por_libra, total, pagado, deuda,
+        observaciones, created_at,
+        clientes ( nombre, nit ),
+        granja_ubicaciones ( codigo, nombre ),
+        granja_lotes ( codigo )
+      `)
+      .eq('cliente_id', baseRow.cliente_id)
+      .eq('fecha', baseRow.fecha)
+      .gte('created_at', minT.toISOString())
+      .lte('created_at', maxT.toISOString())
+      .order('id', { ascending: true })
+
+    if (candErr || !candRows || candRows.length === 0) {
+      return { filas: [baseRow], multi }
+    }
+
+    let filas = (candRows as any as VentaRow[]).filter(r => {
+      // mismo precio por libra para no mezclar ventas diferentes
+      return round2(toNum(r.precio_por_libra)) === round2(toNum(baseRow.precio_por_libra))
+    })
+
+    // si con eso hay más de 1, usamos esas
+    if (filas.length <= 1) filas = [baseRow]
+
+    filas = [...filas].sort((a, b) => {
+      const ca = a.granja_ubicaciones?.codigo || ''
+      const cb = b.granja_ubicaciones?.codigo || ''
+      return ca.localeCompare(cb, 'es')
+    })
+
+    return { filas, multi }
+  }
+
   const generarReciboPDF = async (ventaId: number) => {
     setGenerandoReciboId(ventaId)
     try {
-      // 1) venta base
       const { data: base, error: baseErr } = await supabase
         .from('granja_ventas_cerdos')
         .select(`
@@ -254,48 +346,8 @@ export default function ReporteVentasGranjaPage() {
       }
 
       const baseRow = base as any as VentaRow
-      const multi = extraerMulti(baseRow.observaciones)
+      const { filas, multi } = await obtenerFilasParaRecibo(baseRow)
 
-      // 2) filas a imprimir
-      let filas: VentaRow[] = [baseRow]
-
-      if (multi) {
-        // 👇 robusto: trae TODAS las filas que tengan ese MULTI, sin depender de fecha
-        const { data: multiRows, error: multiErr } = await supabase
-          .from('granja_ventas_cerdos')
-          .select(`
-            id, fecha, cliente_id, ubicacion_id, lote_id,
-            cantidad, peso_total_lb, precio_por_libra, total, pagado, deuda,
-            observaciones, created_at,
-            clientes ( nombre, nit ),
-            granja_ubicaciones ( codigo, nombre ),
-            granja_lotes ( codigo )
-          `)
-          .ilike('observaciones', `%MULTI:${multi}%`)
-          .order('id', { ascending: true })
-
-        if (multiErr) {
-          console.error(multiErr)
-          alert('No se pudo cargar el grupo MULTI para el recibo.')
-          return
-        }
-
-        const all = (multiRows as any as VentaRow[]) || []
-        // filtra por mismo cliente (y prioriza misma fecha si existen)
-        const sameClient = all.filter(r => r.cliente_id === baseRow.cliente_id)
-
-        const sameFecha = sameClient.filter(r => r.fecha === baseRow.fecha)
-        filas = sameFecha.length > 0 ? sameFecha : (sameClient.length > 0 ? sameClient : [baseRow])
-
-        // orden por ubicación para que se vea “juntito”
-        filas = [...filas].sort((a, b) => {
-          const ca = a.granja_ubicaciones?.codigo || ''
-          const cb = b.granja_ubicaciones?.codigo || ''
-          return ca.localeCompare(cb, 'es')
-        })
-      }
-
-      // 3) totales
       const totalCant = filas.reduce((a, r) => a + toNum(r.cantidad), 0)
       const totalPeso = filas.reduce((a, r) => a + toNum(r.peso_total_lb), 0)
       const totalQ = filas.reduce((a, r) => a + toNum(r.total), 0)
@@ -304,7 +356,6 @@ export default function ReporteVentasGranjaPage() {
 
       const reciboNo = multi ? `MULTI-${multi.slice(0, 8).toUpperCase()}` : `V-${baseRow.id}`
 
-      // 4) PDF tipo factura
       const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
       const logo = await fetchLogoDataUrl()
       if (logo) doc.addImage(logo, 'PNG', 14, 10, 35, 14)
@@ -313,8 +364,8 @@ export default function ReporteVentasGranjaPage() {
       doc.text('RECIBO DE VENTA', 105, 16, { align: 'center' })
 
       doc.setFontSize(10)
-      doc.text(`No. Recibo: ${reciboNo}`, 160, 12)
-      doc.text(`Fecha: ${baseRow.fecha}`, 160, 17)
+      doc.text(`No. Recibo: ${reciboNo}`, 150, 12)
+      doc.text(`Fecha: ${baseRow.fecha}`, 150, 17)
 
       const clienteNom = baseRow.clientes?.nombre || '—'
       const clienteNit = baseRow.clientes?.nit || '—'
@@ -333,7 +384,7 @@ export default function ReporteVentasGranjaPage() {
 
       const yInfo = (doc as any).lastAutoTable.finalY + 4
 
-      // ✅ tabla de líneas (todas juntas)
+      // ✅ tabla de detalle (todas juntas)
       autoTable(doc, {
         startY: yInfo,
         head: [[ 'Ubicación', 'Lote', 'Cant.', 'Peso(lb)', 'Q/lb', 'Subtotal (Q)' ]],
@@ -354,7 +405,9 @@ export default function ReporteVentasGranjaPage() {
         },
       })
 
-      const yTot = (doc as any).lastAutoTable.finalY + 4
+      const yTot = (doc as any).lastAutoTable.finalY + 6
+
+      // ✅ Totales alineados (ya NO se corre a la derecha)
       autoTable(doc, {
         startY: yTot,
         head: [['Totales', 'Valor']],
@@ -367,13 +420,11 @@ export default function ReporteVentasGranjaPage() {
         ],
         styles: { fontSize: 9 },
         columnStyles: { 1: { halign: 'right' } },
-        margin: { left: 120 },
       })
 
       const yObs = (doc as any).lastAutoTable.finalY + 6
       doc.setFontSize(9)
 
-      // limpiamos MULTI:xxx y (i/n)
       const obs = (baseRow.observaciones || '')
         .replace(/MULTI:[a-zA-Z0-9_-]+/g, '')
         .replace(/\(\d+\/\d+\)/g, '')
@@ -385,8 +436,18 @@ export default function ReporteVentasGranjaPage() {
         doc.text(doc.splitTextToSize(obs, 180), 14, yObs + 4)
       }
 
-      doc.setFontSize(8)
-      doc.text('Este recibo corresponde a una venta registrada en el sistema.', 14, 285)
+      // Nota si era multi pero no se lograron encontrar más filas
+      if (multi && filas.length === 1) {
+        doc.setFontSize(8)
+        doc.text(
+          'Nota: Esta venta está marcada como MULTI, pero solo se encontró 1 fila relacionada para el recibo.',
+          14,
+          285
+        )
+      } else {
+        doc.setFontSize(8)
+        doc.text('Este recibo corresponde a una venta registrada en el sistema.', 14, 285)
+      }
 
       const now = new Date()
       const pad = (n: number) => (n < 10 ? `0${n}` : `${n}`)
@@ -405,9 +466,10 @@ export default function ReporteVentasGranjaPage() {
 
       <h1 className="text-2xl font-bold mb-2">📄 Reporte de ventas de cerdos</h1>
       <p className="text-sm text-gray-600 mb-4">
-        Incluye recibos (factura) por venta normal o agrupado por MULTI para multi-tramo.
+        Incluye reporte PDF y recibo (factura) por venta. Si es multi-tramo, intenta agrupar todas las líneas.
       </p>
 
+      {/* Filtros */}
       <div className="grid grid-cols-1 md:grid-cols-8 gap-3 mb-4">
         <input type="date" name="desde" value={filtros.desde} onChange={handleChange} className="border p-2" />
         <input type="date" name="hasta" value={filtros.hasta} onChange={handleChange} className="border p-2" />
@@ -445,6 +507,31 @@ export default function ReporteVentasGranjaPage() {
         </Link>
       </div>
 
+      {/* ✅ Resumen en pantalla (regresado) */}
+      <div className="grid md:grid-cols-5 gap-3 mb-6">
+        <div className="border rounded p-3 bg-white">
+          <div className="text-xs text-gray-500">Total cerdos vendidos</div>
+          <div className="text-lg font-bold">{resumen.totalCerdos}</div>
+        </div>
+        <div className="border rounded p-3 bg-white">
+          <div className="text-xs text-gray-500">Peso total (lb)</div>
+          <div className="text-lg font-bold">{resumen.totalPeso}</div>
+        </div>
+        <div className="border rounded p-3 bg-white">
+          <div className="text-xs text-gray-500">Total (Q)</div>
+          <div className="text-lg font-bold">{fmtQ(resumen.totalQ)}</div>
+        </div>
+        <div className="border rounded p-3 bg-white">
+          <div className="text-xs text-gray-500">Pagado (Q)</div>
+          <div className="text-lg font-bold">{fmtQ(resumen.pagadoQ)}</div>
+        </div>
+        <div className="border rounded p-3 bg-white">
+          <div className="text-xs text-gray-500">Deuda (Q)</div>
+          <div className="text-lg font-bold">{fmtQ(resumen.deudaQ)}</div>
+        </div>
+      </div>
+
+      {/* Tabla */}
       <div className="border rounded bg-white overflow-auto">
         <table className="w-full text-sm">
           <thead className="bg-gray-200 sticky top-0">
@@ -482,8 +569,8 @@ export default function ReporteVentasGranjaPage() {
                     <td className="p-2">{v.granja_ubicaciones?.codigo || '—'}</td>
                     <td className="p-2">{v.granja_lotes?.codigo || '—'}</td>
                     <td className="p-2 text-right">{toNum(v.cantidad)}</td>
-                    <td className="p-2 text-right">{toNum(v.peso_total_lb)}</td>
-                    <td className="p-2 text-right">{toNum(v.precio_por_libra)}</td>
+                    <td className="p-2 text-right">{fmtN(toNum(v.peso_total_lb))}</td>
+                    <td className="p-2 text-right">{fmtN(toNum(v.precio_por_libra))}</td>
                     <td className="p-2 text-right">{fmtQ(toNum(v.total))}</td>
                     <td className="p-2 text-right">{fmtQ(toNum(v.pagado))}</td>
                     <td className="p-2 text-right">{fmtQ(toNum(v.deuda))}</td>
@@ -506,6 +593,21 @@ export default function ReporteVentasGranjaPage() {
           </tbody>
         </table>
       </div>
+
+      {/* ✅ Resumen por ubicación (regresado) */}
+      {resumen.ubicArr.length > 0 && (
+        <div className="mt-6 border rounded bg-white p-4">
+          <h2 className="font-semibold mb-2">Resumen por ubicación (cerdos vendidos)</h2>
+          <div className="grid md:grid-cols-3 gap-2">
+            {resumen.ubicArr.map(u => (
+              <div key={u.codigo} className="border rounded p-2 flex justify-between text-sm">
+                <span className="font-medium">{u.codigo}</span>
+                <span>{u.cant}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
