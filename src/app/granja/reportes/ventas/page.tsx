@@ -7,10 +7,6 @@ import { supabase } from '@/lib/supabaseClient'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
 
-type Cliente = { id: number; nombre: string; nit: string | null }
-type Ubicacion = { id: number; codigo: string; nombre: string | null; activo: boolean | null }
-type Lote = { id: number; codigo: string }
-
 type VentaRow = {
   id: number
   fecha: string
@@ -73,10 +69,6 @@ export default function ReporteVentasGranjaPage() {
   const [ventas, setVentas] = useState<VentaRow[]>([])
   const [loading, setLoading] = useState(false)
 
-  const [clientes, setClientes] = useState<Cliente[]>([])
-  const [ubicaciones, setUbicaciones] = useState<Ubicacion[]>([])
-  const [lotes, setLotes] = useState<Lote[]>([])
-
   const [filtros, setFiltros] = useState<Filtros>({
     desde: '',
     hasta: '',
@@ -95,26 +87,9 @@ export default function ReporteVentasGranjaPage() {
     setFiltros(prev => ({ ...prev, desde: f, hasta: f }))
   }, [])
 
-  const cargarCatalogos = useCallback(async () => {
-    const [cRes, uRes, lRes] = await Promise.all([
-      supabase.from('clientes').select('id,nombre,nit').order('nombre', { ascending: true }),
-      supabase.from('granja_ubicaciones').select('id,codigo,nombre,activo').eq('activo', true).order('codigo', { ascending: true }),
-      supabase.from('granja_lotes').select('id,codigo').order('codigo', { ascending: true }),
-    ])
-
-    setClientes((cRes.data as Cliente[]) || [])
-    setUbicaciones((uRes.data as Ubicacion[]) || [])
-    setLotes((lRes.data as Lote[]) || [])
-  }, [])
-
-  useEffect(() => {
-    cargarCatalogos()
-  }, [cargarCatalogos])
-
   const cargarDatos = useCallback(async () => {
     setLoading(true)
     try {
-      // Select base
       let query = supabase
         .from('granja_ventas_cerdos')
         .select(`
@@ -128,7 +103,6 @@ export default function ReporteVentasGranjaPage() {
         .order('fecha', { ascending: false })
         .order('id', { ascending: false })
 
-      // filtros DB seguros
       if (filtros.id.trim()) query = query.eq('id', filtros.id.trim())
       if (filtros.desde) query = query.gte('fecha', filtros.desde)
       if (filtros.hasta) query = query.lte('fecha', filtros.hasta)
@@ -140,7 +114,6 @@ export default function ReporteVentasGranjaPage() {
         return
       }
 
-      // filtros cliente/ubicación/lote (client-side para evitar problemas con joins)
       let rows = ((data || []) as any as VentaRow[])
 
       const cn = filtros.cliente_nombre.trim().toLowerCase()
@@ -153,9 +126,7 @@ export default function ReporteVentasGranjaPage() {
       if (ub) rows = rows.filter(r => (r.granja_ubicaciones?.codigo || '').toLowerCase().includes(ub))
       if (lt) rows = rows.filter(r => (r.granja_lotes?.codigo || '').toLowerCase().includes(lt))
 
-      if (filtros.solo_multi) {
-        rows = rows.filter(r => !!extraerMulti(r.observaciones))
-      }
+      if (filtros.solo_multi) rows = rows.filter(r => !!extraerMulti(r.observaciones))
 
       setVentas(rows)
     } finally {
@@ -202,10 +173,7 @@ export default function ReporteVentasGranjaPage() {
     const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
 
     const logo = await fetchLogoDataUrl()
-    if (logo) {
-      // logo centrado
-      doc.addImage(logo, 'PNG', 80, 10, 50, 18)
-    }
+    if (logo) doc.addImage(logo, 'PNG', 80, 10, 50, 18)
 
     doc.setFontSize(14)
     doc.text('Reporte de Ventas de Cerdos', 14, 35)
@@ -225,7 +193,6 @@ export default function ReporteVentasGranjaPage() {
 
     if (filtrosTxt.length) doc.text(`Filtros: ${filtrosTxt.join(' | ')}`, 14, 46)
 
-    // Resumen
     autoTable(doc, {
       startY: 52,
       head: [['Resumen', 'Valor']],
@@ -239,7 +206,6 @@ export default function ReporteVentasGranjaPage() {
       styles: { fontSize: 9 },
     })
 
-    // Resumen por ubicación (esto refleja el “impacto” en inventario por tramo)
     const yAfterResumen = (doc as any).lastAutoTable.finalY + 4
     autoTable(doc, {
       startY: yAfterResumen,
@@ -248,7 +214,6 @@ export default function ReporteVentasGranjaPage() {
       styles: { fontSize: 9 },
     })
 
-    // Tabla principal
     const yAfterUbic = (doc as any).lastAutoTable.finalY + 6
     autoTable(doc, {
       startY: yAfterUbic,
@@ -282,7 +247,6 @@ export default function ReporteVentasGranjaPage() {
       },
     })
 
-    // Nombre automático
     const now = new Date()
     const pad = (n: number) => (n < 10 ? `0${n}` : `${n}`)
     const name = `reporte_ventas_cerdos_${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}.pdf`
@@ -297,10 +261,9 @@ export default function ReporteVentasGranjaPage() {
 
       <h1 className="text-2xl font-bold mb-2">📄 Reporte de ventas de cerdos</h1>
       <p className="text-sm text-gray-600 mb-4">
-        Este reporte refleja las ventas registradas (cada registro debita inventario por ubicación mediante movimientos SALIDA_VENTA).
+        Reporte con filtros y PDF profesional. Incluye resumen por ubicación (impacto por tramo).
       </p>
 
-      {/* Filtros */}
       <div className="grid grid-cols-1 md:grid-cols-8 gap-3 mb-4">
         <input type="date" name="desde" value={filtros.desde} onChange={handleChange} className="border p-2" />
         <input type="date" name="hasta" value={filtros.hasta} onChange={handleChange} className="border p-2" />
@@ -323,12 +286,8 @@ export default function ReporteVentasGranjaPage() {
         </label>
       </div>
 
-      {/* Botones */}
       <div className="mb-6 flex items-center gap-3">
-        <button
-          onClick={cargarDatos}
-          className="bg-blue-600 text-white px-4 py-2 rounded"
-        >
+        <button onClick={cargarDatos} className="bg-blue-600 text-white px-4 py-2 rounded">
           🔍 Aplicar filtros
         </button>
 
@@ -346,7 +305,6 @@ export default function ReporteVentasGranjaPage() {
         </Link>
       </div>
 
-      {/* Resumen en pantalla */}
       <div className="grid md:grid-cols-5 gap-3 mb-6">
         <div className="border rounded p-3 bg-white">
           <div className="text-xs text-gray-500">Total cerdos</div>
@@ -370,7 +328,6 @@ export default function ReporteVentasGranjaPage() {
         </div>
       </div>
 
-      {/* Tabla preview */}
       <div className="border rounded bg-white overflow-auto">
         <table className="w-full text-sm">
           <thead className="bg-gray-200 sticky top-0">
@@ -421,7 +378,6 @@ export default function ReporteVentasGranjaPage() {
         </table>
       </div>
 
-      {/* Resumen por ubicación (impacto inventario) */}
       {resumen.ubicArr.length > 0 && (
         <div className="mt-6 border rounded bg-white p-4">
           <h2 className="font-semibold mb-2">Resumen por ubicación (cerdos vendidos)</h2>
