@@ -3,6 +3,8 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabaseClient'
+import jsPDF from 'jspdf'
+import autoTable from 'jspdf-autotable'
 
 type Ubicacion = {
   id: number
@@ -14,10 +16,101 @@ type Ubicacion = {
 type StockRow = {
   ubicacion_id: number
   cantidad: number | null
-  tipo: string
+  tipo: 'ENTRADA_COMPRA' | 'ENTRADA_PARTO' | 'SALIDA_VENTA' | 'SALIDA_MUERTE' | 'AJUSTE'
+  fecha?: string
 }
 
 type StockMap = Record<number, number>
+
+const toNum = (v: any) => {
+  const n = Number(v)
+  return Number.isFinite(n) ? n : 0
+}
+
+const finDeDiaUTC = (yyyyMMdd: string) => `${yyyyMMdd}T23:59:59.999Z`
+
+async function fetchLogoDataUrl(): Promise<string | null> {
+  try {
+    const res = await fetch('/logo.png')
+    const blob = await res.blob()
+    return await new Promise((resolve) => {
+      const reader = new FileReader()
+      reader.onload = () => resolve(String(reader.result))
+      reader.onerror = () => resolve(null)
+      reader.readAsDataURL(blob)
+    })
+  } catch {
+    return null
+  }
+}
+
+function generarPdfInventarioPorCuadros(params: {
+  fechaCorte: string
+  grupos: Record<string, Ubicacion[]>
+  stockTeorico: StockMap
+}) {
+  const { fechaCorte, grupos, stockTeorico } = params
+
+  const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
+
+  doc.setFontSize(14)
+  doc.text('REPORTE DE INVENTARIO (TEÓRICO)', 14, 16)
+
+  doc.setFontSize(10)
+  doc.text(`Fecha de corte: ${fechaCorte}`, 14, 23)
+
+  const totalGeneral = Object.values(stockTeorico).reduce((a, n) => a + toNum(n), 0)
+  doc.text(`Total general: ${totalGeneral}`, 14, 28)
+
+  // Resumen por grupo
+  const resumenBody: any[] = []
+  for (const [g, lista] of Object.entries(grupos)) {
+    const subtotal = lista.reduce((acc, u) => acc + toNum(stockTeorico[u.id] ?? 0), 0)
+    resumenBody.push([g, String(subtotal)])
+  }
+  resumenBody.push(['TOTAL', String(totalGeneral)])
+
+  autoTable(doc, {
+    startY: 34,
+    head: [['Grupo', 'Total']],
+    body: resumenBody,
+    styles: { fontSize: 9 },
+    headStyles: { fillColor: [220, 220, 220] },
+    margin: { left: 14, right: 14 },
+    columnStyles: { 1: { halign: 'right' } },
+  })
+
+  let y = (doc as any).lastAutoTable.finalY + 6
+
+  // Secciones por grupo (tipo “cuadros”)
+  for (const [g, lista] of Object.entries(grupos)) {
+    if (y > 260) {
+      doc.addPage()
+      y = 16
+    }
+
+    doc.setFontSize(11)
+    doc.text(g.toUpperCase(), 14, y)
+    y += 2
+
+    autoTable(doc, {
+      startY: y + 2,
+      head: [['Ubicación', 'Cantidad']],
+      body: lista.map((u) => [u.codigo, String(toNum(stockTeorico[u.id] ?? 0))]),
+      styles: { fontSize: 9 },
+      headStyles: { fillColor: [210, 210, 210] },
+      margin: { left: 14, right: 14 },
+      columnStyles: { 1: { halign: 'right' } },
+    })
+
+    y = (doc as any).lastAutoTable.finalY + 8
+  }
+
+  const now = new Date()
+  const pad = (n: number) => (n < 10 ? `0${n}` : `${n}`)
+  const name = `reporte_inventario_${fechaCorte}_${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}.pdf`
+  doc.save(name)
+}
 
 export default function GranjaInventarioPage() {
   const [ubicaciones, setUbicaciones] = useState<Ubicacion[]>([])
@@ -25,6 +118,17 @@ export default function GranjaInventarioPage() {
   const [valoresEditados, setValoresEditados] = useState<Record<number, string>>({})
   const [loading, setLoading] = useState(false)
   const [guardando, setGuardando] = useState(false)
+  const [generandoPdf, setGenerandoPdf] = useState(false)
+
+  // ✅ nuevo: fecha de corte
+  const [fechaCorte, setFechaCorte] = useState<string>('')
+
+  useEffect(() => {
+    const today = new Date()
+    const pad = (n: number) => (n < 10 ? `0${n}` : `${n}`)
+    const f = `${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(today.getDate())}`
+    setFechaCorte(f)
+  }, [])
 
   // ----------- helpers de agrupacion -----------
 
@@ -58,7 +162,20 @@ export default function GranjaInventarioPage() {
     return g
   }, [ubicaciones])
 
-  // ----------- cargar datos -----------
+  // Totales en pantalla
+  const totalGeneral = useMemo(() => {
+    return Object.values(stockTeorico).reduce((a, n) => a + toNum(n), 0)
+  }, [stockTeorico])
+
+  const totalesPorGrupo = useMemo(() => {
+    const t: Record<string, number> = {}
+    for (const [g, lista] of Object.entries(grupos)) {
+      t[g] = lista.reduce((acc, u) => acc + toNum(stockTeorico[u.id] ?? 0), 0)
+    }
+    return t
+  }, [grupos, stockTeorico])
+
+  // ----------- cargar datos (con fecha) -----------
 
   const cargarDatos = useCallback(async () => {
     setLoading(true)
@@ -84,10 +201,16 @@ export default function GranjaInventarioPage() {
         return
       }
 
-      // 2) inventario teorico por movimientos (aplicando signo por tipo)
-      const { data: movData, error: movError } = await supabase
+      // 2) inventario teorico por movimientos (hasta fechaCorte)
+      let movQuery = supabase
         .from('granja_movimientos')
-        .select('ubicacion_id, cantidad, tipo')
+        .select('ubicacion_id, cantidad, tipo, fecha')
+
+      if (fechaCorte) {
+        movQuery = movQuery.lte('fecha', finDeDiaUTC(fechaCorte))
+      }
+
+      const { data: movData, error: movError } = await movQuery
 
       if (movError) {
         console.error('Error cargando movimientos', movError)
@@ -97,7 +220,7 @@ export default function GranjaInventarioPage() {
       const mapa: StockMap = {}
       ;(movData as StockRow[]).forEach((row) => {
         const id = row.ubicacion_id
-        const cant = Number(row.cantidad || 0)
+        const cant = toNum(row.cantidad || 0)
         if (!mapa[id]) mapa[id] = 0
 
         // ✅ salidas RESTAN, entradas y ajustes SUMAN
@@ -121,11 +244,11 @@ export default function GranjaInventarioPage() {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [fechaCorte])
 
   useEffect(() => {
-    cargarDatos()
-  }, [cargarDatos])
+    if (fechaCorte) cargarDatos()
+  }, [cargarDatos, fechaCorte])
 
   // ----------- cambios en inputs -----------
 
@@ -134,6 +257,34 @@ export default function GranjaInventarioPage() {
       ...prev,
       [idUbicacion]: valor,
     }))
+  }
+
+  // ----------- reporte pdf -----------
+
+  const generarPDF = async () => {
+    if (!fechaCorte) {
+      alert('Selecciona una fecha de corte.')
+      return
+    }
+    if (ubicaciones.length === 0) {
+      alert('No hay ubicaciones para reportar.')
+      return
+    }
+
+    setGenerandoPdf(true)
+    try {
+      const logo = await fetchLogoDataUrl()
+      generarPdfInventarioPorCuadros({
+        fechaCorte,
+        grupos,
+        stockTeorico,
+      })
+
+      // (logo se usa dentro del helper si quieres; aquí lo dejamos listo por si luego deseas integrarlo arriba)
+      void logo
+    } finally {
+      setGenerandoPdf(false)
+    }
   }
 
   // ----------- guardar ajustes -----------
@@ -176,7 +327,7 @@ export default function GranjaInventarioPage() {
             cantidad: diff, // positivo agrega, negativo descuenta
             referencia_tabla: 'INVENTARIO_MANUAL',
             referencia_id: null,
-            observaciones: 'Ajuste manual desde pantalla de inventario de granja',
+            observaciones: `Ajuste manual desde pantalla de inventario (corte ${fechaCorte || '—'})`,
             user_id: userId,
           })
         }
@@ -225,27 +376,88 @@ export default function GranjaInventarioPage() {
         </Link>
       </div>
 
-      <div className="mb-4 flex items-center justify-between">
-        {loading ? (
-          <p className="text-xs text-gray-500">Cargando ubicaciones e inventario…</p>
-        ) : (
-          <p className="text-xs text-gray-500">Ubicaciones activas: {ubicaciones.length}</p>
-        )}
+      {/* barra superior: fecha + botones */}
+      <div className="mb-4 flex flex-wrap items-end gap-3 justify-between">
+        <div className="flex flex-wrap items-end gap-3">
+          <div>
+            <label className="block text-xs font-semibold mb-1">Fecha de corte</label>
+            <input
+              type="date"
+              value={fechaCorte}
+              onChange={(e) => setFechaCorte(e.target.value)}
+              className="border rounded px-2 py-1 text-sm"
+            />
+          </div>
 
-        <button
-          onClick={guardarInventario}
-          disabled={guardando || loading}
-          className="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white px-4 py-2 rounded text-sm"
-        >
-          {guardando ? 'Guardando…' : 'Guardar inventario'}
-        </button>
+          <button
+            onClick={cargarDatos}
+            disabled={loading || !fechaCorte}
+            className="bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white px-4 py-2 rounded text-sm"
+          >
+            {loading ? 'Cargando…' : '🔍 Buscar'}
+          </button>
+
+          <button
+            onClick={generarPDF}
+            disabled={generandoPdf || loading || ubicaciones.length === 0}
+            className="bg-slate-800 hover:bg-slate-900 disabled:opacity-60 text-white px-4 py-2 rounded text-sm"
+          >
+            {generandoPdf ? 'Generando…' : '📄 Reporte PDF'}
+          </button>
+        </div>
+
+        <div className="flex items-center gap-3">
+          {loading ? (
+            <p className="text-xs text-gray-500">Cargando ubicaciones e inventario…</p>
+          ) : (
+            <p className="text-xs text-gray-500">Ubicaciones activas: {ubicaciones.length}</p>
+          )}
+
+          <button
+            onClick={guardarInventario}
+            disabled={guardando || loading}
+            className="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white px-4 py-2 rounded text-sm"
+          >
+            {guardando ? 'Guardando…' : 'Guardar inventario'}
+          </button>
+        </div>
+      </div>
+
+      {/* Totales */}
+      <div className="grid md:grid-cols-4 gap-3 mb-5">
+        <div className="border rounded p-3 bg-white">
+          <div className="text-xs text-gray-500">Fecha de corte</div>
+          <div className="text-lg font-bold">{fechaCorte || '—'}</div>
+        </div>
+
+        <div className="border rounded p-3 bg-white">
+          <div className="text-xs text-gray-500">Total general</div>
+          <div className="text-lg font-bold">{totalGeneral}</div>
+        </div>
+
+        <div className="border rounded p-3 bg-white md:col-span-2">
+          <div className="text-xs text-gray-500">Totales por grupo</div>
+          <div className="text-xs text-gray-700 flex flex-wrap gap-x-4 gap-y-1 mt-1">
+            {Object.entries(totalesPorGrupo).slice(0, 6).map(([g, t]) => (
+              <span key={g}>
+                <span className="font-semibold">{g}:</span> {t}
+              </span>
+            ))}
+            {Object.keys(totalesPorGrupo).length > 6 ? <span className="text-gray-500">…</span> : null}
+          </div>
+        </div>
       </div>
 
       {/* grid de tarjetas de inventario */}
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         {Object.entries(grupos).map(([grupo, lista]) => (
           <div key={grupo} className="border rounded-lg bg-white shadow-sm p-3">
-            <h2 className="text-xs font-semibold mb-2 uppercase tracking-wide">{grupo}</h2>
+            <div className="flex items-center justify-between mb-2">
+              <h2 className="text-xs font-semibold uppercase tracking-wide">{grupo}</h2>
+              <span className="text-[11px] text-gray-600">
+                Total: {lista.reduce((acc, u) => acc + toNum(stockTeorico[u.id] ?? 0), 0)}
+              </span>
+            </div>
 
             <div className="grid grid-cols-[auto,1fr] gap-x-2 gap-y-1 text-xs">
               {lista.map((u) => (
