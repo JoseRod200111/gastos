@@ -98,7 +98,11 @@ const ordenarPorGrupo = (grupo: GrupoConfig, arr: Ubicacion[]) => {
 }
 
 // ---------- PDF ----------
-function generarPdfInventarioDiario(fecha: string, ubicaciones: Ubicacion[], estado: Record<number, EstadoUbicacion>) {
+function generarPdfInventarioDiario(
+  fecha: string,
+  ubicaciones: Ubicacion[],
+  estado: Record<number, EstadoUbicacion>
+) {
   const doc = new jsPDF()
   doc.setFontSize(16)
   doc.text('Inventario diario de cerdos', 14, 18)
@@ -157,6 +161,7 @@ export default function InventarioDiarioPage() {
   const [fecha, setFecha] = useState('')
   const [loading, setLoading] = useState(false)
   const [guardando, setGuardando] = useState(false)
+  const [imprimiendo, setImprimiendo] = useState(false)
 
   const calcularTeorico = useCallback((ubis: Ubicacion[], movs: GranjaMovimiento[]) => {
     const teos: Record<number, number> = {}
@@ -190,7 +195,6 @@ export default function InventarioDiarioPage() {
       const ubicacionesData = (ubis || []) as Ubicacion[]
       setUbicaciones(ubicacionesData)
 
-      // ✅ AQUÍ estaba el 400: ahora usamos granja_movimientos
       const { data: movs, error: errM } = await supabase
         .from('granja_movimientos')
         .select('ubicacion_id, tipo, cantidad, fecha')
@@ -257,6 +261,32 @@ export default function InventarioDiarioPage() {
     })
   }
 
+  // ✅ Nuevo botón: imprimir PDF sin guardar
+  const imprimirPdf = async () => {
+    if (!fecha) {
+      alert('Selecciona una fecha.')
+      return
+    }
+    if (ubicaciones.length === 0) {
+      alert('Aún no hay ubicaciones cargadas.')
+      return
+    }
+
+    // si no hay ningún conteo manual, avisar (pero igual lo dejo imprimir si quieres)
+    const hayAlgo = Object.values(estado).some(v => v.manual !== '')
+    if (!hayAlgo) {
+      const ok = confirm('No hay conteos manuales ingresados. ¿Generar PDF de todos modos?')
+      if (!ok) return
+    }
+
+    setImprimiendo(true)
+    try {
+      generarPdfInventarioDiario(fecha, ubicaciones, { ...estado })
+    } finally {
+      setImprimiendo(false)
+    }
+  }
+
   const guardarInventario = async () => {
     if (!fecha) return
 
@@ -283,14 +313,9 @@ export default function InventarioDiarioPage() {
 
     setGuardando(true)
     try {
-      // ✅ mejor: upsert (necesita UNIQUE(fecha, ubicacion_id))
       const { error } = await supabase
         .from('granja_inventario_diario')
         .upsert(registros, { onConflict: 'fecha,ubicacion_id' })
-
-      // Si no tienes UNIQUE y te falla el upsert, dime y lo cambiamos a:
-      // await supabase.from('granja_inventario_diario').delete().eq('fecha', fecha)
-      // await supabase.from('granja_inventario_diario').insert(registros)
 
       if (error) {
         console.error(error)
@@ -298,6 +323,7 @@ export default function InventarioDiarioPage() {
         return
       }
 
+      // ✅ se mantiene: guardar también genera pdf
       generarPdfInventarioDiario(fecha, ubicaciones, estadoParaPdf)
 
       alert('Inventario diario guardado correctamente.')
@@ -341,9 +367,14 @@ export default function InventarioDiarioPage() {
         <img src="/logo.png" alt="Logo" className="h-10" />
         <div>
           <h1 className="text-2xl font-bold">Granja — Inventario diario</h1>
-          <p className="text-xs text-gray-600">Registrar conteos manuales por ubicación y comparar contra inventario teórico.</p>
+          <p className="text-xs text-gray-600">
+            Registrar conteos manuales por ubicación y comparar contra inventario teórico.
+          </p>
         </div>
-        <Link href="/granja" className="ml-auto inline-block bg-slate-700 hover:bg-slate-800 text-white px-3 py-2 rounded text-sm">
+        <Link
+          href="/granja"
+          className="ml-auto inline-block bg-slate-700 hover:bg-slate-800 text-white px-3 py-2 rounded text-sm"
+        >
           ⬅ Menú de Granja
         </Link>
       </div>
@@ -351,16 +382,31 @@ export default function InventarioDiarioPage() {
       <div className="mb-4 flex items-center gap-4">
         <div>
           <label className="block text-xs font-semibold mb-1">Fecha</label>
-          <input type="date" className="border rounded px-2 py-1 text-sm" value={fecha} onChange={e => setFecha(e.target.value)} />
+          <input
+            type="date"
+            className="border rounded px-2 py-1 text-sm"
+            value={fecha}
+            onChange={e => setFecha(e.target.value)}
+          />
         </div>
 
         {loading && <span className="text-xs text-gray-600">Cargando…</span>}
+
+        {/* ✅ Nuevo botón imprimir */}
+        <button
+          type="button"
+          onClick={imprimirPdf}
+          disabled={imprimiendo || loading || !fecha}
+          className="ml-auto bg-slate-800 hover:bg-slate-900 disabled:opacity-60 text-white px-4 py-2 rounded text-sm"
+        >
+          {imprimiendo ? 'Generando PDF…' : 'Imprimir PDF'}
+        </button>
 
         <button
           type="button"
           onClick={guardarInventario}
           disabled={guardando || !fecha}
-          className="ml-auto bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white px-4 py-2 rounded text-sm"
+          className="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white px-4 py-2 rounded text-sm"
         >
           {guardando ? 'Guardando…' : 'Guardar inventario diario'}
         </button>
@@ -387,7 +433,9 @@ export default function InventarioDiarioPage() {
         {otrasUbicaciones.length > 0 && (
           <div className="border rounded-lg p-3 bg-white shadow-sm">
             <h2 className="font-semibold text-sm mb-2">Otras ubicaciones</h2>
-            {[...otrasUbicaciones].sort((a, b) => a.codigo.localeCompare(b.codigo)).map(u => renderCampoUbicacion(u))}
+            {[...otrasUbicaciones]
+              .sort((a, b) => a.codigo.localeCompare(b.codigo))
+              .map(u => renderCampoUbicacion(u))}
           </div>
         )}
       </div>
