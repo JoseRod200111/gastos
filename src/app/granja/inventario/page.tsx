@@ -120,7 +120,7 @@ export default function GranjaInventarioPage() {
   const [guardando, setGuardando] = useState(false)
   const [generandoPdf, setGenerandoPdf] = useState(false)
 
-  // ✅ nuevo: fecha de corte
+  // ✅ nuevo: fecha
   const [fechaCorte, setFechaCorte] = useState<string>('')
 
   useEffect(() => {
@@ -426,7 +426,7 @@ export default function GranjaInventarioPage() {
       {/* Totales */}
       <div className="grid md:grid-cols-4 gap-3 mb-5">
         <div className="border rounded p-3 bg-white">
-          <div className="text-xs text-gray-500">Fecha de corte</div>
+          <div className="text-xs text-gray-500">Fecha</div>
           <div className="text-lg font-bold">{fechaCorte || '—'}</div>
         </div>
 
