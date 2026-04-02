@@ -13,7 +13,7 @@ export default function GranjaReportesMenuPage() {
 
       <h1 className="text-2xl font-bold text-center mb-2">Reportes — Granja</h1>
       <p className="text-center text-sm text-gray-600 mb-6">
-        Reportes del módulo de granja: ventas, compras, inventario diario, muertes y movimientos.
+        Reportes del módulo de granja: ventas, compras, inventario cerdos, muertes y movimientos.
       </p>
 
       {/* Botón volver al menú de granja */}
@@ -61,7 +61,7 @@ export default function GranjaReportesMenuPage() {
               href="/granja/inventario"
               className="block bg-amber-600 hover:bg-amber-700 text-white text-center py-3 rounded"
             >
-              🗓 Reporte de inventario diario (conteos)
+              🗓 Reporte de inventario cerdos
             </Link>
           </div>
         </section>
