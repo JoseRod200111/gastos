@@ -53,12 +53,12 @@ export default function GranjaReportesMenuPage() {
           </div>
         </section>
 
-        {/* Inventario diario */}
+        {/* Inventario cerdos */}
         <section className="border rounded-lg p-4 shadow-sm bg-white">
           <h2 className="font-semibold mb-3">Inventario diario</h2>
           <div className="grid gap-2">
             <Link
-              href="/granja/inventario-diario"
+              href="/granja/inventario"
               className="block bg-amber-600 hover:bg-amber-700 text-white text-center py-3 rounded"
             >
               🗓 Reporte de inventario diario (conteos)
