@@ -57,7 +57,7 @@ function generarPdfInventarioPorCuadros(params: {
   doc.text('REPORTE DE INVENTARIO (TEÓRICO)', 14, 16)
 
   doc.setFontSize(10)
-  doc.text(`Fecha de corte: ${fechaCorte}`, 14, 23)
+  doc.text(`Fecha: ${fechaCorte}`, 14, 23)
 
   const totalGeneral = Object.values(stockTeorico).reduce((a, n) => a + toNum(n), 0)
   doc.text(`Total general: ${totalGeneral}`, 14, 28)
