@@ -13,7 +13,7 @@ export default function GranjaReportesMenuPage() {
 
       <h1 className="text-2xl font-bold text-center mb-2">Reportes — Granja</h1>
       <p className="text-center text-sm text-gray-600 mb-6">
-        Reportes del módulo de granja: ventas, compras, inventario cerdos, muertes y movimientos.
+        Reportes del módulo de granja: ventas, compras, inventario cerdos, muertes, movimientos y control financiero.
       </p>
 
       {/* Botón volver al menú de granja */}
@@ -75,6 +75,32 @@ export default function GranjaReportesMenuPage() {
               className="block bg-red-600 hover:bg-red-700 text-white text-center py-3 rounded"
             >
               ☠ Reporte de bajas por muerte
+            </Link>
+          </div>
+        </section>
+
+        {/* ✅ NUEVO: Deudas de clientes */}
+        <section className="border rounded-lg p-4 shadow-sm bg-white">
+          <h2 className="font-semibold mb-3">Deudas</h2>
+          <div className="grid gap-2">
+            <Link
+              href="/granja/reportes/deudas-clientes"
+              className="block bg-fuchsia-700 hover:bg-fuchsia-800 text-white text-center py-3 rounded"
+            >
+              🧾 Reporte de deudas de clientes
+            </Link>
+          </div>
+        </section>
+
+        {/* ✅ NUEVO: Movimientos de empleados */}
+        <section className="border rounded-lg p-4 shadow-sm bg-white">
+          <h2 className="font-semibold mb-3">Empleados</h2>
+          <div className="grid gap-2">
+            <Link
+              href="/granja/reportes/movimientos-empleados"
+              className="block bg-teal-700 hover:bg-teal-800 text-white text-center py-3 rounded"
+            >
+              👷 Reporte de movimientos de empleados
             </Link>
           </div>
         </section>
