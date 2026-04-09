@@ -1,12 +1,15 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Suspense, useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import Image from 'next/image'
 import { useSearchParams } from 'next/navigation'
 import { supabase } from '@/lib/supabaseClient'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
+
+// (Opcional pero recomendado para evitar pre-render raro en Vercel)
+export const dynamic = 'force-dynamic'
 
 type Venta = {
   id: number
@@ -43,7 +46,7 @@ async function fetchLogoDataUrl(): Promise<string | null> {
   }
 }
 
-export default function GranjaDeudasClienteVistaPage() {
+function VistaDeudasClienteInner() {
   const sp = useSearchParams()
   const clienteId = Number(sp.get('cliente_id') || 0)
 
@@ -70,13 +73,20 @@ export default function GranjaDeudasClienteVistaPage() {
 
   useEffect(() => {
     ;(async () => {
-      const { data } = await supabase.from('forma_pago').select('id, metodo').order('id', { ascending: true })
+      const { data } = await supabase
+        .from('forma_pago')
+        .select('id, metodo')
+        .order('id', { ascending: true })
       setFormasPago((data || []) as FormaPago[])
     })()
   }, [])
 
   const cargar = useCallback(async () => {
-    if (!clienteId) return
+    if (!clienteId) {
+      setVentas([])
+      return
+    }
+
     setLoading(true)
     try {
       const { data, error } = await supabase
@@ -92,7 +102,7 @@ export default function GranjaDeudasClienteVistaPage() {
         return
       }
 
-      const list = ((data || []) as any as Venta[]).filter(v => toNum(v.deuda) > 0.000001)
+      const list = ((data || []) as any as Venta[]).filter((v) => toNum(v.deuda) > 0.000001)
       setVentas(list)
     } finally {
       setLoading(false)
@@ -114,7 +124,6 @@ export default function GranjaDeudasClienteVistaPage() {
   }, [ventas])
 
   const aplicarPagoAVenta = async (v: Venta, pago: number) => {
-    // pago se asume >0 y <= v.deuda
     const nuevoPagado = round2(toNum(v.pagado) + pago)
     const nuevaDeuda = round2(Math.max(0, toNum(v.total) - nuevoPagado))
 
@@ -127,7 +136,11 @@ export default function GranjaDeudasClienteVistaPage() {
   }
 
   const registrarAbono = async () => {
-    if (!clienteId) return
+    if (!clienteId) {
+      alert('Cliente inválido.')
+      return
+    }
+
     const m = toNum(monto)
     if (m <= 0) {
       alert('Monto inválido.')
@@ -150,21 +163,18 @@ export default function GranjaDeudasClienteVistaPage() {
         const vid = Number(ventaId || 0)
         if (!vid) {
           alert('Selecciona una venta.')
-          setRegistrando(false)
           return
         }
 
-        const v = ventas.find(x => x.id === vid)
+        const v = ventas.find((x) => x.id === vid)
         if (!v) {
           alert('No se encontró la venta.')
-          setRegistrando(false)
           return
         }
 
         const pagar = Math.min(restante, toNum(v.deuda))
         if (pagar <= 0) {
           alert('Esa venta no tiene saldo.')
-          setRegistrando(false)
           return
         }
 
@@ -181,9 +191,6 @@ export default function GranjaDeudasClienteVistaPage() {
           restante -= pagar
         }
       }
-
-      // Nota: aquí NO insertamos en una tabla de pagos porque en tu schema no existe una tabla para pagos de granja.
-      // Si quieres historial como en ventas, creamos granja_pagos_ventas_cerdos y lo registramos.
 
       alert('Abono registrado.')
       setMonto('0')
@@ -229,7 +236,7 @@ export default function GranjaDeudasClienteVistaPage() {
       autoTable(doc, {
         startY: y,
         head: [['Venta', 'Fecha', 'Crédito', 'Abonado', 'Saldo']],
-        body: ventas.map(v => [
+        body: ventas.map((v) => [
           `#${v.id}`,
           v.fecha,
           fmtQ(toNum(v.total)),
@@ -285,20 +292,11 @@ export default function GranjaDeudasClienteVistaPage() {
           <div className="md:col-span-2">
             <div className="text-xs font-semibold mb-1">Modo</div>
             <label className="mr-4">
-              <input
-                type="radio"
-                checked={modo === 'AUTO'}
-                onChange={() => setModo('AUTO')}
-              />{' '}
+              <input type="radio" checked={modo === 'AUTO'} onChange={() => setModo('AUTO')} />{' '}
               Automático (deuda más antigua primero)
             </label>
             <label>
-              <input
-                type="radio"
-                checked={modo === 'UNA'}
-                onChange={() => setModo('UNA')}
-              />{' '}
-              Sólo una venta
+              <input type="radio" checked={modo === 'UNA'} onChange={() => setModo('UNA')} /> Sólo una venta
             </label>
           </div>
 
@@ -314,13 +312,9 @@ export default function GranjaDeudasClienteVistaPage() {
 
           <div>
             <div className="text-xs font-semibold mb-1">Método</div>
-            <select
-              className="border p-2 w-full"
-              value={metodoPagoId}
-              onChange={(e) => setMetodoPagoId(e.target.value)}
-            >
+            <select className="border p-2 w-full" value={metodoPagoId} onChange={(e) => setMetodoPagoId(e.target.value)}>
               <option value="">— Selecciona —</option>
-              {formasPago.map(fp => (
+              {formasPago.map((fp) => (
                 <option key={fp.id} value={fp.id}>
                   {fp.metodo}
                 </option>
@@ -331,13 +325,9 @@ export default function GranjaDeudasClienteVistaPage() {
           {modo === 'UNA' && (
             <div className="md:col-span-2">
               <div className="text-xs font-semibold mb-1">Venta</div>
-              <select
-                className="border p-2 w-full"
-                value={ventaId}
-                onChange={(e) => setVentaId(e.target.value)}
-              >
+              <select className="border p-2 w-full" value={ventaId} onChange={(e) => setVentaId(e.target.value)}>
                 <option value="">— Selecciona una venta —</option>
-                {ventas.map(v => (
+                {ventas.map((v) => (
                   <option key={v.id} value={v.id}>
                     #{v.id} | {v.fecha} | saldo {fmtQ(toNum(v.deuda))}
                   </option>
@@ -348,30 +338,17 @@ export default function GranjaDeudasClienteVistaPage() {
 
           <div>
             <div className="text-xs font-semibold mb-1">Monto</div>
-            <input
-              className="border p-2 w-full"
-              value={monto}
-              onChange={(e) => setMonto(e.target.value)}
-              inputMode="decimal"
-            />
+            <input className="border p-2 w-full" value={monto} onChange={(e) => setMonto(e.target.value)} inputMode="decimal" />
           </div>
 
           <div className="md:col-span-2">
             <div className="text-xs font-semibold mb-1">Documento</div>
-            <input
-              className="border p-2 w-full"
-              value={documento}
-              onChange={(e) => setDocumento(e.target.value)}
-            />
+            <input className="border p-2 w-full" value={documento} onChange={(e) => setDocumento(e.target.value)} />
           </div>
 
           <div className="md:col-span-4">
             <div className="text-xs font-semibold mb-1">Observaciones</div>
-            <input
-              className="border p-2 w-full"
-              value={observaciones}
-              onChange={(e) => setObservaciones(e.target.value)}
-            />
+            <input className="border p-2 w-full" value={observaciones} onChange={(e) => setObservaciones(e.target.value)} />
           </div>
         </div>
 
@@ -433,10 +410,15 @@ export default function GranjaDeudasClienteVistaPage() {
           </tbody>
         </table>
       </div>
-
-      <div className="mt-4 text-xs text-gray-500">
-       
-      </div>
     </div>
+  )
+}
+
+export default function GranjaDeudasClienteVistaPage() {
+  // ✅ aquí está el fix: useSearchParams vive dentro del Inner, y está envuelto en Suspense
+  return (
+    <Suspense fallback={<div className="p-6 max-w-6xl mx-auto text-sm text-gray-600">Cargando…</div>}>
+      <VistaDeudasClienteInner />
+    </Suspense>
   )
 }
