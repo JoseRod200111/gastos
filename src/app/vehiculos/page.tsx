@@ -403,12 +403,7 @@ export default function VehiculosPage() {
       <div className="mb-6">
         <div className="flex items-center justify-between mb-2">
           <h2 className="font-semibold">Viajes registrados</h2>
-          <button
-            onClick={() => { setSelected(null); resetForm(); setGastos([]) }}
-            className="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-2 rounded"
-          >
-            + Nuevo viaje
-          </button>
+          
         </div>
 
         <div className="mb-2 grid md:grid-cols-4 gap-2 text-sm">
