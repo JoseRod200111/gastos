@@ -10,9 +10,7 @@ export default function GranjaMenuPage() {
         <img src="/logo.png" alt="Logo Empresa" className="h-16" />
       </div>
 
-      <h1 className="text-2xl font-bold text-center mb-2">
-        Módulo de Granja
-      </h1>
+      <h1 className="text-2xl font-bold text-center mb-2">Módulo de Granja</h1>
       <p className="text-center text-sm text-gray-600 mb-6">
         Control de entradas, salidas e inventarios de cerdos por ubicación.
       </p>
@@ -66,10 +64,10 @@ export default function GranjaMenuPage() {
           </div>
         </section>
 
-        {/* INVENTARIO */}
+        {/* INVENTARIO / MOVIMIENTO INTERNO */}
         <section className="border rounded-lg p-4 shadow-sm bg-white">
           <h2 className="font-semibold mb-3">Inventario</h2>
-         
+
           <div className="grid gap-2">
             <Link
               href="/granja/inventario"
@@ -83,13 +81,21 @@ export default function GranjaMenuPage() {
             >
               🗓 Inventario diario (conteo físico)
             </Link>
+
+            {/* ✅ NUEVO: Movimiento de cerdos */}
+            <Link
+              href="/granja/movimiento-cerdos"
+              className="block bg-orange-600 hover:bg-orange-700 text-white text-center py-3 rounded"
+            >
+              🔁 Movimiento de cerdos (traslado)
+            </Link>
           </div>
         </section>
 
         {/* REPORTES */}
         <section className="border rounded-lg p-4 shadow-sm bg-white">
           <h2 className="font-semibold mb-3">Reportes</h2>
-         
+
           <div className="grid gap-2">
             <Link
               href="/granja/reportes"
@@ -103,4 +109,3 @@ export default function GranjaMenuPage() {
     </div>
   )
 }
-
