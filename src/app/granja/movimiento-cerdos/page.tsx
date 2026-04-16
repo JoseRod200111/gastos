@@ -236,9 +236,7 @@ export default function MovimientoCerdosPage() {
         </Link>
       </div>
 
-      <p className="text-sm text-gray-600 mb-6">
-        Mueve cerdos de una ubicación a otra. Se registra como dos movimientos tipo <b>AJUSTE</b> (origen negativo, destino positivo).
-      </p>
+     
 
       <div className="grid md:grid-cols-2 gap-6">
         {/* Form */}
