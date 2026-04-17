@@ -383,9 +383,7 @@ export default function MovimientosEmpleadosPage() {
         </Link>
       </div>
 
-      <p className="text-sm text-gray-600 mb-4">
-        Incluye registros directos y, si está activo, <b>audit_log</b> (INSERT/UPDATE/DELETE).
-      </p>
+     
 
       {/* Filtros */}
       <div className="grid grid-cols-1 md:grid-cols-6 gap-3 mb-4">
@@ -483,11 +481,7 @@ export default function MovimientosEmpleadosPage() {
         </table>
       </div>
 
-      <div className="mt-3 text-xs text-gray-500">
-        Si ves “—” en usuario de erogaciones es porque el registro tiene <b>user_id</b> nulo y/o <b>editado_por</b> vacío.
-        Con <b>profiles</b> se muestran emails para user_id.
-        Para ver eliminaciones sí o sí necesitas <b>audit_log</b>.
-      </div>
+     
     </div>
   )
 }
