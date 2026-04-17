@@ -5,15 +5,22 @@ import Image from 'next/image'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabaseClient'
 
-type Catalogo   = { id: number; nombre: string }
+type Catalogo = { id: number; nombre: string }
 type MetodoPago = { id: number; metodo: string }
-type Proveedor  = {
-  id: number; nombre: string
-  nit?: string|null; direccion?: string|null
-  contacto_nombre?: string|null; telefono?: string|null
+type Proveedor = {
+  id: number
+  nombre: string
+  nit?: string | null
+  direccion?: string | null
+  contacto_nombre?: string | null
+  telefono?: string | null
 }
-type Producto   = {
-  id: number; nombre: string; sku: string|null; unidad: string|null; control_inventario: boolean
+type Producto = {
+  id: number
+  nombre: string
+  sku: string | null
+  unidad: string | null
+  control_inventario: boolean
 }
 
 type DetalleForm = {
@@ -31,19 +38,19 @@ const DETALLE_INICIAL: DetalleForm = {
   cantidad: 0,
   precio_unitario: 0,
   forma_pago_id: '',
-  documento: ''
+  documento: '',
 }
 
 export default function NuevaErogacion() {
   const router = useRouter()
 
   /* catálogos */
-  const [empresas, setEmpresas]       = useState<Catalogo[]>([])
-  const [divisiones, setDivisiones]   = useState<Catalogo[]>([])
-  const [categorias, setCategorias]   = useState<Catalogo[]>([])
+  const [empresas, setEmpresas] = useState<Catalogo[]>([])
+  const [divisiones, setDivisiones] = useState<Catalogo[]>([])
+  const [categorias, setCategorias] = useState<Catalogo[]>([])
   const [metodosPago, setMetodosPago] = useState<MetodoPago[]>([])
   const [proveedores, setProveedores] = useState<Proveedor[]>([])
-  const [productos, setProductos]     = useState<Producto[]>([])
+  const [productos, setProductos] = useState<Producto[]>([])
 
   /* cabecera */
   const [form, setForm] = useState({
@@ -52,17 +59,21 @@ export default function NuevaErogacion() {
     categoria_id: '',
     proveedor_id: '',
     fecha: '',
-    cantidad: 0,            // total calculado
-    observaciones: ''
+    cantidad: 0, // total calculado
+    observaciones: '',
   })
 
   /* detalles */
-  const [detalles, setDetalles] = useState<DetalleForm[]>([ { ...DETALLE_INICIAL } ])
+  const [detalles, setDetalles] = useState<DetalleForm[]>([{ ...DETALLE_INICIAL }])
 
   /* nuevo proveedor (alta rápida) */
   const [showNuevoProv, setShowNuevoProv] = useState(false)
   const [nuevoProv, setNuevoProv] = useState({
-    nombre:'', nit:'', direccion:'', contacto_nombre:'', telefono:''
+    nombre: '',
+    nit: '',
+    direccion: '',
+    contacto_nombre: '',
+    telefono: '',
   })
 
   /* feedback al guardar */
@@ -71,43 +82,52 @@ export default function NuevaErogacion() {
 
   /* carga inicial de catálogos */
   useEffect(() => {
-    (async () => {
+    ;(async () => {
       const [emp, div, cat, met, prov, prods] = await Promise.all([
         supabase.from('empresas').select('*'),
         supabase.from('divisiones').select('*'),
         supabase.from('categorias').select('*'),
         supabase.from('forma_pago').select('*'),
         supabase.from('proveedores').select('*').order('nombre', { ascending: true }),
-        supabase.from('productos').select('id,nombre,sku,unidad,control_inventario').order('nombre', { ascending: true }),
+        supabase
+          .from('productos')
+          .select('id,nombre,sku,unidad,control_inventario')
+          .order('nombre', { ascending: true }),
       ])
 
-      setEmpresas(emp.data || [])
-      setDivisiones(div.data || [])
-      setCategorias(cat.data || [])
-      setMetodosPago(met.data || [])
-      setProveedores(prov.data || [])
+      setEmpresas((emp.data as Catalogo[]) || [])
+      setDivisiones((div.data as Catalogo[]) || [])
+      setCategorias((cat.data as Catalogo[]) || [])
+      setMetodosPago((met.data as MetodoPago[]) || [])
+      setProveedores((prov.data as Proveedor[]) || [])
       setProductos((prods.data as Producto[]) || [])
     })()
   }, [])
 
   /* total calculado */
-  const total = useMemo(() =>
-    detalles.reduce((s, d) => s + Number(d.cantidad || 0) * Number(d.precio_unitario || 0), 0)
-  , [detalles])
+  const total = useMemo(
+    () =>
+      detalles.reduce(
+        (s, d) => s + Number(d.cantidad || 0) * Number(d.precio_unitario || 0),
+        0
+      ),
+    [detalles]
+  )
 
   useEffect(() => {
-    setForm(f => ({ ...f, cantidad: total }))
+    setForm((f) => ({ ...f, cantidad: total }))
   }, [total])
 
   /* helpers detalle */
   const handleDetalleChange = (i: number, field: keyof DetalleForm, val: any) => {
-    setDetalles(prev => {
+    setDetalles((prev) => {
       const copy = [...prev]
       let v: any = val
+
       if (field === 'cantidad' || field === 'precio_unitario') v = parseFloat(val || '0')
 
       if (field === 'producto_id') {
-        const prod = productos.find(p => String(p.id) === String(val))
+        const prod = productos.find((p) => String(p.id) === String(val))
         if (prod && !copy[i].concepto.trim()) copy[i].concepto = prod.nombre
       }
 
@@ -116,15 +136,18 @@ export default function NuevaErogacion() {
     })
   }
 
-  const addDetalle = () => setDetalles(d => [...d, { ...DETALLE_INICIAL }])
+  const addDetalle = () => setDetalles((d) => [...d, { ...DETALLE_INICIAL }])
 
   const copiar = async (txt: string) => {
-    try { await navigator.clipboard.writeText(txt) } catch {}
+    try {
+      await navigator.clipboard.writeText(txt)
+    } catch {}
   }
 
   /* alta rápida de proveedor */
   const guardarNuevoProveedor = async () => {
     if (!nuevoProv.nombre.trim()) return alert('El nombre del proveedor es obligatorio')
+
     const { data, error } = await supabase
       .from('proveedores')
       .insert({
@@ -138,34 +161,53 @@ export default function NuevaErogacion() {
       .single()
 
     if (error) return alert(`Error al guardar proveedor: ${error.message}`)
-    setProveedores(p => [...p, data as Proveedor])
-    setForm(f => ({ ...f, proveedor_id: String((data as any).id) }))
+
+    setProveedores((p) => [...p, data as Proveedor])
+    setForm((f) => ({ ...f, proveedor_id: String((data as any).id) }))
     setShowNuevoProv(false)
-    setNuevoProv({ nombre:'', nit:'', direccion:'', contacto_nombre:'', telefono:'' })
+    setNuevoProv({ nombre: '', nit: '', direccion: '', contacto_nombre: '', telefono: '' })
   }
 
   /* guardar erogación */
   const guardarErogacion = async () => {
     try {
       if (!form.proveedor_id) return alert('Selecciona (o crea) un proveedor')
-      if (!form.fecha)        return alert('Selecciona la fecha')
+      if (!form.fecha) return alert('Selecciona la fecha')
       if (detalles.length === 0) return alert('Agrega al menos un artículo')
 
       setGuardando(true)
       setUltimoId(null)
 
+      // ✅ Obtener usuario actual (para guardar user_id)
+      const { data: userData, error: userErr } = await supabase.auth.getUser()
+      if (userErr) throw new Error(`auth: ${userErr.message}`)
+      const userId = userData?.user?.id ?? null
+      const userEmail = userData?.user?.email ?? null
+
+      // Si quieres forzar login para registrar erogaciones:
+      if (!userId) return alert('No hay sesión activa. Inicia sesión para registrar erogaciones.')
+
       // 1) Insert cabecera
       const { data: erog, error: errCab } = await supabase
         .from('erogaciones')
-        .insert([{
-          empresa_id   : form.empresa_id ? Number(form.empresa_id) : null,
-          division_id  : form.division_id ? Number(form.division_id) : null,
-          categoria_id : form.categoria_id ? Number(form.categoria_id) : null,
-          proveedor_id : form.proveedor_id ? Number(form.proveedor_id) : null,
-          fecha        : form.fecha,
-          observaciones: form.observaciones || null,
-          cantidad     : Number(total || 0),
-        }])
+        .insert([
+          {
+            empresa_id: form.empresa_id ? Number(form.empresa_id) : null,
+            division_id: form.division_id ? Number(form.division_id) : null,
+            categoria_id: form.categoria_id ? Number(form.categoria_id) : null,
+            proveedor_id: form.proveedor_id ? Number(form.proveedor_id) : null,
+            fecha: form.fecha,
+            observaciones: form.observaciones || null,
+            cantidad: Number(total || 0),
+
+            // ✅ CLAVE: esto evita que salga "—" en reportes
+            user_id: userId,
+
+            // opcional (sirve como respaldo visual si algún reporte muestra editado_por)
+            editado_por: null,
+            editado_en: null,
+          },
+        ])
         .select('id')
         .single()
 
@@ -174,24 +216,29 @@ export default function NuevaErogacion() {
       const erogacionId = (erog as any).id as number
 
       // 2) Insert detalle (sin 'importe', lo calcula el trigger)
-      const payload = detalles.map(d => ({
-        erogacion_id   : erogacionId,
-        producto_id    : d.producto_id ? Number(d.producto_id) : null,
-        concepto       : d.concepto,
-        cantidad       : Number(d.cantidad || 0),
+      const payload = detalles.map((d) => ({
+        erogacion_id: erogacionId,
+        producto_id: d.producto_id ? Number(d.producto_id) : null,
+        concepto: d.concepto,
+        cantidad: Number(d.cantidad || 0),
         precio_unitario: Number(d.precio_unitario || 0),
-        forma_pago_id  : d.forma_pago_id ? Number(d.forma_pago_id) : null,
-        documento      : d.documento || null
+        forma_pago_id: d.forma_pago_id ? Number(d.forma_pago_id) : null,
+        documento: d.documento || null,
       }))
 
       const { error: errDet } = await supabase.from('detalle_compra').insert(payload)
       if (errDet) throw new Error(`detalle: ${errDet.message}`)
 
-      // 3) Éxito: mostramos ID, limpiamos formulario si quieres seguir cargando
+      // 3) Éxito
       setUltimoId(erogacionId)
+
       // limpiar líneas pero mantener cabeceras por si deseas registrar varias seguidas
       setDetalles([{ ...DETALLE_INICIAL }])
-      setForm(f => ({ ...f, cantidad: 0 }))
+      setForm((f) => ({ ...f, cantidad: 0 }))
+
+      // Nota: no guardo email en erogaciones porque ya tenemos user_id.
+      // Si algún día quieres mostrar email sin tabla profiles, ahí sí convendría guardar editado_por=userEmail.
+      void userEmail
     } catch (e: any) {
       alert(`Error al guardar: ${e?.message ?? e}`)
     } finally {
@@ -212,7 +259,10 @@ export default function NuevaErogacion() {
         <div className="mb-4 rounded border border-emerald-300 bg-emerald-50 p-3 text-emerald-900">
           <div className="flex flex-wrap items-center gap-2">
             <span className="font-semibold">¡Erogación creada!</span>
-            <span> ID: <span className="font-mono font-semibold">#{ultimoId}</span></span>
+            <span>
+              {' '}
+              ID: <span className="font-mono font-semibold">#{ultimoId}</span>
+            </span>
             <button
               onClick={() => copiar(String(ultimoId))}
               className="rounded bg-emerald-600 px-2 py-1 text-xs text-white hover:bg-emerald-700"
@@ -245,33 +295,61 @@ export default function NuevaErogacion() {
 
       {/* cabecera */}
       <div className="grid grid-cols-1 gap-4">
-        <select className="border p-2" value={form.empresa_id}
-                onChange={e=>setForm({...form,empresa_id:e.target.value})}>
+        <select
+          className="border p-2"
+          value={form.empresa_id}
+          onChange={(e) => setForm({ ...form, empresa_id: e.target.value })}
+        >
           <option value="">Selecciona Empresa</option>
-          {empresas.map(x => <option key={x.id} value={x.id}>{x.nombre}</option>)}
+          {empresas.map((x) => (
+            <option key={x.id} value={x.id}>
+              {x.nombre}
+            </option>
+          ))}
         </select>
 
-        <select className="border p-2" value={form.division_id}
-                onChange={e=>setForm({...form,division_id:e.target.value})}>
+        <select
+          className="border p-2"
+          value={form.division_id}
+          onChange={(e) => setForm({ ...form, division_id: e.target.value })}
+        >
           <option value="">Selecciona División</option>
-          {divisiones.map(x => <option key={x.id} value={x.id}>{x.nombre}</option>)}
+          {divisiones.map((x) => (
+            <option key={x.id} value={x.id}>
+              {x.nombre}
+            </option>
+          ))}
         </select>
 
-        <select className="border p-2" value={form.categoria_id}
-                onChange={e=>setForm({...form,categoria_id:e.target.value})}>
+        <select
+          className="border p-2"
+          value={form.categoria_id}
+          onChange={(e) => setForm({ ...form, categoria_id: e.target.value })}
+        >
           <option value="">Selecciona Categoría</option>
-          {categorias.map(x => <option key={x.id} value={x.id}>{x.nombre}</option>)}
+          {categorias.map((x) => (
+            <option key={x.id} value={x.id}>
+              {x.nombre}
+            </option>
+          ))}
         </select>
 
         {/* Proveedor + Alta rápida */}
         <div className="flex gap-2">
-          <select className="border p-2 flex-grow" value={form.proveedor_id}
-                  onChange={e=>setForm({...form,proveedor_id:e.target.value})}>
+          <select
+            className="border p-2 flex-grow"
+            value={form.proveedor_id}
+            onChange={(e) => setForm({ ...form, proveedor_id: e.target.value })}
+          >
             <option value="">Selecciona Proveedor</option>
-            {proveedores.map(p => <option key={p.id} value={p.id}>{p.nombre}</option>)}
+            {proveedores.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.nombre}
+              </option>
+            ))}
           </select>
           <button
-            onClick={()=>setShowNuevoProv(!showNuevoProv)}
+            onClick={() => setShowNuevoProv(!showNuevoProv)}
             className="whitespace-nowrap rounded bg-green-600 px-3 text-sm text-white"
           >
             {showNuevoProv ? 'Cancelar' : '➕ Nuevo'}
@@ -281,33 +359,74 @@ export default function NuevaErogacion() {
         {showNuevoProv && (
           <div className="space-y-2 rounded border bg-gray-50 p-3">
             <h3 className="text-sm font-semibold">Nuevo Proveedor</h3>
-            <input className="w-full border p-2" placeholder="Nombre"
-                   value={nuevoProv.nombre} onChange={e=>setNuevoProv({...nuevoProv,nombre:e.target.value})}/>
-            <input className="w-full border p-2" placeholder="NIT"
-                   value={nuevoProv.nit} onChange={e=>setNuevoProv({...nuevoProv,nit:e.target.value})}/>
-            <input className="w-full border p-2" placeholder="Dirección"
-                   value={nuevoProv.direccion} onChange={e=>setNuevoProv({...nuevoProv,direccion:e.target.value})}/>
-            <input className="w-full border p-2" placeholder="Contacto"
-                   value={nuevoProv.contacto_nombre} onChange={e=>setNuevoProv({...nuevoProv,contacto_nombre:e.target.value})}/>
-            <input className="w-full border p-2" placeholder="Teléfono"
-                   value={nuevoProv.telefono} onChange={e=>setNuevoProv({...nuevoProv,telefono:e.target.value})}/>
-            <button onClick={guardarNuevoProveedor} className="w-full rounded bg-blue-600 py-2 text-white">
+            <input
+              className="w-full border p-2"
+              placeholder="Nombre"
+              value={nuevoProv.nombre}
+              onChange={(e) => setNuevoProv({ ...nuevoProv, nombre: e.target.value })}
+            />
+            <input
+              className="w-full border p-2"
+              placeholder="NIT"
+              value={nuevoProv.nit}
+              onChange={(e) => setNuevoProv({ ...nuevoProv, nit: e.target.value })}
+            />
+            <input
+              className="w-full border p-2"
+              placeholder="Dirección"
+              value={nuevoProv.direccion}
+              onChange={(e) => setNuevoProv({ ...nuevoProv, direccion: e.target.value })}
+            />
+            <input
+              className="w-full border p-2"
+              placeholder="Contacto"
+              value={nuevoProv.contacto_nombre}
+              onChange={(e) =>
+                setNuevoProv({ ...nuevoProv, contacto_nombre: e.target.value })
+              }
+            />
+            <input
+              className="w-full border p-2"
+              placeholder="Teléfono"
+              value={nuevoProv.telefono}
+              onChange={(e) => setNuevoProv({ ...nuevoProv, telefono: e.target.value })}
+            />
+            <button
+              onClick={guardarNuevoProveedor}
+              className="w-full rounded bg-blue-600 py-2 text-white"
+            >
               Guardar Proveedor
             </button>
           </div>
         )}
 
-        <input type="date" className="border p-2"
-               value={form.fecha} onChange={e=>setForm({...form,fecha:e.target.value})}/>
-        <textarea className="border p-2" placeholder="Observaciones generales"
-                  value={form.observaciones} onChange={e=>setForm({...form,observaciones:e.target.value})}/>
+        <input
+          type="date"
+          className="border p-2"
+          value={form.fecha}
+          onChange={(e) => setForm({ ...form, fecha: e.target.value })}
+        />
+        <textarea
+          className="border p-2"
+          placeholder="Observaciones generales"
+          value={form.observaciones}
+          onChange={(e) => setForm({ ...form, observaciones: e.target.value })}
+        />
       </div>
 
       {/* Detalles */}
       <h2 className="mt-6 mb-2 text-xl font-semibold">Artículos de Compra</h2>
       <p className="mb-2 text-xs text-gray-600">
         Puedes crear productos desde{' '}
-        <a className="text-blue-600 underline" href="/inventario" target="_blank" rel="noreferrer">Inventario</a>.
+        <a
+          className="text-blue-600 underline"
+          href="/inventario"
+          target="_blank"
+          rel="noreferrer"
+        >
+          Inventario
+        </a>
+        .
       </p>
 
       {/* Encabezado para distinguir Cantidad y Precio */}
@@ -320,39 +439,68 @@ export default function NuevaErogacion() {
         <div>Documento</div>
       </div>
 
-      {detalles.map((d,i)=>(
+      {detalles.map((d, i) => (
         <div key={i} className="mb-2 grid grid-cols-1 gap-2 md:grid-cols-6">
-          <select className="border p-2" value={d.producto_id || ''}
-                  onChange={e=>handleDetalleChange(i,'producto_id',e.target.value)}>
+          <select
+            className="border p-2"
+            value={d.producto_id || ''}
+            onChange={(e) => handleDetalleChange(i, 'producto_id', e.target.value)}
+          >
             <option value="">— Sin producto (no inventario) —</option>
-            {productos.map(p=>(
+            {productos.map((p) => (
               <option key={p.id} value={p.id}>
                 {(p.sku ? `${p.sku} — ` : '') + p.nombre}
               </option>
             ))}
           </select>
 
-          <input className="border p-2" placeholder="Concepto"
-                 value={d.concepto} onChange={e=>handleDetalleChange(i,'concepto',e.target.value)}/>
+          <input
+            className="border p-2"
+            placeholder="Concepto"
+            value={d.concepto}
+            onChange={(e) => handleDetalleChange(i, 'concepto', e.target.value)}
+          />
 
-          <input className="border p-2 text-right" type="number" min="0" placeholder="0"
-                 value={d.cantidad}
-                 onChange={e=>handleDetalleChange(i,'cantidad',e.target.value)}
-                 aria-label="Cantidad" />
+          <input
+            className="border p-2 text-right"
+            type="number"
+            min="0"
+            placeholder="0"
+            value={d.cantidad}
+            onChange={(e) => handleDetalleChange(i, 'cantidad', e.target.value)}
+            aria-label="Cantidad"
+          />
 
-          <input className="border p-2 text-right" type="number" min="0" step="0.01" placeholder="0.00"
-                 value={d.precio_unitario}
-                 onChange={e=>handleDetalleChange(i,'precio_unitario',e.target.value)}
-                 aria-label="Precio unitario (Q)" />
+          <input
+            className="border p-2 text-right"
+            type="number"
+            min="0"
+            step="0.01"
+            placeholder="0.00"
+            value={d.precio_unitario}
+            onChange={(e) => handleDetalleChange(i, 'precio_unitario', e.target.value)}
+            aria-label="Precio unitario (Q)"
+          />
 
-          <select className="border p-2" value={d.forma_pago_id}
-                  onChange={e=>handleDetalleChange(i,'forma_pago_id',e.target.value)}>
+          <select
+            className="border p-2"
+            value={d.forma_pago_id}
+            onChange={(e) => handleDetalleChange(i, 'forma_pago_id', e.target.value)}
+          >
             <option value="">Método de pago</option>
-            {metodosPago.map(m => <option key={m.id} value={m.id}>{m.metodo}</option>)}
+            {metodosPago.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.metodo}
+              </option>
+            ))}
           </select>
 
-          <input className="border p-2" placeholder="Documento"
-                 value={d.documento} onChange={e=>handleDetalleChange(i,'documento',e.target.value)}/>
+          <input
+            className="border p-2"
+            placeholder="Documento"
+            value={d.documento}
+            onChange={(e) => handleDetalleChange(i, 'documento', e.target.value)}
+          />
         </div>
       ))}
 
@@ -360,9 +508,7 @@ export default function NuevaErogacion() {
         + Agregar otro artículo
       </button>
 
-      <div className="mb-4 text-lg font-semibold">
-        Total Calculado: Q{(total || 0).toFixed(2)}
-      </div>
+      <div className="mb-4 text-lg font-semibold">Total Calculado: Q{(total || 0).toFixed(2)}</div>
 
       <div className="flex justify-between gap-2">
         <button
@@ -373,7 +519,7 @@ export default function NuevaErogacion() {
           {guardando ? 'Guardando…' : 'Guardar Erogación'}
         </button>
         <button
-          onClick={()=>router.push('/menu')}
+          onClick={() => router.push('/menu')}
           className="rounded bg-gray-700 px-4 py-2 text-white"
         >
           ⬅ Volver al Menú Principal
