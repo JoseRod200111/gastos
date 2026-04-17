@@ -24,7 +24,6 @@ type MovItem = {
   usuario_label: string
   referencia: string
   detalle: string
-  fuente: 'AUDIT' | 'DIRECTO'
 }
 
 const pad = (n: number) => (n < 10 ? `0${n}` : `${n}`)
@@ -80,7 +79,11 @@ export default function MovimientosEmpleadosPage() {
   // cargar profiles (dropdown de usuarios)
   useEffect(() => {
     ;(async () => {
-      const { data, error } = await supabase.from('profiles').select('id, email').order('email', { ascending: true })
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('id, email')
+        .order('email', { ascending: true })
+
       if (error) {
         console.error('profiles error', error)
         setProfiles([])
@@ -116,7 +119,6 @@ export default function MovimientosEmpleadosPage() {
       // =========================
       // 1) AUDIT LOG (INSERT/UPDATE/DELETE)
       // =========================
-      // Si no existe audit_log o no tienes permisos, simplemente no trae.
       {
         let q = supabase
           .from('audit_log')
@@ -131,7 +133,6 @@ export default function MovimientosEmpleadosPage() {
 
         const { data, error } = await q
         if (error) {
-          // no bloquea el reporte
           console.warn('audit_log no disponible o sin permisos', error)
         } else {
           for (const r of (data || []) as any[]) {
@@ -146,7 +147,6 @@ export default function MovimientosEmpleadosPage() {
               usuario_label: userLabel(usuario),
               referencia: `${String(r.table_name || '').split('.').pop()}#${r.record_id || '—'}`,
               detalle: r.snapshot ? JSON.stringify(r.snapshot).slice(0, 180) : '—',
-              fuente: 'AUDIT',
             })
           }
         }
@@ -155,7 +155,6 @@ export default function MovimientosEmpleadosPage() {
       // =========================
       // 2) DIRECTO (por si aún no está audit)
       // =========================
-      // Aquí corregimos "erogaciones usuario —": usamos user_id o editado_por
       const wantAll = sec === 'TODOS'
 
       // GRANJA: granja_movimientos
@@ -182,15 +181,14 @@ export default function MovimientosEmpleadosPage() {
               usuario_label: userLabel(usuario),
               referencia: `${r.referencia_tabla || 'granja_movimientos'}${r.referencia_id ? `#${r.referencia_id}` : `#${r.id}`}`,
               detalle: `Ubicación ${r.ubicacion_id ?? '—'} · Cant ${r.cantidad ?? '—'}${r.observaciones ? ` · ${r.observaciones}` : ''}`,
-              fuente: 'DIRECTO',
             })
           }
         }
       }
 
-      // VEHICULOS: viajes/viaje_gastos/viaje_combustible (estos usan editado_por texto, no uuid)
+      // VEHICULOS: viajes/viaje_gastos/viaje_combustible (usan editado_por texto)
       if (wantAll || sec === 'VEHICULOS') {
-        // viajes (solo creado/edición; deletes se ven en audit)
+        // viajes
         {
           let q = supabase
             .from('viajes')
@@ -204,7 +202,6 @@ export default function MovimientosEmpleadosPage() {
           const { data, error } = await q
           if (!error) {
             for (const r of (data || []) as any[]) {
-              // aquí usuario es texto, el dropdown es uuid: no filtramos por uid en vehículos si no hay actor uuid
               const usuario = r.editado_por ? String(r.editado_por) : '—'
               const ts = String(r.editado_en || r.creado_en || '')
               out.push({
@@ -215,7 +212,6 @@ export default function MovimientosEmpleadosPage() {
                 usuario_label: usuario,
                 referencia: `viajes#${r.id}`,
                 detalle: `Vehículo ${r.vehiculo_id ?? '—'} · ${r.origen || '—'} → ${r.destino || '—'} · ${r.fecha_inicio || '—'} / ${r.fecha_fin || '—'}`,
-                fuente: 'DIRECTO',
               })
             }
           }
@@ -246,13 +242,12 @@ export default function MovimientosEmpleadosPage() {
               usuario_label: userLabel(usuario),
               referencia: `ventas#${r.id}`,
               detalle: `${r.fecha || '—'} · Total Q${Number(r.cantidad || 0).toFixed(2)}${r.observaciones ? ` · ${r.observaciones}` : ''}`,
-              fuente: 'DIRECTO',
             })
           }
         }
       }
 
-      // EROGACIONES (aquí arreglamos el usuario)
+      // EROGACIONES
       if (wantAll || sec === 'EROGACIONES') {
         let q = supabase
           .from('erogaciones')
@@ -266,12 +261,9 @@ export default function MovimientosEmpleadosPage() {
         const { data, error } = await q
         if (!error) {
           for (const r of (data || []) as any[]) {
-            // CREACIÓN: usa user_id si existe, si no, muestra editado_por si existe, si no "—"
             const usuarioCre = r.user_id ? String(r.user_id) : (r.editado_por ? String(r.editado_por) : '—')
-            if (uid && usuarioCre !== uid) {
-              // si filtras por usuario, y no coincide, saltamos
-              // (nota: si tu editado_por contiene email, no coincidirá con uid; para eso está audit/profiles)
-            } else {
+
+            if (!uid || usuarioCre === uid) {
               out.push({
                 ts: String(r.created_at || ''),
                 seccion: 'EROGACIONES',
@@ -280,11 +272,9 @@ export default function MovimientosEmpleadosPage() {
                 usuario_label: userLabel(usuarioCre),
                 referencia: `erogaciones#${r.id}`,
                 detalle: `${r.fecha || '—'} · Total Q${Number(r.cantidad || 0).toFixed(2)}${r.observaciones ? ` · ${r.observaciones}` : ''}`,
-                fuente: 'DIRECTO',
               })
             }
 
-            // EDICIÓN (si existe)
             if (r.editado_en) {
               const usuarioEd = r.editado_por ? String(r.editado_por) : (r.user_id ? String(r.user_id) : '—')
               if (uid && usuarioEd !== uid) continue
@@ -296,14 +286,12 @@ export default function MovimientosEmpleadosPage() {
                 usuario_label: userLabel(usuarioEd),
                 referencia: `erogaciones#${r.id}`,
                 detalle: `Editado · ${r.fecha || '—'} · Total Q${Number(r.cantidad || 0).toFixed(2)}${r.observaciones ? ` · ${r.observaciones}` : ''}`,
-                fuente: 'DIRECTO',
               })
             }
           }
         }
       }
 
-      // ordenar desc por fecha
       out.sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0))
       setItems(out)
     } finally {
@@ -333,11 +321,15 @@ export default function MovimientosEmpleadosPage() {
 
       doc.setFontSize(10)
       const filtroUsuarioTxt = filtros.usuario_id ? userLabel(filtros.usuario_id) : 'Todos'
-      doc.text(`Desde: ${filtros.desde || '—'}   Hasta: ${filtros.hasta || '—'}   Sección: ${filtros.seccion}   Usuario: ${filtroUsuarioTxt}`, 10, 25)
+      doc.text(
+        `Desde: ${filtros.desde || '—'}   Hasta: ${filtros.hasta || '—'}   Sección: ${filtros.seccion}   Usuario: ${filtroUsuarioTxt}`,
+        10,
+        25
+      )
 
       autoTable(doc, {
         startY: 30,
-        head: [['Fecha/Hora', 'Sección', 'Acción', 'Usuario', 'Referencia', 'Detalle', 'Fuente']],
+        head: [['Fecha/Hora', 'Sección', 'Acción', 'Usuario', 'Referencia', 'Detalle']],
         body: itemsFiltrados.slice(0, 1200).map((it) => [
           fmtFecha(it.ts),
           it.seccion,
@@ -345,17 +337,15 @@ export default function MovimientosEmpleadosPage() {
           it.usuario_label,
           it.referencia,
           it.detalle,
-          it.fuente,
         ]),
         styles: { fontSize: 8, cellPadding: 2 },
         columnStyles: {
           0: { cellWidth: 30 },
-          1: { cellWidth: 20 },
-          2: { cellWidth: 28 },
-          3: { cellWidth: 45 },
-          4: { cellWidth: 40 },
-          5: { cellWidth: 110 },
-          6: { cellWidth: 18 },
+          1: { cellWidth: 22 },
+          2: { cellWidth: 30 },
+          3: { cellWidth: 55 },
+          4: { cellWidth: 45 },
+          5: { cellWidth: 95 },
         },
       })
 
@@ -373,7 +363,7 @@ export default function MovimientosEmpleadosPage() {
         <Image src="/logo.png" alt="Logo" width={180} height={72} />
       </div>
 
-      <div className="flex items-center gap-3 mb-2">
+      <div className="flex items-center gap-3 mb-4">
         <h1 className="text-2xl font-bold">👷 Movimientos de empleados</h1>
         <Link
           href="/granja/reportes"
@@ -382,8 +372,6 @@ export default function MovimientosEmpleadosPage() {
           ⬅ Volver
         </Link>
       </div>
-
-     
 
       {/* Filtros */}
       <div className="grid grid-cols-1 md:grid-cols-6 gap-3 mb-4">
@@ -412,7 +400,7 @@ export default function MovimientosEmpleadosPage() {
           <option value="EROGACIONES">Erogaciones</option>
         </select>
 
-        {/* ✅ dropdown usuarios */}
+        {/* dropdown usuarios */}
         <select
           className="border p-2"
           value={filtros.usuario_id}
@@ -454,13 +442,12 @@ export default function MovimientosEmpleadosPage() {
               <th className="p-2 text-left">Usuario</th>
               <th className="p-2 text-left">Referencia</th>
               <th className="p-2 text-left">Detalle</th>
-              <th className="p-2 text-left">Fuente</th>
             </tr>
           </thead>
           <tbody>
             {itemsFiltrados.length === 0 ? (
               <tr>
-                <td className="p-4 text-gray-500" colSpan={7}>
+                <td className="p-4 text-gray-500" colSpan={6}>
                   {loading ? 'Cargando…' : 'No hay movimientos con esos filtros.'}
                 </td>
               </tr>
@@ -473,15 +460,12 @@ export default function MovimientosEmpleadosPage() {
                   <td className="p-2 break-all">{it.usuario_label}</td>
                   <td className="p-2 break-all">{it.referencia}</td>
                   <td className="p-2">{it.detalle}</td>
-                  <td className="p-2">{it.fuente}</td>
                 </tr>
               ))
             )}
           </tbody>
         </table>
       </div>
-
-     
     </div>
   )
 }
