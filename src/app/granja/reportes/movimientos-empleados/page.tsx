@@ -6,57 +6,70 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import Image from 'next/image'
 import { supabase } from '@/lib/supabaseClient'
+import jsPDF from 'jspdf'
+import autoTable from 'jspdf-autotable'
 
 type Seccion = 'TODOS' | 'GRANJA' | 'VEHICULOS' | 'VENTAS' | 'EROGACIONES'
 
+type Profile = {
+  id: string // uuid
+  email: string | null
+}
+
 type MovItem = {
-  ts: string // ISO
+  ts: string
   seccion: 'GRANJA' | 'VEHICULOS' | 'VENTAS' | 'EROGACIONES'
   accion: string
   usuario: string
+  usuario_label: string
   referencia: string
   detalle: string
+  fuente: 'AUDIT' | 'DIRECTO'
 }
 
-const toISO = (d: any) => {
-  if (!d) return ''
-  try {
-    return new Date(d).toISOString()
-  } catch {
-    return ''
-  }
-}
-
-const clamp = (s: string) => (s || '').trim()
-
-const inicioDia = (yyyyMMdd: string) => `${yyyyMMdd}T00:00:00.000Z`
-const finDia = (yyyyMMdd: string) => `${yyyyMMdd}T23:59:59.999Z`
-
+const pad = (n: number) => (n < 10 ? `0${n}` : `${n}`)
 const fmtFecha = (iso: string) => {
   if (!iso) return '—'
   const d = new Date(iso)
   if (isNaN(d.getTime())) return String(iso).slice(0, 19)
-  const pad = (n: number) => (n < 10 ? `0${n}` : `${n}`)
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(
-    d.getMinutes()
-  )}`
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+const inicioDia = (yyyyMMdd: string) => `${yyyyMMdd}T00:00:00.000Z`
+const finDia = (yyyyMMdd: string) => `${yyyyMMdd}T23:59:59.999Z`
+const clamp = (s: string) => (s || '').trim()
+
+async function fetchLogoDataUrl(): Promise<string | null> {
+  try {
+    const res = await fetch('/logo.png')
+    const blob = await res.blob()
+    return await new Promise((resolve) => {
+      const reader = new FileReader()
+      reader.onload = () => resolve(String(reader.result))
+      reader.onerror = () => resolve(null)
+      reader.readAsDataURL(blob)
+    })
+  } catch {
+    return null
+  }
 }
 
 export default function MovimientosEmpleadosPage() {
   const [loading, setLoading] = useState(false)
+  const [generando, setGenerando] = useState(false)
+
+  const [profiles, setProfiles] = useState<Profile[]>([])
   const [items, setItems] = useState<MovItem[]>([])
 
   const [filtros, setFiltros] = useState({
     desde: '',
     hasta: '',
-    usuario: '',
     seccion: 'TODOS' as Seccion,
+    usuario_id: '', // dropdown (uuid)
   })
 
-  // defaults de fechas (últimos 7 días aprox)
+  // defaults fechas
   useEffect(() => {
     const today = new Date()
-    const pad = (n: number) => (n < 10 ? `0${n}` : `${n}`)
     const hasta = `${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(today.getDate())}`
     const d2 = new Date(today)
     d2.setDate(d2.getDate() - 7)
@@ -64,10 +77,30 @@ export default function MovimientosEmpleadosPage() {
     setFiltros((p) => ({ ...p, desde, hasta }))
   }, [])
 
-  const filtraPorUsuario = (u: string, filtro: string) => {
-    const f = clamp(filtro).toLowerCase()
-    if (!f) return true
-    return (u || '').toLowerCase().includes(f)
+  // cargar profiles (dropdown de usuarios)
+  useEffect(() => {
+    ;(async () => {
+      const { data, error } = await supabase.from('profiles').select('id, email').order('email', { ascending: true })
+      if (error) {
+        console.error('profiles error', error)
+        setProfiles([])
+        return
+      }
+      setProfiles((data || []) as Profile[])
+    })()
+  }, [])
+
+  const emailById = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const p of profiles) {
+      m.set(p.id, p.email || p.id)
+    }
+    return m
+  }, [profiles])
+
+  const userLabel = (uid: string) => {
+    if (!uid || uid === '—') return '—'
+    return emailById.get(uid) || uid
   }
 
   const cargar = useCallback(async () => {
@@ -75,21 +108,61 @@ export default function MovimientosEmpleadosPage() {
     try {
       const desdeISO = filtros.desde ? inicioDia(filtros.desde) : ''
       const hastaISO = filtros.hasta ? finDia(filtros.hasta) : ''
-
-      const want = filtros.seccion
-      const filtroUsuario = clamp(filtros.usuario)
+      const sec = filtros.seccion
+      const uid = clamp(filtros.usuario_id)
 
       const out: MovItem[] = []
 
       // =========================
-      // GRANJA: granja_movimientos
+      // 1) AUDIT LOG (INSERT/UPDATE/DELETE)
       // =========================
-      if (want === 'TODOS' || want === 'GRANJA') {
+      // Si no existe audit_log o no tienes permisos, simplemente no trae.
+      {
+        let q = supabase
+          .from('audit_log')
+          .select('at, table_name, action, record_id, section, actor, actor_text, snapshot')
+          .order('at', { ascending: false })
+          .limit(1000)
+
+        if (desdeISO) q = q.gte('at', desdeISO)
+        if (hastaISO) q = q.lte('at', hastaISO)
+        if (sec !== 'TODOS') q = q.eq('section', sec)
+        if (uid) q = q.eq('actor', uid)
+
+        const { data, error } = await q
+        if (error) {
+          // no bloquea el reporte
+          console.warn('audit_log no disponible o sin permisos', error)
+        } else {
+          for (const r of (data || []) as any[]) {
+            const seccion = (r.section || 'GRANJA') as MovItem['seccion']
+            const usuario = r.actor ? String(r.actor) : (r.actor_text ? String(r.actor_text) : '—')
+
+            out.push({
+              ts: String(r.at),
+              seccion,
+              accion: `${r.action} (${String(r.table_name || '').split('.').pop()})`,
+              usuario,
+              usuario_label: userLabel(usuario),
+              referencia: `${String(r.table_name || '').split('.').pop()}#${r.record_id || '—'}`,
+              detalle: r.snapshot ? JSON.stringify(r.snapshot).slice(0, 180) : '—',
+              fuente: 'AUDIT',
+            })
+          }
+        }
+      }
+
+      // =========================
+      // 2) DIRECTO (por si aún no está audit)
+      // =========================
+      // Aquí corregimos "erogaciones usuario —": usamos user_id o editado_por
+      const wantAll = sec === 'TODOS'
+
+      // GRANJA: granja_movimientos
+      if (wantAll || sec === 'GRANJA') {
         let q = supabase
           .from('granja_movimientos')
-          .select(
-            'id, fecha, tipo, ubicacion_id, cantidad, referencia_tabla, referencia_id, user_id, observaciones, created_at'
-          )
+          .select('id, fecha, tipo, ubicacion_id, cantidad, referencia_tabla, referencia_id, user_id, observaciones, created_at')
           .order('fecha', { ascending: false })
           .limit(500)
 
@@ -97,31 +170,27 @@ export default function MovimientosEmpleadosPage() {
         if (hastaISO) q = q.lte('fecha', hastaISO)
 
         const { data, error } = await q
-        if (error) {
-          console.error('Error granja_movimientos', error)
-        } else {
+        if (!error) {
           for (const r of (data || []) as any[]) {
             const usuario = r.user_id ? String(r.user_id) : '—'
-            if (!filtraPorUsuario(usuario, filtroUsuario)) continue
-
-            const ts = toISO(r.fecha || r.created_at) || String(r.fecha || r.created_at || '')
+            if (uid && usuario !== uid) continue
             out.push({
-              ts,
+              ts: String(r.fecha || r.created_at),
               seccion: 'GRANJA',
               accion: String(r.tipo || 'MOVIMIENTO'),
               usuario,
+              usuario_label: userLabel(usuario),
               referencia: `${r.referencia_tabla || 'granja_movimientos'}${r.referencia_id ? `#${r.referencia_id}` : `#${r.id}`}`,
               detalle: `Ubicación ${r.ubicacion_id ?? '—'} · Cant ${r.cantidad ?? '—'}${r.observaciones ? ` · ${r.observaciones}` : ''}`,
+              fuente: 'DIRECTO',
             })
           }
         }
       }
 
-      // =========================
-      // VEHÍCULOS: viajes / viaje_gastos / viaje_combustible
-      // =========================
-      if (want === 'TODOS' || want === 'VEHICULOS') {
-        // viajes
+      // VEHICULOS: viajes/viaje_gastos/viaje_combustible (estos usan editado_por texto, no uuid)
+      if (wantAll || sec === 'VEHICULOS') {
+        // viajes (solo creado/edición; deletes se ven en audit)
         {
           let q = supabase
             .from('viajes')
@@ -133,233 +202,114 @@ export default function MovimientosEmpleadosPage() {
           if (hastaISO) q = q.lte('creado_en', hastaISO)
 
           const { data, error } = await q
-          if (error) {
-            console.error('Error viajes', error)
-          } else {
+          if (!error) {
             for (const r of (data || []) as any[]) {
+              // aquí usuario es texto, el dropdown es uuid: no filtramos por uid en vehículos si no hay actor uuid
               const usuario = r.editado_por ? String(r.editado_por) : '—'
-              if (!filtraPorUsuario(usuario, filtroUsuario)) continue
-
-              const tsRaw = r.editado_en || r.creado_en
-              const ts = toISO(tsRaw) || String(tsRaw || '')
-              const accion = r.editado_en ? 'VIAJE editado' : 'VIAJE creado'
-
+              const ts = String(r.editado_en || r.creado_en || '')
               out.push({
                 ts,
                 seccion: 'VEHICULOS',
-                accion,
+                accion: r.editado_en ? 'UPDATE (viajes)' : 'INSERT (viajes)',
                 usuario,
+                usuario_label: usuario,
                 referencia: `viajes#${r.id}`,
-                detalle: `Vehículo ${r.vehiculo_id ?? '—'} · ${r.origen || '—'} → ${r.destino || '—'} · ${r.fecha_inicio || '—'} / ${r.fecha_fin || '—'} · Conductor ${r.conductor || '—'}`,
-              })
-            }
-          }
-        }
-
-        // viaje_gastos
-        {
-          let q = supabase
-            .from('viaje_gastos')
-            .select('id, viaje_id, fecha, descripcion, monto, proveedor, documento, creado_en, editado_en, editado_por')
-            .order('creado_en', { ascending: false })
-            .limit(400)
-
-          if (desdeISO) q = q.gte('creado_en', desdeISO)
-          if (hastaISO) q = q.lte('creado_en', hastaISO)
-
-          const { data, error } = await q
-          if (error) {
-            console.error('Error viaje_gastos', error)
-          } else {
-            for (const r of (data || []) as any[]) {
-              const usuario = r.editado_por ? String(r.editado_por) : '—'
-              if (!filtraPorUsuario(usuario, filtroUsuario)) continue
-
-              const tsRaw = r.editado_en || r.creado_en
-              const ts = toISO(tsRaw) || String(tsRaw || '')
-              const accion = r.editado_en ? 'GASTO editado' : 'GASTO creado'
-
-              out.push({
-                ts,
-                seccion: 'VEHICULOS',
-                accion,
-                usuario,
-                referencia: `viaje_gastos#${r.id} (viaje ${r.viaje_id})`,
-                detalle: `${r.fecha ? String(r.fecha).slice(0, 10) : '—'} · ${r.descripcion || '—'} · Q${Number(r.monto || 0).toFixed(2)}${r.proveedor ? ` · Prov: ${r.proveedor}` : ''}${r.documento ? ` · Doc: ${r.documento}` : ''}`,
-              })
-            }
-          }
-        }
-
-        // viaje_combustible
-        {
-          let q = supabase
-            .from('viaje_combustible')
-            .select('id, viaje_id, fecha, estacion, volumen_gal, precio_galon, subtotal, documento, creado_en, editado_en, editado_por')
-            .order('creado_en', { ascending: false })
-            .limit(400)
-
-          if (desdeISO) q = q.gte('creado_en', desdeISO)
-          if (hastaISO) q = q.lte('creado_en', hastaISO)
-
-          const { data, error } = await q
-          if (error) {
-            console.error('Error viaje_combustible', error)
-          } else {
-            for (const r of (data || []) as any[]) {
-              const usuario = r.editado_por ? String(r.editado_por) : '—'
-              if (!filtraPorUsuario(usuario, filtroUsuario)) continue
-
-              const tsRaw = r.editado_en || r.creado_en
-              const ts = toISO(tsRaw) || String(tsRaw || '')
-              const accion = r.editado_en ? 'COMBUSTIBLE editado' : 'COMBUSTIBLE creado'
-
-              out.push({
-                ts,
-                seccion: 'VEHICULOS',
-                accion,
-                usuario,
-                referencia: `viaje_combustible#${r.id} (viaje ${r.viaje_id})`,
-                detalle: `${r.fecha ? String(r.fecha).slice(0, 10) : '—'} · ${r.estacion || '—'} · ${Number(r.volumen_gal || 0).toFixed(
-                  2
-                )} gal × Q${Number(r.precio_galon || 0).toFixed(2)} = Q${Number(r.subtotal || 0).toFixed(2)}${r.documento ? ` · Doc: ${r.documento}` : ''}`,
+                detalle: `Vehículo ${r.vehiculo_id ?? '—'} · ${r.origen || '—'} → ${r.destino || '—'} · ${r.fecha_inicio || '—'} / ${r.fecha_fin || '—'}`,
+                fuente: 'DIRECTO',
               })
             }
           }
         }
       }
 
-      // =========================
-      // VENTAS: ventas / pagos_venta
-      // =========================
-      if (want === 'TODOS' || want === 'VENTAS') {
-        // ventas
-        {
-          let q = supabase
-            .from('ventas')
-            .select('id, fecha, cantidad, observaciones, user_id, created_at')
-            .order('created_at', { ascending: false })
-            .limit(400)
+      // VENTAS
+      if (wantAll || sec === 'VENTAS') {
+        let q = supabase
+          .from('ventas')
+          .select('id, fecha, cantidad, observaciones, user_id, created_at')
+          .order('created_at', { ascending: false })
+          .limit(500)
 
-          if (filtros.desde) q = q.gte('created_at', inicioDia(filtros.desde))
-          if (filtros.hasta) q = q.lte('created_at', finDia(filtros.hasta))
+        if (desdeISO) q = q.gte('created_at', desdeISO)
+        if (hastaISO) q = q.lte('created_at', hastaISO)
 
-          const { data, error } = await q
-          if (error) {
-            console.error('Error ventas', error)
-          } else {
-            for (const r of (data || []) as any[]) {
-              const usuario = r.user_id ? String(r.user_id) : '—'
-              if (!filtraPorUsuario(usuario, filtroUsuario)) continue
-
-              const ts = toISO(r.created_at) || String(r.created_at || '')
-              out.push({
-                ts,
-                seccion: 'VENTAS',
-                accion: 'VENTA creada',
-                usuario,
-                referencia: `ventas#${r.id}`,
-                detalle: `${r.fecha || '—'} · Total Q${Number(r.cantidad || 0).toFixed(2)}${r.observaciones ? ` · ${r.observaciones}` : ''}`,
-              })
-            }
-          }
-        }
-
-        // pagos_venta
-        {
-          let q = supabase
-            .from('pagos_venta')
-            .select('id, cliente_id, venta_id, fecha, monto, documento, observaciones, user_id, created_at')
-            .order('created_at', { ascending: false })
-            .limit(400)
-
-          if (filtros.desde) q = q.gte('created_at', inicioDia(filtros.desde))
-          if (filtros.hasta) q = q.lte('created_at', finDia(filtros.hasta))
-
-          const { data, error } = await q
-          if (error) {
-            console.error('Error pagos_venta', error)
-          } else {
-            for (const r of (data || []) as any[]) {
-              const usuario = r.user_id ? String(r.user_id) : '—'
-              if (!filtraPorUsuario(usuario, filtroUsuario)) continue
-
-              const ts = toISO(r.created_at) || String(r.created_at || '')
-              out.push({
-                ts,
-                seccion: 'VENTAS',
-                accion: 'PAGO registrado',
-                usuario,
-                referencia: `pagos_venta#${r.id}${r.venta_id ? ` (venta ${r.venta_id})` : ''}`,
-                detalle: `${r.fecha || '—'} · Monto Q${Number(r.monto || 0).toFixed(2)}${r.documento ? ` · Doc: ${r.documento}` : ''}${
-                  r.observaciones ? ` · ${r.observaciones}` : ''
-                }`,
-              })
-            }
+        const { data, error } = await q
+        if (!error) {
+          for (const r of (data || []) as any[]) {
+            const usuario = r.user_id ? String(r.user_id) : '—'
+            if (uid && usuario !== uid) continue
+            out.push({
+              ts: String(r.created_at || ''),
+              seccion: 'VENTAS',
+              accion: 'INSERT (ventas)',
+              usuario,
+              usuario_label: userLabel(usuario),
+              referencia: `ventas#${r.id}`,
+              detalle: `${r.fecha || '—'} · Total Q${Number(r.cantidad || 0).toFixed(2)}${r.observaciones ? ` · ${r.observaciones}` : ''}`,
+              fuente: 'DIRECTO',
+            })
           }
         }
       }
 
-      // =========================
-      // EROGACIONES: erogaciones (creadas/ editadas)
-      // =========================
-      if (want === 'TODOS' || want === 'EROGACIONES') {
+      // EROGACIONES (aquí arreglamos el usuario)
+      if (wantAll || sec === 'EROGACIONES') {
         let q = supabase
           .from('erogaciones')
           .select('id, fecha, cantidad, observaciones, user_id, created_at, editado_en, editado_por')
           .order('created_at', { ascending: false })
-          .limit(500)
+          .limit(800)
 
-        if (filtros.desde) q = q.gte('created_at', inicioDia(filtros.desde))
-        if (filtros.hasta) q = q.lte('created_at', finDia(filtros.hasta))
+        if (desdeISO) q = q.gte('created_at', desdeISO)
+        if (hastaISO) q = q.lte('created_at', hastaISO)
 
         const { data, error } = await q
-        if (error) {
-          console.error('Error erogaciones', error)
-        } else {
+        if (!error) {
           for (const r of (data || []) as any[]) {
-            // creacion
-            {
-              const usuario = r.user_id ? String(r.user_id) : '—'
-              if (filtraPorUsuario(usuario, filtroUsuario)) {
-                const ts = toISO(r.created_at) || String(r.created_at || '')
-                out.push({
-                  ts,
-                  seccion: 'EROGACIONES',
-                  accion: 'EROGACIÓN creada',
-                  usuario,
-                  referencia: `erogaciones#${r.id}`,
-                  detalle: `${r.fecha || '—'} · Total Q${Number(r.cantidad || 0).toFixed(2)}${r.observaciones ? ` · ${r.observaciones}` : ''}`,
-                })
-              }
+            // CREACIÓN: usa user_id si existe, si no, muestra editado_por si existe, si no "—"
+            const usuarioCre = r.user_id ? String(r.user_id) : (r.editado_por ? String(r.editado_por) : '—')
+            if (uid && usuarioCre !== uid) {
+              // si filtras por usuario, y no coincide, saltamos
+              // (nota: si tu editado_por contiene email, no coincidirá con uid; para eso está audit/profiles)
+            } else {
+              out.push({
+                ts: String(r.created_at || ''),
+                seccion: 'EROGACIONES',
+                accion: 'INSERT (erogaciones)',
+                usuario: usuarioCre,
+                usuario_label: userLabel(usuarioCre),
+                referencia: `erogaciones#${r.id}`,
+                detalle: `${r.fecha || '—'} · Total Q${Number(r.cantidad || 0).toFixed(2)}${r.observaciones ? ` · ${r.observaciones}` : ''}`,
+                fuente: 'DIRECTO',
+              })
             }
 
-            // edición (si existe)
+            // EDICIÓN (si existe)
             if (r.editado_en) {
-              const usuario = r.editado_por ? String(r.editado_por) : '—'
-              if (!filtraPorUsuario(usuario, filtroUsuario)) continue
-
-              const ts = toISO(r.editado_en) || String(r.editado_en || '')
+              const usuarioEd = r.editado_por ? String(r.editado_por) : (r.user_id ? String(r.user_id) : '—')
+              if (uid && usuarioEd !== uid) continue
               out.push({
-                ts,
+                ts: String(r.editado_en),
                 seccion: 'EROGACIONES',
-                accion: 'EROGACIÓN editada',
-                usuario,
+                accion: 'UPDATE (erogaciones)',
+                usuario: usuarioEd,
+                usuario_label: userLabel(usuarioEd),
                 referencia: `erogaciones#${r.id}`,
                 detalle: `Editado · ${r.fecha || '—'} · Total Q${Number(r.cantidad || 0).toFixed(2)}${r.observaciones ? ` · ${r.observaciones}` : ''}`,
+                fuente: 'DIRECTO',
               })
             }
           }
         }
       }
 
-      // Ordenar desc por ts
+      // ordenar desc por fecha
       out.sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0))
       setItems(out)
     } finally {
       setLoading(false)
     }
-  }, [filtros.desde, filtros.hasta, filtros.usuario, filtros.seccion])
+  }, [filtros.desde, filtros.hasta, filtros.seccion, filtros.usuario_id, emailById])
 
   useEffect(() => {
     if (filtros.desde && filtros.hasta) cargar()
@@ -367,8 +317,55 @@ export default function MovimientosEmpleadosPage() {
 
   const itemsFiltrados = useMemo(() => {
     const sec = filtros.seccion
-    return items.filter((x) => (sec === 'TODOS' ? true : x.seccion === sec))
+    if (sec === 'TODOS') return items
+    return items.filter((x) => x.seccion === sec)
   }, [items, filtros.seccion])
+
+  const generarPDF = async () => {
+    setGenerando(true)
+    try {
+      const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' })
+      const logo = await fetchLogoDataUrl()
+      if (logo) doc.addImage(logo, 'PNG', 10, 8, 30, 12)
+
+      doc.setFontSize(14)
+      doc.text('Reporte de movimientos de empleados', 45, 15)
+
+      doc.setFontSize(10)
+      const filtroUsuarioTxt = filtros.usuario_id ? userLabel(filtros.usuario_id) : 'Todos'
+      doc.text(`Desde: ${filtros.desde || '—'}   Hasta: ${filtros.hasta || '—'}   Sección: ${filtros.seccion}   Usuario: ${filtroUsuarioTxt}`, 10, 25)
+
+      autoTable(doc, {
+        startY: 30,
+        head: [['Fecha/Hora', 'Sección', 'Acción', 'Usuario', 'Referencia', 'Detalle', 'Fuente']],
+        body: itemsFiltrados.slice(0, 1200).map((it) => [
+          fmtFecha(it.ts),
+          it.seccion,
+          it.accion,
+          it.usuario_label,
+          it.referencia,
+          it.detalle,
+          it.fuente,
+        ]),
+        styles: { fontSize: 8, cellPadding: 2 },
+        columnStyles: {
+          0: { cellWidth: 30 },
+          1: { cellWidth: 20 },
+          2: { cellWidth: 28 },
+          3: { cellWidth: 45 },
+          4: { cellWidth: 40 },
+          5: { cellWidth: 110 },
+          6: { cellWidth: 18 },
+        },
+      })
+
+      const now = new Date()
+      const name = `reporte_movimientos_empleados_${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}.pdf`
+      doc.save(name)
+    } finally {
+      setGenerando(false)
+    }
+  }
 
   return (
     <div className="p-6 max-w-7xl mx-auto">
@@ -377,7 +374,7 @@ export default function MovimientosEmpleadosPage() {
       </div>
 
       <div className="flex items-center gap-3 mb-2">
-        <h1 className="text-2xl font-bold">👷 Reporte de movimientos de empleados</h1>
+        <h1 className="text-2xl font-bold">👷 Movimientos de empleados</h1>
         <Link
           href="/granja/reportes"
           className="ml-auto inline-block bg-slate-700 hover:bg-slate-800 text-white px-4 py-2 rounded text-sm"
@@ -387,11 +384,11 @@ export default function MovimientosEmpleadosPage() {
       </div>
 
       <p className="text-sm text-gray-600 mb-4">
-        Consolida actividad de granja, vehículos, ventas y erogaciones. Filtra por fecha, usuario y sección.
+        Incluye registros directos y, si está activo, <b>audit_log</b> (INSERT/UPDATE/DELETE).
       </p>
 
       {/* Filtros */}
-      <div className="grid grid-cols-1 md:grid-cols-5 gap-3 mb-4">
+      <div className="grid grid-cols-1 md:grid-cols-6 gap-3 mb-4">
         <input
           type="date"
           className="border p-2"
@@ -410,19 +407,26 @@ export default function MovimientosEmpleadosPage() {
           value={filtros.seccion}
           onChange={(e) => setFiltros((p) => ({ ...p, seccion: e.target.value as Seccion }))}
         >
-          <option value="TODOS">Todas las secciones</option>
+          <option value="TODOS">Todas</option>
           <option value="GRANJA">Granja</option>
           <option value="VEHICULOS">Vehículos</option>
           <option value="VENTAS">Ventas</option>
           <option value="EROGACIONES">Erogaciones</option>
         </select>
 
-        <input
+        {/* ✅ dropdown usuarios */}
+        <select
           className="border p-2"
-          placeholder="Usuario (uuid, nombre, email, etc.)"
-          value={filtros.usuario}
-          onChange={(e) => setFiltros((p) => ({ ...p, usuario: e.target.value }))}
-        />
+          value={filtros.usuario_id}
+          onChange={(e) => setFiltros((p) => ({ ...p, usuario_id: e.target.value }))}
+        >
+          <option value="">Todos los usuarios</option>
+          {profiles.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.email || p.id}
+            </option>
+          ))}
+        </select>
 
         <button
           onClick={cargar}
@@ -430,6 +434,14 @@ export default function MovimientosEmpleadosPage() {
           className="bg-teal-700 hover:bg-teal-800 disabled:opacity-60 text-white px-4 py-2 rounded"
         >
           {loading ? 'Cargando…' : '🔎 Buscar'}
+        </button>
+
+        <button
+          onClick={generarPDF}
+          disabled={generando || itemsFiltrados.length === 0}
+          className="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white px-4 py-2 rounded"
+        >
+          {generando ? 'Generando…' : '📄 Imprimir PDF'}
         </button>
       </div>
 
@@ -444,12 +456,13 @@ export default function MovimientosEmpleadosPage() {
               <th className="p-2 text-left">Usuario</th>
               <th className="p-2 text-left">Referencia</th>
               <th className="p-2 text-left">Detalle</th>
+              <th className="p-2 text-left">Fuente</th>
             </tr>
           </thead>
           <tbody>
             {itemsFiltrados.length === 0 ? (
               <tr>
-                <td className="p-4 text-gray-500" colSpan={6}>
+                <td className="p-4 text-gray-500" colSpan={7}>
                   {loading ? 'Cargando…' : 'No hay movimientos con esos filtros.'}
                 </td>
               </tr>
@@ -459,9 +472,10 @@ export default function MovimientosEmpleadosPage() {
                   <td className="p-2 whitespace-nowrap">{fmtFecha(it.ts)}</td>
                   <td className="p-2">{it.seccion}</td>
                   <td className="p-2">{it.accion}</td>
-                  <td className="p-2 break-all">{it.usuario}</td>
+                  <td className="p-2 break-all">{it.usuario_label}</td>
                   <td className="p-2 break-all">{it.referencia}</td>
                   <td className="p-2">{it.detalle}</td>
+                  <td className="p-2">{it.fuente}</td>
                 </tr>
               ))
             )}
@@ -470,9 +484,9 @@ export default function MovimientosEmpleadosPage() {
       </div>
 
       <div className="mt-3 text-xs text-gray-500">
-        Nota: “Usuario” viene de <b>user_id</b> (uuid) o <b>editado_por</b> (texto) según la tabla.
-        Si quieres mostrar el email real del usuario, hay que crear una tabla “perfiles” (user_id → email/nombre)
-        o usar una vista/función con permisos.
+        Si ves “—” en usuario de erogaciones es porque el registro tiene <b>user_id</b> nulo y/o <b>editado_por</b> vacío.
+        Con <b>profiles</b> se muestran emails para user_id.
+        Para ver eliminaciones sí o sí necesitas <b>audit_log</b>.
       </div>
     </div>
   )
