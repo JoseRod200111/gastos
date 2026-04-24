@@ -16,7 +16,12 @@ type Ubicacion = {
 type StockRow = {
   ubicacion_id: number
   cantidad: number | null
-  tipo: 'ENTRADA_COMPRA' | 'ENTRADA_PARTO' | 'SALIDA_VENTA' | 'SALIDA_MUERTE' | 'AJUSTE'
+  tipo:
+    | 'ENTRADA_COMPRA'
+    | 'ENTRADA_PARTO'
+    | 'SALIDA_VENTA'
+    | 'SALIDA_MUERTE'
+    | 'AJUSTE'
   fecha?: string
 }
 
@@ -27,6 +32,9 @@ const toNum = (v: any) => {
   return Number.isFinite(n) ? n : 0
 }
 
+const absNum = (v: any) => Math.abs(toNum(v))
+
+// Fin del día en UTC (para filtrar e insertar dentro del corte)
 const finDeDiaUTC = (yyyyMMdd: string) => `${yyyyMMdd}T23:59:59.999Z`
 
 async function fetchLogoDataUrl(): Promise<string | null> {
@@ -108,7 +116,11 @@ function generarPdfInventarioPorCuadros(params: {
 
   const now = new Date()
   const pad = (n: number) => (n < 10 ? `0${n}` : `${n}`)
-  const name = `reporte_inventario_${fechaCorte}_${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}.pdf`
+  const name = `reporte_inventario_${fechaCorte}_${now.getFullYear()}${pad(
+    now.getMonth() + 1
+  )}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(
+    now.getSeconds()
+  )}.pdf`
   doc.save(name)
 }
 
@@ -120,7 +132,6 @@ export default function GranjaInventarioPage() {
   const [guardando, setGuardando] = useState(false)
   const [generandoPdf, setGenerandoPdf] = useState(false)
 
-  // ✅ nuevo: fecha
   const [fechaCorte, setFechaCorte] = useState<string>('')
 
   useEffect(() => {
@@ -137,7 +148,6 @@ export default function GranjaInventarioPage() {
       return u.nombre.split(' - ')[0] || 'Otros'
     }
     if (u.nombre) return u.nombre
-    // heuristica por codigo
     if (u.codigo.startsWith('TR')) return 'Galera'
     if (u.codigo.startsWith('M1')) return 'Maternidad 1'
     if (u.codigo.startsWith('M2')) return 'Maternidad 2'
@@ -155,14 +165,12 @@ export default function GranjaInventarioPage() {
       if (!g[nombreGrupo]) g[nombreGrupo] = []
       g[nombreGrupo].push(u)
     }
-    // ordenar ubicaciones dentro de cada grupo por codigo
     for (const key of Object.keys(g)) {
       g[key].sort((a, b) => a.codigo.localeCompare(b.codigo, 'es'))
     }
     return g
   }, [ubicaciones])
 
-  // Totales en pantalla
   const totalGeneral = useMemo(() => {
     return Object.values(stockTeorico).reduce((a, n) => a + toNum(n), 0)
   }, [stockTeorico])
@@ -180,7 +188,6 @@ export default function GranjaInventarioPage() {
   const cargarDatos = useCallback(async () => {
     setLoading(true)
     try {
-      // 1) ubicaciones activas
       const { data: ubicData, error: ubicError } = await supabase
         .from('granja_ubicaciones')
         .select('id, codigo, nombre, activo')
@@ -201,7 +208,6 @@ export default function GranjaInventarioPage() {
         return
       }
 
-      // 2) inventario teorico por movimientos (hasta fechaCorte)
       let movQuery = supabase
         .from('granja_movimientos')
         .select('ubicacion_id, cantidad, tipo, fecha')
@@ -220,21 +226,24 @@ export default function GranjaInventarioPage() {
       const mapa: StockMap = {}
       ;(movData as StockRow[]).forEach((row) => {
         const id = row.ubicacion_id
-        const cant = toNum(row.cantidad || 0)
-        if (!mapa[id]) mapa[id] = 0
+        if (mapa[id] === undefined) mapa[id] = 0
 
-        // ✅ salidas RESTAN, entradas y ajustes SUMAN
-        if (row.tipo === 'SALIDA_VENTA' || row.tipo === 'SALIDA_MUERTE') {
-          mapa[id] -= cant
+        // Reglas:
+        // - ENTRADAS: suman ABS(cantidad)
+        // - SALIDAS: restan ABS(cantidad)
+        // - AJUSTE: se aplica tal cual (puede ser + o -)
+        if (row.tipo === 'AJUSTE') {
+          mapa[id] += toNum(row.cantidad)
+        } else if (row.tipo === 'SALIDA_VENTA' || row.tipo === 'SALIDA_MUERTE') {
+          mapa[id] -= absNum(row.cantidad)
         } else {
-          // ENTRADA_COMPRA, ENTRADA_PARTO, AJUSTE
-          mapa[id] += cant
+          // ENTRADA_COMPRA / ENTRADA_PARTO
+          mapa[id] += absNum(row.cantidad)
         }
       })
 
       setStockTeorico(mapa)
 
-      // 3) valores editados iniciales (como strings en inputs)
       const inicial: Record<number, string> = {}
       for (const u of ubicList) {
         const cant = mapa[u.id] ?? 0
@@ -249,8 +258,6 @@ export default function GranjaInventarioPage() {
   useEffect(() => {
     if (fechaCorte) cargarDatos()
   }, [cargarDatos, fechaCorte])
-
-  // ----------- cambios en inputs -----------
 
   const actualizarValor = (idUbicacion: number, valor: string) => {
     setValoresEditados((prev) => ({
@@ -274,14 +281,13 @@ export default function GranjaInventarioPage() {
     setGenerandoPdf(true)
     try {
       const logo = await fetchLogoDataUrl()
+      void logo
+
       generarPdfInventarioPorCuadros({
         fechaCorte,
         grupos,
         stockTeorico,
       })
-
-      // (logo se usa dentro del helper si quieres; aquí lo dejamos listo por si luego deseas integrarlo arriba)
-      void logo
     } finally {
       setGenerandoPdf(false)
     }
@@ -292,21 +298,28 @@ export default function GranjaInventarioPage() {
   const guardarInventario = async () => {
     if (guardando) return
 
+    if (!fechaCorte) {
+      alert('Selecciona una fecha de corte antes de guardar.')
+      return
+    }
+
     setGuardando(true)
     try {
-      // obtener usuario actual para registrar quien ajusta
       const { data: userData } = await supabase.auth.getUser()
       const userId = userData?.user?.id ?? null
 
       const ajustes: {
         ubicacion_id: number
-        tipo: string
+        tipo: 'AJUSTE'
         cantidad: number
         referencia_tabla: string
         referencia_id: number | null
         observaciones: string
         user_id: string | null
+        fecha: string
       }[] = []
+
+      const fechaMovimiento = finDeDiaUTC(fechaCorte) // ✅ clave: que caiga dentro del corte
 
       for (const u of ubicaciones) {
         const original = stockTeorico[u.id] ?? 0
@@ -315,7 +328,6 @@ export default function GranjaInventarioPage() {
 
         if (Number.isNaN(nuevoNumero)) {
           alert(`El valor para la ubicación ${u.codigo} no es un número válido.`)
-          setGuardando(false)
           return
         }
 
@@ -324,18 +336,18 @@ export default function GranjaInventarioPage() {
           ajustes.push({
             ubicacion_id: u.id,
             tipo: 'AJUSTE',
-            cantidad: diff, // positivo agrega, negativo descuenta
+            cantidad: diff, // + sube, - baja
             referencia_tabla: 'INVENTARIO_MANUAL',
             referencia_id: null,
-            observaciones: `Ajuste manual desde pantalla de inventario (corte ${fechaCorte || '—'})`,
+            observaciones: `Ajuste manual desde pantalla de inventario (corte ${fechaCorte})`,
             user_id: userId,
+            fecha: fechaMovimiento, // ✅ para que el filtro lo incluya
           })
         }
       }
 
       if (ajustes.length === 0) {
         alert('No hay cambios que guardar.')
-        setGuardando(false)
         return
       }
 
@@ -344,7 +356,6 @@ export default function GranjaInventarioPage() {
       if (insertError) {
         console.error('Error registrando ajustes', insertError)
         alert('Ocurrió un error al guardar los ajustes de inventario.')
-        setGuardando(false)
         return
       }
 
@@ -359,7 +370,6 @@ export default function GranjaInventarioPage() {
 
   return (
     <div className="p-6 max-w-6xl mx-auto">
-      {/* encabezado */}
       <div className="mb-6 flex items-center gap-3">
         <img src="/logo.png" alt="Logo" className="h-10" />
         <div>
@@ -376,7 +386,6 @@ export default function GranjaInventarioPage() {
         </Link>
       </div>
 
-      {/* barra superior: fecha + botones */}
       <div className="mb-4 flex flex-wrap items-end gap-3 justify-between">
         <div className="flex flex-wrap items-end gap-3">
           <div>
@@ -423,7 +432,6 @@ export default function GranjaInventarioPage() {
         </div>
       </div>
 
-      {/* Totales */}
       <div className="grid md:grid-cols-4 gap-3 mb-5">
         <div className="border rounded p-3 bg-white">
           <div className="text-xs text-gray-500">Fecha</div>
@@ -438,17 +446,18 @@ export default function GranjaInventarioPage() {
         <div className="border rounded p-3 bg-white md:col-span-2">
           <div className="text-xs text-gray-500">Totales por grupo</div>
           <div className="text-xs text-gray-700 flex flex-wrap gap-x-4 gap-y-1 mt-1">
-            {Object.entries(totalesPorGrupo).slice(0, 6).map(([g, t]) => (
-              <span key={g}>
-                <span className="font-semibold">{g}:</span> {t}
-              </span>
-            ))}
+            {Object.entries(totalesPorGrupo)
+              .slice(0, 6)
+              .map(([g, t]) => (
+                <span key={g}>
+                  <span className="font-semibold">{g}:</span> {t}
+                </span>
+              ))}
             {Object.keys(totalesPorGrupo).length > 6 ? <span className="text-gray-500">…</span> : null}
           </div>
         </div>
       </div>
 
-      {/* grid de tarjetas de inventario */}
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         {Object.entries(grupos).map(([grupo, lista]) => (
           <div key={grupo} className="border rounded-lg bg-white shadow-sm p-3">
