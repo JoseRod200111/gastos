@@ -1,7 +1,7 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { supabase } from '@/lib/supabaseClient'
 
 type Ubicacion = {
@@ -13,8 +13,8 @@ type Ubicacion = {
 type Lote = {
   id: number
   codigo: string
-  fecha: string
-  tipo_origen: string
+  fecha: string | null
+  tipo_origen: string | null
 }
 
 type Baja = {
@@ -27,25 +27,29 @@ type Baja = {
   machos: number | null
   motivo: string | null
   foto_url: string | null
-  observaciones?: string | null
-  reportado_por?: string | null
+  observaciones: string | null
+  reportado_por: string | null
 }
 
-const hoyISO = () => new Date().toISOString().slice(0, 10)
+const hoyISO = () => {
+  const d = new Date()
+  const yyyy = d.getFullYear()
+  const mm = String(d.getMonth() + 1).padStart(2, '0')
+  const dd = String(d.getDate()).padStart(2, '0')
+  return `${yyyy}-${mm}-${dd}`
+}
 
-// Evita que el timestamp se “mueva” por zona horaria.
-// Guardamos al mediodía local para que el DATE coincida con el corte del inventario.
-const fechaISOaTimestampMediodia = (fechaISO: string) => {
-  // fechaISO = "YYYY-MM-DD"
-  // Creamos Date local al mediodía y lo pasamos a ISO UTC.
-  const d = new Date(`${fechaISO}T12:00:00`)
-  return d.toISOString()
+// Para el corte del inventario: guardamos el movimiento con timestamp del mismo día (mediodía UTC)
+const fechaISOaTimestampMediodia = (iso: string) => {
+  // iso: YYYY-MM-DD
+  return new Date(`${iso}T12:00:00.000Z`).toISOString()
 }
 
 export default function GranjaSalidaMuertePage() {
   const [ubicaciones, setUbicaciones] = useState<Ubicacion[]>([])
   const [lotes, setLotes] = useState<Lote[]>([])
   const [bajasRecientes, setBajasRecientes] = useState<Baja[]>([])
+
   const [loading, setLoading] = useState(false)
   const [guardando, setGuardando] = useState(false)
   const [eliminandoId, setEliminandoId] = useState<number | null>(null)
@@ -87,7 +91,6 @@ export default function GranjaSalidaMuertePage() {
     return m
   }, [lotes])
 
-  // --------- carga de datos ---------
   const cargarDatos = useCallback(async () => {
     setLoading(true)
     try {
@@ -101,18 +104,20 @@ export default function GranjaSalidaMuertePage() {
           .select('id, codigo, nombre')
           .eq('activo', true)
           .order('codigo', { ascending: true }),
-        // OJO: granja_lotes no tiene "activo" según tu esquema.
+
+        // ⚠️ granja_lotes NO tiene "activo"
         supabase
           .from('granja_lotes')
           .select('id, codigo, fecha, tipo_origen')
           .order('fecha', { ascending: false })
-          .limit(150),
+          .limit(200),
+
         supabase
           .from('granja_bajas_muerte')
           .select(
             'id, fecha, ubicacion_id, lote_id, cantidad, hembras, machos, motivo, foto_url, observaciones, reportado_por'
           )
-          .order('fecha', { ascending: false })
+          .order('id', { ascending: false })
           .limit(30),
       ])
 
@@ -123,17 +128,25 @@ export default function GranjaSalidaMuertePage() {
       setUbicaciones((ubicData as Ubicacion[]) || [])
       setLotes((loteData as Lote[]) || [])
       setBajasRecientes((bajasData as Baja[]) || [])
+
+      // set default ubicacion si está vacío
+      const u0 = (ubicData as Ubicacion[])?.[0]
+      if (!form.ubicacion_id && u0?.id) {
+        setForm((prev) => ({ ...prev, ubicacion_id: String(u0.id) }))
+      }
     } finally {
       setLoading(false)
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   useEffect(() => {
     cargarDatos()
   }, [cargarDatos])
 
-  // --------- guardar baja por muerte ---------
   const guardarBaja = async () => {
+    if (guardando) return
+
     if (!form.fecha || !form.ubicacion_id || !form.cantidad) {
       alert('Fecha, ubicación y cantidad son obligatorios.')
       return
@@ -177,7 +190,7 @@ export default function GranjaSalidaMuertePage() {
           observaciones: form.observaciones?.trim()
             ? form.observaciones.trim()
             : null,
-          reportado_por: userId,
+          reportado_por: userId, // por si RLS lo exige
         })
         .select('id')
         .single()
@@ -188,19 +201,19 @@ export default function GranjaSalidaMuertePage() {
         return
       }
 
-      // 2) movimiento (SALIDA_MUERTE)
-      // IMPORTANTÍSIMO: mandar "fecha" basado en form.fecha, para que el corte del inventario lo incluya.
+      // 2) movimiento de inventario
+      // ✅ IMPORTANTE: guardar cantidad POSITIVA y dejar que el inventario reste por tipo.
       const { error: movErr } = await supabase.from('granja_movimientos').insert({
         fecha: fechaISOaTimestampMediodia(form.fecha),
         ubicacion_id: Number(form.ubicacion_id),
         tipo: 'SALIDA_MUERTE',
         lote_id: form.lote_id ? Number(form.lote_id) : null,
-        cantidad: -cantidad, // negativo para debitar
+        cantidad: cantidad, // <-- POSITIVO (inventario lo resta por tipo)
         hembras: hembrasNum,
         machos: machosNum,
         referencia_tabla: 'granja_bajas_muerte',
         referencia_id: bajaInsertada.id,
-        user_id: userId,
+        user_id: userId, // por si RLS lo exige
         observaciones: form.motivo?.trim()
           ? `Salida por muerte: ${form.motivo.trim()}`
           : 'Salida de cerdos por muerte',
@@ -222,14 +235,14 @@ export default function GranjaSalidaMuertePage() {
     }
   }
 
-  // --------- eliminar baja (y revertir inventario) ---------
   const eliminarBaja = async (baja: Baja) => {
+    if (eliminandoId) return
     if (!confirm(`¿Eliminar la baja #${baja.id}? Esto revertirá el inventario.`))
       return
 
     setEliminandoId(baja.id)
     try {
-      // 1) borrar movimientos ligados a esta baja (para “revertir” inventario)
+      // 1) borrar movimientos ligados a esta baja (revierte inventario)
       const { error: delMovErr } = await supabase
         .from('granja_movimientos')
         .delete()
@@ -256,8 +269,6 @@ export default function GranjaSalidaMuertePage() {
         alert(
           'Se eliminó el movimiento de inventario, pero no se pudo eliminar la baja.'
         )
-        // En este caso inventario ya está revertido; la baja quedó “huérfana”.
-        // Si quieres, puedo hacer que reinserte el movimiento como rollback.
         return
       }
 
@@ -268,10 +279,8 @@ export default function GranjaSalidaMuertePage() {
     }
   }
 
-  // --------- UI ---------
   return (
     <div className="p-6 max-w-5xl mx-auto">
-      {/* encabezado */}
       <div className="mb-6 flex items-center gap-3">
         <img src="/logo.png" alt="Logo" className="h-10" />
         <div>
@@ -289,7 +298,7 @@ export default function GranjaSalidaMuertePage() {
       </div>
 
       <div className="grid gap-6 md:grid-cols-2">
-        {/* -------- formulario -------- */}
+        {/* Formulario */}
         <div className="border rounded-lg p-4 bg-white shadow-sm">
           <h2 className="font-semibold mb-3">Nueva baja por muerte</h2>
 
@@ -302,9 +311,11 @@ export default function GranjaSalidaMuertePage() {
               <label className="block text-xs font-semibold mb-1">Fecha</label>
               <input
                 type="date"
-                className="border rounded w-full p-2 text-sm"
+                className="border rounded w-full px-2 py-2 text-sm"
                 value={form.fecha}
-                onChange={(e) => setForm({ ...form, fecha: e.target.value })}
+                onChange={(e) =>
+                  setForm((p) => ({ ...p, fecha: e.target.value }))
+                }
               />
             </div>
 
@@ -313,13 +324,13 @@ export default function GranjaSalidaMuertePage() {
                 Ubicación (tramo o jaula)
               </label>
               <select
-                className="border rounded w-full p-2 text-sm"
+                className="border rounded w-full px-2 py-2 text-sm"
                 value={form.ubicacion_id}
                 onChange={(e) =>
-                  setForm({ ...form, ubicacion_id: e.target.value })
+                  setForm((p) => ({ ...p, ubicacion_id: e.target.value }))
                 }
               >
-                <option value="">Seleccione una ubicación</option>
+                <option value="">— Selecciona —</option>
                 {ubicaciones.map((u) => (
                   <option key={u.id} value={u.id}>
                     {u.codigo}
@@ -329,11 +340,7 @@ export default function GranjaSalidaMuertePage() {
               </select>
               {form.ubicacion_id ? (
                 <div className="text-[11px] text-gray-500 mt-1">
-                  Seleccionado:{' '}
-                  <span className="font-semibold">
-                    {ubicMap.get(Number(form.ubicacion_id))?.codigo ??
-                      form.ubicacion_id}
-                  </span>
+                  Seleccionado: {ubicMap.get(Number(form.ubicacion_id))?.codigo}
                 </div>
               ) : null}
             </div>
@@ -343,14 +350,16 @@ export default function GranjaSalidaMuertePage() {
                 Lote (opcional)
               </label>
               <select
-                className="border rounded w-full p-2 text-sm"
+                className="border rounded w-full px-2 py-2 text-sm"
                 value={form.lote_id}
-                onChange={(e) => setForm({ ...form, lote_id: e.target.value })}
+                onChange={(e) =>
+                  setForm((p) => ({ ...p, lote_id: e.target.value }))
+                }
               >
                 <option value="">Sin lote específico</option>
                 {lotes.map((l) => (
                   <option key={l.id} value={l.id}>
-                    {l.codigo} ({l.fecha})
+                    {l.codigo}
                   </option>
                 ))}
               </select>
@@ -362,9 +371,11 @@ export default function GranjaSalidaMuertePage() {
               </label>
               <input
                 type="number"
-                className="border rounded w-full p-2 text-sm"
+                className="border rounded w-full px-2 py-2 text-sm"
                 value={form.cantidad}
-                onChange={(e) => setForm({ ...form, cantidad: e.target.value })}
+                onChange={(e) =>
+                  setForm((p) => ({ ...p, cantidad: e.target.value }))
+                }
               />
             </div>
 
@@ -374,9 +385,11 @@ export default function GranjaSalidaMuertePage() {
               </label>
               <input
                 type="number"
-                className="border rounded w-full p-2 text-sm"
+                className="border rounded w-full px-2 py-2 text-sm"
                 value={form.hembras}
-                onChange={(e) => setForm({ ...form, hembras: e.target.value })}
+                onChange={(e) =>
+                  setForm((p) => ({ ...p, hembras: e.target.value }))
+                }
               />
             </div>
 
@@ -386,19 +399,23 @@ export default function GranjaSalidaMuertePage() {
               </label>
               <input
                 type="number"
-                className="border rounded w-full p-2 text-sm"
+                className="border rounded w-full px-2 py-2 text-sm"
                 value={form.machos}
-                onChange={(e) => setForm({ ...form, machos: e.target.value })}
+                onChange={(e) =>
+                  setForm((p) => ({ ...p, machos: e.target.value }))
+                }
               />
             </div>
 
             <div className="col-span-2">
               <label className="block text-xs font-semibold mb-1">Motivo</label>
               <input
-                className="border rounded w-full p-2 text-sm"
+                className="border rounded w-full px-2 py-2 text-sm"
                 placeholder="Ejemplo: aplastado, enfermedad, accidente"
                 value={form.motivo}
-                onChange={(e) => setForm({ ...form, motivo: e.target.value })}
+                onChange={(e) =>
+                  setForm((p) => ({ ...p, motivo: e.target.value }))
+                }
               />
             </div>
 
@@ -407,10 +424,12 @@ export default function GranjaSalidaMuertePage() {
                 URL de foto (opcional)
               </label>
               <input
-                className="border rounded w-full p-2 text-sm"
+                className="border rounded w-full px-2 py-2 text-sm"
                 placeholder="Pegue aquí la URL de la foto si existe"
                 value={form.foto_url}
-                onChange={(e) => setForm({ ...form, foto_url: e.target.value })}
+                onChange={(e) =>
+                  setForm((p) => ({ ...p, foto_url: e.target.value }))
+                }
               />
             </div>
 
@@ -419,11 +438,10 @@ export default function GranjaSalidaMuertePage() {
                 Observaciones
               </label>
               <textarea
-                className="border rounded w-full p-2 text-sm"
-                rows={3}
+                className="border rounded w-full px-2 py-2 text-sm min-h-[90px]"
                 value={form.observaciones}
                 onChange={(e) =>
-                  setForm({ ...form, observaciones: e.target.value })
+                  setForm((p) => ({ ...p, observaciones: e.target.value }))
                 }
               />
             </div>
@@ -440,23 +458,24 @@ export default function GranjaSalidaMuertePage() {
             <button
               type="button"
               onClick={resetForm}
-              className="bg-gray-200 px-4 py-2 rounded text-sm"
+              className="bg-gray-200 hover:bg-gray-300 text-gray-800 px-4 py-2 rounded text-sm"
             >
               Limpiar
             </button>
           </div>
         </div>
 
-        {/* -------- bajas recientes -------- */}
+        {/* Lista */}
         <div className="border rounded-lg p-4 bg-white shadow-sm">
           <h2 className="font-semibold mb-3">Bajas recientes</h2>
+
           {bajasRecientes.length === 0 ? (
             <p className="text-sm text-gray-600">Aún no hay bajas registradas.</p>
           ) : (
-            <div className="space-y-3 max-h-[520px] overflow-y-auto pr-1">
+            <div className="space-y-3">
               {bajasRecientes.map((b) => {
                 const u = ubicMap.get(b.ubicacion_id)
-                const l = b.lote_id ? loteMap.get(b.lote_id) : undefined
+                const l = b.lote_id ? loteMap.get(b.lote_id) : null
                 return (
                   <div
                     key={b.id}
@@ -466,21 +485,12 @@ export default function GranjaSalidaMuertePage() {
                       <div className="font-semibold">
                         #{b.id} · {b.fecha} · Cant: {b.cantidad}
                       </div>
-                      <div className="text-xs text-gray-600">
-                        Ubicación:{' '}
-                        <span className="font-semibold">
-                          {u ? u.codigo : b.ubicacion_id}
-                        </span>
-                        {l ? (
-                          <>
-                            {' '}
-                            · Lote:{' '}
-                            <span className="font-semibold">{l.codigo}</span>
-                          </>
-                        ) : null}
+                      <div className="text-xs text-gray-600 mt-1">
+                        Ubicación: {u ? u.codigo : `#${b.ubicacion_id}`}
+                        {l ? ` · Lote: ${l.codigo}` : ''}
                       </div>
                       {b.motivo ? (
-                        <div className="text-xs text-gray-600">
+                        <div className="text-xs text-gray-600 mt-1">
                           Motivo: {b.motivo}
                         </div>
                       ) : null}
@@ -489,7 +499,7 @@ export default function GranjaSalidaMuertePage() {
                     <button
                       onClick={() => eliminarBaja(b)}
                       disabled={eliminandoId === b.id}
-                      className="bg-red-600 hover:bg-red-700 disabled:opacity-60 text-white px-3 py-1.5 rounded text-xs"
+                      className="bg-red-600 hover:bg-red-700 disabled:opacity-60 text-white px-3 py-1 rounded text-xs"
                     >
                       {eliminandoId === b.id ? 'Eliminando…' : 'Eliminar'}
                     </button>
