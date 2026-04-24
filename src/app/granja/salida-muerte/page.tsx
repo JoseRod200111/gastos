@@ -1,6 +1,6 @@
 'use client'
 
-import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabaseClient'
 
@@ -27,17 +27,11 @@ type Baja = {
   machos: number | null
   motivo: string | null
   foto_url: string | null
-  observaciones: string | null
-  reportado_por: string | null
+  observaciones?: string | null
+  reportado_por?: string | null
 }
 
-const hoyISO = () => {
-  const d = new Date()
-  const yyyy = d.getFullYear()
-  const mm = String(d.getMonth() + 1).padStart(2, '0')
-  const dd = String(d.getDate()).padStart(2, '0')
-  return `${yyyy}-${mm}-${dd}`
-}
+const hoyISO = () => new Date().toISOString().slice(0, 10)
 
 export default function GranjaSalidaMuertePage() {
   const [ubicaciones, setUbicaciones] = useState<Ubicacion[]>([])
@@ -47,7 +41,7 @@ export default function GranjaSalidaMuertePage() {
   const [guardando, setGuardando] = useState(false)
 
   const [form, setForm] = useState({
-    fecha: '',
+    fecha: hoyISO(),
     ubicacion_id: '',
     lote_id: '',
     cantidad: '',
@@ -57,11 +51,6 @@ export default function GranjaSalidaMuertePage() {
     foto_url: '',
     observaciones: '',
   })
-
-  useEffect(() => {
-    // fecha por defecto para evitar guardar vacío
-    setForm((prev) => ({ ...prev, fecha: prev.fecha || hoyISO() }))
-  }, [])
 
   const resetForm = () =>
     setForm({
@@ -78,13 +67,13 @@ export default function GranjaSalidaMuertePage() {
 
   const ubicMap = useMemo(() => {
     const m = new Map<number, Ubicacion>()
-    ubicaciones.forEach((u) => m.set(u.id, u))
+    for (const u of ubicaciones) m.set(u.id, u)
     return m
   }, [ubicaciones])
 
   const loteMap = useMemo(() => {
     const m = new Map<number, Lote>()
-    lotes.forEach((l) => m.set(l.id, l))
+    for (const l of lotes) m.set(l.id, l)
     return m
   }, [lotes])
 
@@ -102,20 +91,18 @@ export default function GranjaSalidaMuertePage() {
           .select('id, codigo, nombre')
           .eq('activo', true)
           .order('codigo', { ascending: true }),
-
         supabase
           .from('granja_lotes')
           .select('id, codigo, fecha, tipo_origen')
           .order('fecha', { ascending: false })
-          .limit(200),
-
+          .limit(150),
         supabase
           .from('granja_bajas_muerte')
           .select(
             'id, fecha, ubicacion_id, lote_id, cantidad, hembras, machos, motivo, foto_url, observaciones, reportado_por'
           )
           .order('fecha', { ascending: false })
-          .limit(50),
+          .limit(30),
       ])
 
       if (ubicError) console.error('Error cargando ubicaciones', ubicError)
@@ -136,8 +123,6 @@ export default function GranjaSalidaMuertePage() {
 
   // --------- guardar baja por muerte ---------
   const guardarBaja = async () => {
-    if (guardando) return
-
     if (!form.fecha || !form.ubicacion_id || !form.cantidad) {
       alert('Fecha, ubicación y cantidad son obligatorios.')
       return
@@ -152,27 +137,23 @@ export default function GranjaSalidaMuertePage() {
       return
     }
     if (hembrasNum != null && (Number.isNaN(hembrasNum) || hembrasNum < 0)) {
-      alert('Hembras debe ser un número válido (>= 0).')
+      alert('Hembras no es válido.')
       return
     }
     if (machosNum != null && (Number.isNaN(machosNum) || machosNum < 0)) {
-      alert('Machos debe ser un número válido (>= 0).')
+      alert('Machos no es válido.')
       return
     }
 
     setGuardando(true)
     try {
       const { data: userData, error: userErr } = await supabase.auth.getUser()
-      if (userErr) console.error('Error obteniendo usuario', userErr)
+      if (userErr) {
+        console.error('Error obteniendo usuario', userErr)
+      }
       const userId = userData?.user?.id ?? null
 
-      // Si hay RLS que requiere userId, esto evita el 403 silencioso
-      if (!userId) {
-        alert('Sesión no válida. Vuelve a iniciar sesión.')
-        return
-      }
-
-      // 1) insertar baja (con reportado_por)
+      // 1) insertar baja (con reportado_por para RLS)
       const { data: bajaInsertada, error: bajaErr } = await supabase
         .from('granja_bajas_muerte')
         .insert({
@@ -182,12 +163,12 @@ export default function GranjaSalidaMuertePage() {
           cantidad,
           hembras: hembrasNum,
           machos: machosNum,
-          motivo: form.motivo.trim() ? form.motivo.trim() : null,
-          foto_url: form.foto_url.trim() ? form.foto_url.trim() : null,
-          observaciones: form.observaciones.trim()
+          motivo: form.motivo?.trim() ? form.motivo.trim() : null,
+          foto_url: form.foto_url?.trim() ? form.foto_url.trim() : null,
+          observaciones: form.observaciones?.trim()
             ? form.observaciones.trim()
             : null,
-          reportado_por: userId,
+          reportado_por: userId, // <-- clave para RLS (si tu política lo exige)
         })
         .select('id')
         .single()
@@ -198,16 +179,8 @@ export default function GranjaSalidaMuertePage() {
         return
       }
 
-      // 2) movimiento en inventario (salida por muerte) con user_id
-      const obsMov = [
-        'Salida de cerdos por muerte',
-        form.motivo.trim() ? `Motivo: ${form.motivo.trim()}` : null,
-      ]
-        .filter(Boolean)
-        .join(' · ')
-
+      // 2) movimiento (SALIDA_MUERTE) - con user_id para RLS
       const { error: movErr } = await supabase.from('granja_movimientos').insert({
-        fecha: new Date().toISOString(),
         ubicacion_id: Number(form.ubicacion_id),
         tipo: 'SALIDA_MUERTE',
         lote_id: form.lote_id ? Number(form.lote_id) : null,
@@ -216,8 +189,10 @@ export default function GranjaSalidaMuertePage() {
         machos: machosNum,
         referencia_tabla: 'granja_bajas_muerte',
         referencia_id: bajaInsertada.id,
-        user_id: userId,
-        observaciones: obsMov || null,
+        user_id: userId, // <-- clave para RLS (si tu política lo exige)
+        observaciones: form.motivo?.trim()
+          ? `Salida por muerte: ${form.motivo.trim()}`
+          : 'Salida de cerdos por muerte',
       })
 
       if (movErr) {
@@ -323,9 +298,7 @@ export default function GranjaSalidaMuertePage() {
                 type="number"
                 className="border rounded w-full p-2 text-sm"
                 value={form.cantidad}
-                onChange={(e) =>
-                  setForm({ ...form, cantidad: e.target.value })
-                }
+                onChange={(e) => setForm({ ...form, cantidad: e.target.value })}
               />
             </div>
 
@@ -341,7 +314,7 @@ export default function GranjaSalidaMuertePage() {
               />
             </div>
 
-            <div>
+            <div className="col-span-2">
               <label className="block text-xs font-semibold mb-1">
                 Machos (opcional)
               </label>
@@ -431,7 +404,6 @@ export default function GranjaSalidaMuertePage() {
                   {bajasRecientes.map((b) => {
                     const u = ubicMap.get(b.ubicacion_id)
                     const l = b.lote_id ? loteMap.get(b.lote_id) : undefined
-
                     return (
                       <tr key={b.id} className="border-t">
                         <td className="p-2">{b.fecha}</td>
