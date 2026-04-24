@@ -91,18 +91,21 @@ export default function GranjaSalidaMuertePage() {
           .select('id, codigo, nombre')
           .eq('activo', true)
           .order('codigo', { ascending: true }),
+
         supabase
           .from('granja_lotes')
           .select('id, codigo, fecha, tipo_origen')
           .order('fecha', { ascending: false })
-          .limit(150),
+          .limit(200),
+
+        // OJO: si aquí te daba 403, era RLS. Con el SQL de arriba se arregla.
         supabase
           .from('granja_bajas_muerte')
           .select(
             'id, fecha, ubicacion_id, lote_id, cantidad, hembras, machos, motivo, foto_url, observaciones, reportado_por'
           )
           .order('fecha', { ascending: false })
-          .limit(30),
+          .limit(50),
       ])
 
       if (ubicError) console.error('Error cargando ubicaciones', ubicError)
@@ -148,12 +151,10 @@ export default function GranjaSalidaMuertePage() {
     setGuardando(true)
     try {
       const { data: userData, error: userErr } = await supabase.auth.getUser()
-      if (userErr) {
-        console.error('Error obteniendo usuario', userErr)
-      }
+      if (userErr) console.error('Error obteniendo usuario', userErr)
       const userId = userData?.user?.id ?? null
 
-      // 1) insertar baja (con reportado_por para RLS)
+      // 1) insertar baja
       const { data: bajaInsertada, error: bajaErr } = await supabase
         .from('granja_bajas_muerte')
         .insert({
@@ -168,28 +169,30 @@ export default function GranjaSalidaMuertePage() {
           observaciones: form.observaciones?.trim()
             ? form.observaciones.trim()
             : null,
-          reportado_por: userId, // <-- clave para RLS (si tu política lo exige)
+          reportado_por: userId, // importante si tu RLS lo requiere
         })
         .select('id')
         .single()
 
       if (bajaErr || !bajaInsertada) {
         console.error('Error guardando baja', bajaErr)
-        alert('No se pudo guardar la baja por muerte.')
+        alert(
+          'No se pudo guardar la baja por muerte. Revisa RLS/policies (error en consola).'
+        )
         return
       }
 
-      // 2) movimiento (SALIDA_MUERTE) - con user_id para RLS
+      // 2) registrar movimiento (negativo = debitar inventario)
       const { error: movErr } = await supabase.from('granja_movimientos').insert({
         ubicacion_id: Number(form.ubicacion_id),
         tipo: 'SALIDA_MUERTE',
         lote_id: form.lote_id ? Number(form.lote_id) : null,
-        cantidad: -cantidad, // negativo para debitar
+        cantidad: -cantidad,
         hembras: hembrasNum,
         machos: machosNum,
         referencia_tabla: 'granja_bajas_muerte',
         referencia_id: bajaInsertada.id,
-        user_id: userId, // <-- clave para RLS (si tu política lo exige)
+        user_id: userId,
         observaciones: form.motivo?.trim()
           ? `Salida por muerte: ${form.motivo.trim()}`
           : 'Salida de cerdos por muerte',
@@ -214,7 +217,6 @@ export default function GranjaSalidaMuertePage() {
   // --------- UI ---------
   return (
     <div className="p-6 max-w-5xl mx-auto">
-      {/* encabezado */}
       <div className="mb-6 flex items-center gap-3">
         <img src="/logo.png" alt="Logo" className="h-10" />
         <div>
@@ -223,6 +225,7 @@ export default function GranjaSalidaMuertePage() {
             Registrar bajas por muerte y debitar el inventario por ubicación.
           </p>
         </div>
+
         <Link
           href="/granja"
           className="ml-auto inline-block bg-slate-700 hover:bg-slate-800 text-white px-3 py-2 rounded text-sm"
@@ -232,13 +235,13 @@ export default function GranjaSalidaMuertePage() {
       </div>
 
       <div className="grid gap-6 md:grid-cols-2">
-        {/* -------- formulario -------- */}
+        {/* Formulario */}
         <div className="border rounded-lg p-4 bg-white shadow-sm">
           <h2 className="font-semibold mb-3">Nueva baja por muerte</h2>
 
-          {loading && (
+          {loading ? (
             <p className="text-xs text-gray-500 mb-2">Cargando catálogos…</p>
-          )}
+          ) : null}
 
           <div className="grid grid-cols-2 gap-3">
             <div className="col-span-2">
@@ -292,7 +295,7 @@ export default function GranjaSalidaMuertePage() {
 
             <div>
               <label className="block text-xs font-semibold mb-1">
-                Cantidad de cerdos
+                Cantidad
               </label>
               <input
                 type="number"
@@ -381,9 +384,10 @@ export default function GranjaSalidaMuertePage() {
           </div>
         </div>
 
-        {/* -------- bajas recientes -------- */}
+        {/* Bajas recientes */}
         <div className="border rounded-lg p-4 bg-white shadow-sm">
           <h2 className="font-semibold mb-3">Bajas recientes</h2>
+
           {bajasRecientes.length === 0 ? (
             <p className="text-sm text-gray-600">Aún no hay bajas registradas.</p>
           ) : (
@@ -395,8 +399,8 @@ export default function GranjaSalidaMuertePage() {
                     <th className="p-2 text-left">Ubicación</th>
                     <th className="p-2 text-left">Lote</th>
                     <th className="p-2 text-right">Cant.</th>
-                    <th className="p-2 text-right">Hembras</th>
-                    <th className="p-2 text-right">Machos</th>
+                    <th className="p-2 text-right">H</th>
+                    <th className="p-2 text-right">M</th>
                     <th className="p-2 text-left">Motivo</th>
                   </tr>
                 </thead>
