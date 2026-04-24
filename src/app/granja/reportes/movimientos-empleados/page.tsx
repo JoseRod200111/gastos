@@ -32,27 +32,22 @@ type MovItem = {
   detalle: string
 }
 
-type ProductoRow = {
-  id: number
-  nombre: string | null
-  sku: string | null
-  unidad: string | null
-  control_inventario: boolean | null
-}
-
 const pad = (n: number) => (n < 10 ? `0${n}` : `${n}`)
 
 const fmtFecha = (iso: string) => {
   if (!iso) return '—'
   const d = new Date(iso)
-  if (isNaN(d.getTime())) return String(iso).slice(0, 19)
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(
-    d.getMinutes()
-  )}`
+  if (Number.isNaN(d.getTime())) return String(iso).slice(0, 19)
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(
+    d.getHours()
+  )}:${pad(d.getMinutes())}`
 }
 
+// IMPORTANTE: en tu proyecto, muchas columnas de timestamps son "with time zone".
+// Para filtrar bien por día sin complicarnos con TZ, usamos ISO con Z.
 const inicioDia = (yyyyMMdd: string) => `${yyyyMMdd}T00:00:00.000Z`
 const finDia = (yyyyMMdd: string) => `${yyyyMMdd}T23:59:59.999Z`
+
 const clamp = (s: string) => (s || '').trim()
 
 async function fetchLogoDataUrl(): Promise<string | null> {
@@ -70,109 +65,151 @@ async function fetchLogoDataUrl(): Promise<string | null> {
   }
 }
 
+function safeJsonParse(v: any) {
+  try {
+    if (v == null) return null
+    if (typeof v === 'object') return v
+    if (typeof v === 'string') return JSON.parse(v)
+    return null
+  } catch {
+    return null
+  }
+}
+
+function moneyQ(n: any) {
+  const x = Number(n || 0)
+  if (Number.isNaN(x)) return 'Q0.00'
+  return `Q${x.toFixed(2)}`
+}
+
 function num(n: any) {
   const x = Number(n)
-  return Number.isFinite(x) ? x : 0
+  if (Number.isNaN(x)) return '—'
+  return String(x)
 }
 
-function moneyQ(v: any) {
-  return `Q${num(v).toFixed(2)}`
-}
-
-function compactTxt(v: any, max = 220) {
-  const s = String(v ?? '').replace(/\s+/g, ' ').trim()
+function prettySnapshot(table: string, action: string, snapshotAny: any): string {
+  const t = String(table || '').split('.').pop() || String(table || '')
+  const s = safeJsonParse(snapshotAny)
   if (!s) return '—'
-  return s.length > max ? `${s.slice(0, max)}…` : s
-}
 
-function labelInventarioTipo(tipo: string) {
-  const t = String(tipo || '').toUpperCase()
-  if (t === 'ENTRADA') return 'ENTRADA (aumenta)'
-  if (t === 'SALIDA') return 'SALIDA (disminuye)'
-  if (t === 'AJUSTE') return 'AJUSTE (+/-)'
-  return t || 'MOVIMIENTO'
-}
+  // helpers de campos comunes
+  const fecha = s.fecha || s.created_at || s.at || null
+  const obs = s.observaciones || s.descripcion || s.motivo || null
 
-function signedCantidad(tipo: string, cantidad: any) {
-  const c = num(cantidad)
-  const t = String(tipo || '').toUpperCase()
-  if (t === 'ENTRADA') return `+${c}`
-  if (t === 'SALIDA') return `-${c}`
-  return `${c}`
-}
-
-function prettySnapshot(tableNameRaw: string, actionRaw: string, snapshot: any) {
-  const table = String(tableNameRaw || '').split('.').pop() || ''
-  const action = String(actionRaw || '').toUpperCase()
-  const s = snapshot || {}
-
-  // EROGACIONES (cabecera)
-  if (table === 'erogaciones') {
-    const id = s.id ?? '—'
-    const fecha = s.fecha ?? '—'
-    const total = moneyQ(s.cantidad ?? 0)
-    const obs = s.observaciones ? ` · ${compactTxt(s.observaciones, 80)}` : ''
-    const prov = s.proveedor_id ? ` · Proveedor#${s.proveedor_id}` : ''
-    const emp = s.empresa_id ? ` · Empresa#${s.empresa_id}` : ''
-    const div = s.division_id ? ` · División#${s.division_id}` : ''
-    return `${action} erogación #${id} · ${fecha} · Total ${total}${emp}${div}${prov}${obs}`
+  // === EROGACIONES ===
+  if (t === 'erogaciones') {
+    const total = s.cantidad ?? s.total ?? s.monto ?? null
+    const prov = s.proveedor_id ? `ProveedorID ${s.proveedor_id}` : null
+    const emp = s.empresa_id ? `EmpresaID ${s.empresa_id}` : null
+    const div = s.division_id ? `DivisiónID ${s.division_id}` : null
+    const bits = [
+      fecha ? `Fecha ${String(fecha).slice(0, 10)}` : null,
+      total != null ? `Total ${moneyQ(total)}` : null,
+      emp,
+      div,
+      prov,
+      obs ? `Obs: ${String(obs)}` : null,
+      s.editado_por ? `Editado por: ${s.editado_por}` : null,
+    ].filter(Boolean)
+    return bits.length ? bits.join(' · ') : `${action} erogaciones`
   }
 
-  // DETALLE COMPRA (afecta inventario planta)
-  if (table === 'detalle_compra') {
-    const id = s.id ?? '—'
-    const erogId = s.erogacion_id ?? '—'
-    const concepto = compactTxt(s.concepto, 70)
-    const cant = num(s.cantidad)
-    const pu = moneyQ(s.precio_unitario)
-    const imp = moneyQ(s.importe ?? cant * num(s.precio_unitario))
-    const prod = s.producto_id ? ` · Producto#${s.producto_id}` : ''
-    const doc = s.documento ? ` · Doc: ${compactTxt(s.documento, 40)}` : ''
-    return `${action} detalle_compra #${id} (erogación#${erogId}) · ${concepto} · Cant ${cant} · P.Unit ${pu} · Importe ${imp}${prod}${doc}`
+  if (t === 'detalle_compra') {
+    const bits = [
+      s.erogacion_id ? `Erogación #${s.erogacion_id}` : null,
+      s.concepto ? `Concepto: ${s.concepto}` : null,
+      s.producto_id ? `ProductoID ${s.producto_id}` : null,
+      s.cantidad != null ? `Cant ${num(s.cantidad)}` : null,
+      s.precio_unitario != null ? `P.Unit ${moneyQ(s.precio_unitario)}` : null,
+      s.importe != null ? `Importe ${moneyQ(s.importe)}` : null,
+      s.forma_pago_id ? `PagoID ${s.forma_pago_id}` : null,
+      s.documento ? `Doc: ${s.documento}` : null,
+    ].filter(Boolean)
+    return bits.length ? bits.join(' · ') : `${action} detalle_compra`
   }
 
-  // VENTAS (cabecera)
-  if (table === 'ventas') {
-    const id = s.id ?? '—'
-    const fecha = s.fecha ?? '—'
-    const total = moneyQ(s.cantidad ?? 0)
-    const obs = s.observaciones ? ` · ${compactTxt(s.observaciones, 80)}` : ''
-    const cli = s.cliente_id ? ` · Cliente#${s.cliente_id}` : ''
-    const emp = s.empresa_id ? ` · Empresa#${s.empresa_id}` : ''
-    const div = s.division_id ? ` · División#${s.division_id}` : ''
-    return `${action} venta #${id} · ${fecha} · Total ${total}${emp}${div}${cli}${obs}`
+  // === VENTAS (módulo original) ===
+  if (t === 'ventas') {
+    const total = s.cantidad ?? s.total ?? null
+    const bits = [
+      fecha ? `Fecha ${String(fecha).slice(0, 10)}` : null,
+      total != null ? `Total ${moneyQ(total)}` : null,
+      s.cliente_id ? `ClienteID ${s.cliente_id}` : null,
+      s.empresa_id ? `EmpresaID ${s.empresa_id}` : null,
+      s.division_id ? `DivisiónID ${s.division_id}` : null,
+      obs ? `Obs: ${String(obs)}` : null,
+    ].filter(Boolean)
+    return bits.length ? bits.join(' · ') : `${action} ventas`
   }
 
-  // DETALLE VENTA (afecta inventario planta)
-  if (table === 'detalle_venta') {
-    const id = s.id ?? '—'
-    const ventaId = s.venta_id ?? '—'
-    const concepto = compactTxt(s.concepto, 70)
-    const cant = num(s.cantidad)
-    const pu = moneyQ(s.precio_unitario)
-    const imp = moneyQ(s.importe ?? cant * num(s.precio_unitario))
-    const prod = s.producto_id ? ` · Producto#${s.producto_id}` : ''
-    const doc = s.documento ? ` · Doc: ${compactTxt(s.documento, 40)}` : ''
-    return `${action} detalle_venta #${id} (venta#${ventaId}) · ${concepto} · Cant ${cant} · P.Unit ${pu} · Importe ${imp}${prod}${doc}`
+  if (t === 'detalle_venta') {
+    const bits = [
+      s.venta_id ? `Venta #${s.venta_id}` : null,
+      s.concepto ? `Concepto: ${s.concepto}` : null,
+      s.producto_id ? `ProductoID ${s.producto_id}` : null,
+      s.cantidad != null ? `Cant ${num(s.cantidad)}` : null,
+      s.precio_unitario != null ? `P.Unit ${moneyQ(s.precio_unitario)}` : null,
+      s.importe != null ? `Importe ${moneyQ(s.importe)}` : null,
+      s.forma_pago_id ? `PagoID ${s.forma_pago_id}` : null,
+      s.documento ? `Doc: ${s.documento}` : null,
+    ].filter(Boolean)
+    return bits.length ? bits.join(' · ') : `${action} detalle_venta`
   }
 
-  // GRANJA movimientos
-  if (table === 'granja_movimientos') {
-    const id = s.id ?? '—'
-    const tipo = s.tipo ?? 'MOVIMIENTO'
-    const ub = s.ubicacion_id ?? '—'
-    const cant = s.cantidad ?? '—'
-    const ref = s.referencia_tabla ? `${s.referencia_tabla}${s.referencia_id ? `#${s.referencia_id}` : ''}` : ''
-    return `${action} granja_movimientos #${id} · ${tipo} · Ubicación ${ub} · Cant ${cant}${ref ? ` · Ref ${ref}` : ''}`
+  // === INVENTARIO PLANTA (inventario_movimientos) ===
+  if (t === 'inventario_movimientos') {
+    const bits = [
+      s.producto_id ? `ProductoID ${s.producto_id}` : null,
+      s.tipo ? `Tipo ${s.tipo}` : null,
+      s.cantidad != null ? `Cant ${num(s.cantidad)}` : null,
+      s.erogacion_detalle_id ? `ErogDet #${s.erogacion_detalle_id}` : null,
+      s.venta_detalle_id ? `VentaDet #${s.venta_detalle_id}` : null,
+      s.created_at ? `Creado ${fmtFecha(s.created_at)}` : null,
+    ].filter(Boolean)
+    return bits.length ? bits.join(' · ') : `${action} inventario_movimientos`
   }
 
-  // VIAJES / GASTOS / COMBUSTIBLE (vehículos)
-  if (table === 'viajes' || table === 'viaje_gastos' || table === 'viaje_combustible') {
-    const id = s.id ?? '—'
-    return `${action} ${table} #${id} · ${compactTxt(JSON.stringify(s), 160)}`
+  // === GRANJA ===
+  if (t === 'granja_movimientos') {
+    const bits = [
+      s.tipo ? `Tipo ${s.tipo}` : null,
+      s.ubicacion_id ? `Ubicación ${s.ubicacion_id}` : null,
+      s.cantidad != null ? `Cant ${num(s.cantidad)}` : null,
+      s.lote_id ? `LoteID ${s.lote_id}` : null,
+      s.peso_total_kg != null ? `Peso(kg) ${num(s.peso_total_kg)}` : null,
+      s.referencia_tabla ? `Ref ${s.referencia_tabla}` : null,
+      s.referencia_id ? `#${s.referencia_id}` : null,
+      obs ? `Obs: ${String(obs)}` : null,
+    ].filter(Boolean)
+    return bits.length ? bits.join(' · ') : `${action} granja_movimientos`
   }
 
-  return compactTxt(`${action} ${table}: ${JSON.stringify(s)}`, 200)
+  // === VEHICULOS ===
+  if (t === 'viajes') {
+    const bits = [
+      s.vehiculo_id ? `VehículoID ${s.vehiculo_id}` : null,
+      s.origen ? `Origen ${s.origen}` : null,
+      s.destino ? `Destino ${s.destino}` : null,
+      s.fecha_inicio ? `Inicio ${s.fecha_inicio}` : null,
+      s.fecha_fin ? `Fin ${s.fecha_fin}` : null,
+      s.conductor ? `Conductor ${s.conductor}` : null,
+    ].filter(Boolean)
+    return bits.length ? bits.join(' · ') : `${action} viajes`
+  }
+
+  // fallback corto (evita JSON enorme)
+  const keys = Object.keys(s).slice(0, 10)
+  const mini = keys
+    .map((k) => {
+      const v = s[k]
+      if (v == null) return null
+      const vv = typeof v === 'object' ? '[obj]' : String(v)
+      return `${k}:${vv}`
+    })
+    .filter(Boolean)
+    .join(' · ')
+  return mini || '—'
 }
 
 export default function MovimientosEmpleadosPage() {
@@ -186,7 +223,7 @@ export default function MovimientosEmpleadosPage() {
     desde: '',
     hasta: '',
     seccion: 'TODOS' as Seccion,
-    usuario_id: '', // dropdown (uuid)
+    usuario_id: '',
   })
 
   // defaults fechas
@@ -202,7 +239,11 @@ export default function MovimientosEmpleadosPage() {
   // cargar profiles (dropdown de usuarios)
   useEffect(() => {
     ;(async () => {
-      const { data, error } = await supabase.from('profiles').select('id, email').order('email', { ascending: true })
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('id, email')
+        .order('email', { ascending: true })
+
       if (error) {
         console.error('profiles error', error)
         setProfiles([])
@@ -214,14 +255,19 @@ export default function MovimientosEmpleadosPage() {
 
   const emailById = useMemo(() => {
     const m = new Map<string, string>()
-    for (const p of profiles) m.set(p.id, p.email || p.id)
+    for (const p of profiles) {
+      m.set(p.id, p.email || p.id)
+    }
     return m
   }, [profiles])
 
-  const userLabel = (uid: string) => {
-    if (!uid || uid === '—') return '—'
-    return emailById.get(uid) || uid
-  }
+  const userLabel = useCallback(
+    (uid: string) => {
+      if (!uid || uid === '—') return '—'
+      return emailById.get(uid) || uid
+    },
+    [emailById]
+  )
 
   const cargar = useCallback(async () => {
     setLoading(true)
@@ -232,57 +278,75 @@ export default function MovimientosEmpleadosPage() {
       const uid = clamp(filtros.usuario_id)
 
       const out: MovItem[] = []
-      const wantAll = sec === 'TODOS'
 
-      // ==========================================================
-      // 1) AUDIT LOG (INSERT/UPDATE/DELETE) - si existe / tiene permisos
-      // ==========================================================
+      // =========================
+      // 1) AUDIT LOG (INSERT/UPDATE/DELETE)
+      // =========================
       {
         let q = supabase
           .from('audit_log')
           .select('at, table_name, action, record_id, section, actor, actor_text, snapshot')
           .order('at', { ascending: false })
-          .limit(1200)
+          .limit(1500)
 
         if (desdeISO) q = q.gte('at', desdeISO)
         if (hastaISO) q = q.lte('at', hastaISO)
 
-        // filtro sección (incluye inventario planta si tu trigger lo marca así)
-        if (sec !== 'TODOS') q = q.eq('section', sec)
+        // si se filtra por sección específica, lo aplicamos aquí
+        // OJO: INVENTARIO_PLANTA es "virtual", audit_log probablemente trae VENTAS/EROGACIONES/INVENTARIO_PLANTA si tú lo guardas así.
+        if (sec !== 'TODOS' && sec !== 'INVENTARIO_PLANTA') q = q.eq('section', sec)
 
         if (uid) q = q.eq('actor', uid)
 
         const { data, error } = await q
         if (error) {
-          // no romper; solo avisar en consola
           console.warn('audit_log no disponible o sin permisos', error)
         } else {
           for (const r of (data || []) as any[]) {
-            const seccion = (r.section || 'GRANJA') as MovItem['seccion']
+            const tableName = String(r.table_name || '').split('.').pop() || String(r.table_name || '')
+            const accionBase = String(r.action || '').toUpperCase()
+            const seccionRaw = String(r.section || 'GRANJA').toUpperCase()
+
+            // Mapear a secciones conocidas (si llega raro, cae en GRANJA)
+            const seccion =
+              seccionRaw === 'VEHICULOS'
+                ? 'VEHICULOS'
+                : seccionRaw === 'VENTAS'
+                  ? 'VENTAS'
+                  : seccionRaw === 'EROGACIONES'
+                    ? 'EROGACIONES'
+                    : seccionRaw === 'INVENTARIO_PLANTA'
+                      ? 'INVENTARIO_PLANTA'
+                      : 'GRANJA'
+
             const usuario = r.actor ? String(r.actor) : r.actor_text ? String(r.actor_text) : '—'
-            const tableShort = String(r.table_name || '').split('.').pop() || '—'
-            const ref = `${tableShort}#${r.record_id || '—'}`
+            const usuarioLabel = userLabel(usuario)
+
+            const detalle = prettySnapshot(tableName, accionBase, r.snapshot)
 
             out.push({
               ts: String(r.at),
               seccion,
-              accion: `${String(r.action || '').toUpperCase()} (${tableShort})`,
+              accion: `${accionBase} (${tableName})`,
               usuario,
-              usuario_label: userLabel(usuario),
-              referencia: ref,
-              detalle: prettySnapshot(r.table_name, r.action, r.snapshot),
+              usuario_label: usuarioLabel,
+              referencia: `${tableName}#${r.record_id || '—'}`,
+              detalle,
             })
           }
         }
       }
 
-      // ==========================================================
-      // 2) DIRECTO: GRANJA (granja_movimientos)
-      // ==========================================================
+      // =========================
+      // 2) DIRECTO (si audit_log falta o no cubre todo)
+      // =========================
+      const wantAll = sec === 'TODOS'
+
+      // GRANJA: granja_movimientos
       if (wantAll || sec === 'GRANJA') {
         let q = supabase
           .from('granja_movimientos')
-          .select('id, fecha, tipo, ubicacion_id, cantidad, referencia_tabla, referencia_id, user_id, observaciones, created_at')
+          .select('id, fecha, tipo, ubicacion_id, cantidad, lote_id, referencia_tabla, referencia_id, user_id, observaciones, created_at')
           .order('fecha', { ascending: false })
           .limit(700)
 
@@ -295,27 +359,32 @@ export default function MovimientosEmpleadosPage() {
             const usuario = r.user_id ? String(r.user_id) : '—'
             if (uid && usuario !== uid) continue
 
-            const ref = `${r.referencia_tabla || 'granja_movimientos'}${r.referencia_id ? `#${r.referencia_id}` : `#${r.id}`}`
-            const det = `Tipo ${r.tipo || 'MOVIMIENTO'} · Ubicación ${r.ubicacion_id ?? '—'} · Cant ${r.cantidad ?? '—'}${
-              r.observaciones ? ` · ${compactTxt(r.observaciones, 120)}` : ''
-            }`
+            const refTabla = r.referencia_tabla || 'granja_movimientos'
+            const refId = r.referencia_id ? `#${r.referencia_id}` : `#${r.id}`
+            const detalle = [
+              r.tipo ? `Tipo ${r.tipo}` : null,
+              r.ubicacion_id != null ? `Ubicación ${r.ubicacion_id}` : null,
+              r.lote_id != null ? `LoteID ${r.lote_id}` : null,
+              r.cantidad != null ? `Cant ${num(r.cantidad)}` : null,
+              r.observaciones ? `Obs: ${r.observaciones}` : null,
+            ]
+              .filter(Boolean)
+              .join(' · ')
 
             out.push({
-              ts: String(r.fecha || r.created_at),
+              ts: String(r.fecha || r.created_at || ''),
               seccion: 'GRANJA',
               accion: String(r.tipo || 'MOVIMIENTO'),
               usuario,
               usuario_label: userLabel(usuario),
-              referencia: ref,
-              detalle: det,
+              referencia: `${refTabla}${refId}`,
+              detalle: detalle || '—',
             })
           }
         }
       }
 
-      // ==========================================================
-      // 3) DIRECTO: VEHICULOS (viajes, etc) - editado_por texto
-      // ==========================================================
+      // VEHICULOS: viajes (editado_por texto)
       if (wantAll || sec === 'VEHICULOS') {
         let q = supabase
           .from('viajes')
@@ -331,30 +400,34 @@ export default function MovimientosEmpleadosPage() {
           for (const r of (data || []) as any[]) {
             const usuario = r.editado_por ? String(r.editado_por) : '—'
             const ts = String(r.editado_en || r.creado_en || '')
+
+            // Si el filtro usuario es UUID, aquí no aplica (vehículos usa texto).
+            // Si quieres filtrar vehículos por email/texto, hay que hacerlo diferente.
+            if (uid) {
+              // si uid parece uuid, no filtramos aquí para no ocultar todo por error
+              // (mantiene comportamiento actual)
+            }
+
             out.push({
               ts,
               seccion: 'VEHICULOS',
               accion: r.editado_en ? 'UPDATE (viajes)' : 'INSERT (viajes)',
               usuario,
-              usuario_label: usuario, // es texto, no uuid
+              usuario_label: usuario,
               referencia: `viajes#${r.id}`,
-              detalle: `Vehículo ${r.vehiculo_id ?? '—'} · ${r.origen || '—'} → ${r.destino || '—'} · ${r.fecha_inicio || '—'} / ${r.fecha_fin || '—'}${
-                r.conductor ? ` · Conductor: ${compactTxt(r.conductor, 40)}` : ''
-              }`,
+              detalle: `Vehículo ${r.vehiculo_id ?? '—'} · ${r.origen || '—'} → ${r.destino || '—'} · ${r.fecha_inicio || '—'} / ${r.fecha_fin || '—'} · Conductor ${r.conductor || '—'}`,
             })
           }
         }
       }
 
-      // ==========================================================
-      // 4) DIRECTO: VENTAS (cabecera)
-      // ==========================================================
-      if (wantAll || sec === 'VENTAS') {
+      // VENTAS (módulo original)
+      if (wantAll || sec === 'VENTAS' || sec === 'INVENTARIO_PLANTA') {
         let q = supabase
           .from('ventas')
           .select('id, fecha, cantidad, observaciones, user_id, created_at')
           .order('created_at', { ascending: false })
-          .limit(800)
+          .limit(700)
 
         if (desdeISO) q = q.gte('created_at', desdeISO)
         if (hastaISO) q = q.lte('created_at', hastaISO)
@@ -364,23 +437,22 @@ export default function MovimientosEmpleadosPage() {
           for (const r of (data || []) as any[]) {
             const usuario = r.user_id ? String(r.user_id) : '—'
             if (uid && usuario !== uid) continue
+
             out.push({
               ts: String(r.created_at || ''),
-              seccion: 'VENTAS',
+              seccion: sec === 'INVENTARIO_PLANTA' ? 'INVENTARIO_PLANTA' : 'VENTAS',
               accion: 'INSERT (ventas)',
               usuario,
               usuario_label: userLabel(usuario),
               referencia: `ventas#${r.id}`,
-              detalle: `${r.fecha || '—'} · Total ${moneyQ(r.cantidad || 0)}${r.observaciones ? ` · ${compactTxt(r.observaciones, 120)}` : ''}`,
+              detalle: `${r.fecha || '—'} · Total ${moneyQ(r.cantidad)}${r.observaciones ? ` · Obs: ${r.observaciones}` : ''}`,
             })
           }
         }
       }
 
-      // ==========================================================
-      // 5) DIRECTO: EROGACIONES (cabecera + edición si existe)
-      // ==========================================================
-      if (wantAll || sec === 'EROGACIONES') {
+      // EROGACIONES (módulo original)
+      if (wantAll || sec === 'EROGACIONES' || sec === 'INVENTARIO_PLANTA') {
         let q = supabase
           .from('erogaciones')
           .select('id, fecha, cantidad, observaciones, user_id, created_at, editado_en, editado_por')
@@ -394,142 +466,77 @@ export default function MovimientosEmpleadosPage() {
         if (!error) {
           for (const r of (data || []) as any[]) {
             const usuarioCre = r.user_id ? String(r.user_id) : r.editado_por ? String(r.editado_por) : '—'
+
             if (!uid || usuarioCre === uid) {
               out.push({
                 ts: String(r.created_at || ''),
-                seccion: 'EROGACIONES',
+                seccion: sec === 'INVENTARIO_PLANTA' ? 'INVENTARIO_PLANTA' : 'EROGACIONES',
                 accion: 'INSERT (erogaciones)',
                 usuario: usuarioCre,
                 usuario_label: userLabel(usuarioCre),
                 referencia: `erogaciones#${r.id}`,
-                detalle: `${r.fecha || '—'} · Total ${moneyQ(r.cantidad || 0)}${r.observaciones ? ` · ${compactTxt(r.observaciones, 120)}` : ''}`,
+                detalle: `${r.fecha || '—'} · Total ${moneyQ(r.cantidad)}${r.observaciones ? ` · Obs: ${r.observaciones}` : ''}`,
               })
             }
 
             if (r.editado_en) {
               const usuarioEd = r.editado_por ? String(r.editado_por) : r.user_id ? String(r.user_id) : '—'
               if (uid && usuarioEd !== uid) continue
+
               out.push({
                 ts: String(r.editado_en),
-                seccion: 'EROGACIONES',
+                seccion: sec === 'INVENTARIO_PLANTA' ? 'INVENTARIO_PLANTA' : 'EROGACIONES',
                 accion: 'UPDATE (erogaciones)',
                 usuario: usuarioEd,
                 usuario_label: userLabel(usuarioEd),
                 referencia: `erogaciones#${r.id}`,
-                detalle: `Editado · ${r.fecha || '—'} · Total ${moneyQ(r.cantidad || 0)}${r.observaciones ? ` · ${compactTxt(r.observaciones, 120)}` : ''}`,
+                detalle: `Editado · ${r.fecha || '—'} · Total ${moneyQ(r.cantidad)}${r.observaciones ? ` · Obs: ${r.observaciones}` : ''}`,
               })
             }
           }
         }
       }
 
-      // ==========================================================
-      // 6) INVENTARIO PLANTA: inventario_movimientos (entrada/salida/ajuste)
-      //     (sección nueva: agrupa inventario_movimientos + deduce usuario si puede)
-      // ==========================================================
+      // INVENTARIO PLANTA: inventario_movimientos (módulo inventario / planta)
       if (wantAll || sec === 'INVENTARIO_PLANTA') {
-        // 6.1 Traer movimientos
-        let qMov = supabase
+        let q = supabase
           .from('inventario_movimientos')
           .select('id, producto_id, tipo, cantidad, erogacion_detalle_id, venta_detalle_id, created_at')
           .order('created_at', { ascending: false })
           .limit(1200)
 
-        if (desdeISO) qMov = qMov.gte('created_at', desdeISO)
-        if (hastaISO) qMov = qMov.lte('created_at', hastaISO)
+        if (desdeISO) q = q.gte('created_at', desdeISO)
+        if (hastaISO) q = q.lte('created_at', hastaISO)
 
-        const { data: movs, error: movErr } = await qMov
-        if (!movErr) {
-          const rows = (movs || []) as any[]
-
-          const prodIds = Array.from(new Set(rows.map((r) => r.producto_id).filter(Boolean))).map((x) => Number(x))
-          const detCompraIds = Array.from(new Set(rows.map((r) => r.erogacion_detalle_id).filter(Boolean))).map((x) => Number(x))
-          const detVentaIds = Array.from(new Set(rows.map((r) => r.venta_detalle_id).filter(Boolean))).map((x) => Number(x))
-
-          // 6.2 Productos
-          const prodMap = new Map<number, ProductoRow>()
-          if (prodIds.length) {
-            const { data: prods } = await supabase
-              .from('productos')
-              .select('id, nombre, sku, unidad, control_inventario')
-              .in('id', prodIds)
-            for (const p of (prods || []) as any[]) prodMap.set(Number(p.id), p as ProductoRow)
-          }
-
-          // 6.3 Resolver usuario para erogación (detalle_compra -> erogaciones.user_id)
-          const erogByDetCompra = new Map<number, { erogacion_id: number; user_id: string | null; fecha: string | null }>()
-          if (detCompraIds.length) {
-            const { data: dets } = await supabase.from('detalle_compra').select('id, erogacion_id').in('id', detCompraIds)
-            const detList = (dets || []) as any[]
-            const erogIds = Array.from(new Set(detList.map((d) => d.erogacion_id).filter(Boolean))).map((x) => Number(x))
-            let erogMap = new Map<number, { user_id: string | null; fecha: string | null }>()
-            if (erogIds.length) {
-              const { data: erogs } = await supabase.from('erogaciones').select('id, user_id, fecha').in('id', erogIds)
-              for (const e of (erogs || []) as any[]) erogMap.set(Number(e.id), { user_id: e.user_id ?? null, fecha: e.fecha ?? null })
-            }
-            for (const d of detList) {
-              const e = erogMap.get(Number(d.erogacion_id)) || { user_id: null, fecha: null }
-              erogByDetCompra.set(Number(d.id), { erogacion_id: Number(d.erogacion_id), user_id: e.user_id, fecha: e.fecha })
-            }
-          }
-
-          // 6.4 Resolver usuario para venta (detalle_venta -> ventas.user_id)
-          const ventaByDetVenta = new Map<number, { venta_id: number; user_id: string | null; fecha: string | null }>()
-          if (detVentaIds.length) {
-            const { data: dets } = await supabase.from('detalle_venta').select('id, venta_id').in('id', detVentaIds)
-            const detList = (dets || []) as any[]
-            const ventaIds = Array.from(new Set(detList.map((d) => d.venta_id).filter(Boolean))).map((x) => Number(x))
-            let ventaMap = new Map<number, { user_id: string | null; fecha: string | null }>()
-            if (ventaIds.length) {
-              const { data: ventas } = await supabase.from('ventas').select('id, user_id, fecha').in('id', ventaIds)
-              for (const v of (ventas || []) as any[]) ventaMap.set(Number(v.id), { user_id: v.user_id ?? null, fecha: v.fecha ?? null })
-            }
-            for (const d of detList) {
-              const v = ventaMap.get(Number(d.venta_id)) || { user_id: null, fecha: null }
-              ventaByDetVenta.set(Number(d.id), { venta_id: Number(d.venta_id), user_id: v.user_id, fecha: v.fecha })
-            }
-          }
-
-          // 6.5 Construir items
-          for (const r of rows) {
-            const tipo = String(r.tipo || '').toUpperCase()
-            const prod = r.producto_id ? prodMap.get(Number(r.producto_id)) : null
-            const prodTxt = prod
-              ? `${prod.nombre || `Producto#${prod.id}`}${prod.sku ? ` (SKU ${prod.sku})` : ''}${prod.unidad ? ` · ${prod.unidad}` : ''}`
-              : r.producto_id
-              ? `Producto#${r.producto_id}`
-              : '—'
-
-            let usuario = '—'
-            let ref = `inventario_movimientos#${r.id}`
-            let contexto = ''
-
-            if (r.erogacion_detalle_id) {
-              const info = erogByDetCompra.get(Number(r.erogacion_detalle_id))
-              usuario = info?.user_id ? String(info.user_id) : '—'
-              ref = `erogaciones#${info?.erogacion_id ?? '—'} · detalle_compra#${r.erogacion_detalle_id}`
-              contexto = info?.fecha ? ` · Fecha erogación: ${info.fecha}` : ''
-            } else if (r.venta_detalle_id) {
-              const info = ventaByDetVenta.get(Number(r.venta_detalle_id))
-              usuario = info?.user_id ? String(info.user_id) : '—'
-              ref = `ventas#${info?.venta_id ?? '—'} · detalle_venta#${r.venta_detalle_id}`
-              contexto = info?.fecha ? ` · Fecha venta: ${info.fecha}` : ''
-            } else {
-              ref = `inventario_movimientos#${r.id} (ajuste manual)`
+        const { data, error } = await q
+        if (!error) {
+          for (const r of (data || []) as any[]) {
+            // inventario_movimientos no guarda user directamente, entonces lo marcamos como —
+            // (si quieres usuario real, hay que poblarlo vía audit_log o un trigger)
+            const usuario = '—'
+            if (uid) {
+              // si filtran por usuario específico, estos no tienen user -> los omitimos para no confundir
+              continue
             }
 
-            if (uid && usuario !== uid) continue
-
-            const det = `${labelInventarioTipo(tipo)} · ${prodTxt} · Cant ${signedCantidad(tipo, r.cantidad)}${contexto}`
+            const detalle = [
+              `ProductoID ${r.producto_id ?? '—'}`,
+              r.tipo ? `Tipo ${r.tipo}` : null,
+              r.cantidad != null ? `Cant ${num(r.cantidad)}` : null,
+              r.erogacion_detalle_id ? `ErogDet #${r.erogacion_detalle_id}` : null,
+              r.venta_detalle_id ? `VentaDet #${r.venta_detalle_id}` : null,
+            ]
+              .filter(Boolean)
+              .join(' · ')
 
             out.push({
               ts: String(r.created_at || ''),
               seccion: 'INVENTARIO_PLANTA',
-              accion: `MOVIMIENTO (${tipo || '—'})`,
+              accion: 'MOVIMIENTO (inventario_movimientos)',
               usuario,
-              usuario_label: userLabel(usuario),
-              referencia: ref,
-              detalle: det,
+              usuario_label: '—',
+              referencia: `inventario_movimientos#${r.id}`,
+              detalle: detalle || '—',
             })
           }
         }
@@ -540,7 +547,7 @@ export default function MovimientosEmpleadosPage() {
     } finally {
       setLoading(false)
     }
-  }, [filtros.desde, filtros.hasta, filtros.seccion, filtros.usuario_id, emailById])
+  }, [filtros.desde, filtros.hasta, filtros.seccion, filtros.usuario_id, userLabel])
 
   useEffect(() => {
     if (filtros.desde && filtros.hasta) cargar()
@@ -549,10 +556,17 @@ export default function MovimientosEmpleadosPage() {
   const itemsFiltrados = useMemo(() => {
     const sec = filtros.seccion
     if (sec === 'TODOS') return items
+
+    if (sec === 'INVENTARIO_PLANTA') {
+      return items.filter(
+        (x) => x.seccion === 'INVENTARIO_PLANTA' || x.seccion === 'VENTAS' || x.seccion === 'EROGACIONES'
+      )
+    }
+
     return items.filter((x) => x.seccion === sec)
   }, [items, filtros.seccion])
 
-  const generarPDF = async () => {
+  const generarPDF = useCallback(async () => {
     setGenerando(true)
     try {
       const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' })
@@ -573,27 +587,32 @@ export default function MovimientosEmpleadosPage() {
       autoTable(doc, {
         startY: 30,
         head: [['Fecha/Hora', 'Sección', 'Acción', 'Usuario', 'Referencia', 'Detalle']],
-        body: itemsFiltrados.slice(0, 1400).map((it) => [fmtFecha(it.ts), it.seccion, it.accion, it.usuario_label, it.referencia, it.detalle]),
-        styles: { fontSize: 8, cellPadding: 2 },
+        body: itemsFiltrados.slice(0, 1400).map((it) => [
+          fmtFecha(it.ts),
+          it.seccion,
+          it.accion,
+          it.usuario_label,
+          it.referencia,
+          it.detalle,
+        ]),
+        styles: { fontSize: 8, cellPadding: 2, valign: 'top' },
         columnStyles: {
           0: { cellWidth: 30 },
           1: { cellWidth: 28 },
-          2: { cellWidth: 34 },
+          2: { cellWidth: 32 },
           3: { cellWidth: 55 },
-          4: { cellWidth: 60 },
+          4: { cellWidth: 50 },
           5: { cellWidth: 85 },
         },
       })
 
       const now = new Date()
-      const name = `reporte_movimientos_empleados_${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(
-        now.getHours()
-      )}${pad(now.getMinutes())}${pad(now.getSeconds())}.pdf`
+      const name = `reporte_movimientos_empleados_${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}.pdf`
       doc.save(name)
     } finally {
       setGenerando(false)
     }
-  }
+  }, [filtros.desde, filtros.hasta, filtros.seccion, filtros.usuario_id, itemsFiltrados, userLabel])
 
   return (
     <div className="p-6 max-w-7xl mx-auto">
@@ -611,6 +630,7 @@ export default function MovimientosEmpleadosPage() {
         </Link>
       </div>
 
+      {/* Filtros */}
       <div className="grid grid-cols-1 md:grid-cols-6 gap-3 mb-4">
         <input
           type="date"
@@ -632,12 +652,13 @@ export default function MovimientosEmpleadosPage() {
         >
           <option value="TODOS">Todas</option>
           <option value="GRANJA">Granja</option>
-          <option value="INVENTARIO_PLANTA">Inventario planta</option>
           <option value="VEHICULOS">Vehículos</option>
           <option value="VENTAS">Ventas</option>
           <option value="EROGACIONES">Erogaciones</option>
+          <option value="INVENTARIO_PLANTA">Inventario planta</option>
         </select>
 
+        {/* dropdown usuarios */}
         <select
           className="border p-2"
           value={filtros.usuario_id}
@@ -668,6 +689,7 @@ export default function MovimientosEmpleadosPage() {
         </button>
       </div>
 
+      {/* Tabla */}
       <div className="border rounded bg-white overflow-auto">
         <table className="w-full text-sm">
           <thead className="bg-gray-200">
@@ -689,7 +711,7 @@ export default function MovimientosEmpleadosPage() {
               </tr>
             ) : (
               itemsFiltrados.map((it, idx) => (
-                <tr key={`${it.seccion}-${it.referencia}-${idx}`} className="border-t align-top">
+                <tr key={`${it.seccion}-${it.referencia}-${idx}`} className="border-t">
                   <td className="p-2 whitespace-nowrap">{fmtFecha(it.ts)}</td>
                   <td className="p-2">{it.seccion}</td>
                   <td className="p-2">{it.accion}</td>
@@ -702,6 +724,11 @@ export default function MovimientosEmpleadosPage() {
           </tbody>
         </table>
       </div>
+
+      <p className="text-xs text-gray-500 mt-3">
+        Nota: “Inventario planta” agrupa movimientos del inventario (inventario_movimientos) + eventos de Ventas/Erogaciones
+        que afectan inventarios. Para ver eliminaciones/ediciones completas se recomienda tener audit_log activo.
+      </p>
     </div>
   )
 }
