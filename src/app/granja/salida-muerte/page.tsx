@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabaseClient'
 
@@ -27,6 +27,16 @@ type Baja = {
   machos: number | null
   motivo: string | null
   foto_url: string | null
+  observaciones: string | null
+  reportado_por: string | null
+}
+
+const hoyISO = () => {
+  const d = new Date()
+  const yyyy = d.getFullYear()
+  const mm = String(d.getMonth() + 1).padStart(2, '0')
+  const dd = String(d.getDate()).padStart(2, '0')
+  return `${yyyy}-${mm}-${dd}`
 }
 
 export default function GranjaSalidaMuertePage() {
@@ -48,9 +58,14 @@ export default function GranjaSalidaMuertePage() {
     observaciones: '',
   })
 
+  useEffect(() => {
+    // fecha por defecto para evitar guardar vacío
+    setForm((prev) => ({ ...prev, fecha: prev.fecha || hoyISO() }))
+  }, [])
+
   const resetForm = () =>
     setForm({
-      fecha: '',
+      fecha: hoyISO(),
       ubicacion_id: '',
       lote_id: '',
       cantidad: '',
@@ -61,11 +76,17 @@ export default function GranjaSalidaMuertePage() {
       observaciones: '',
     })
 
-  const findUbicacion = (id: number) =>
-    ubicaciones.find((u) => u.id === id)
+  const ubicMap = useMemo(() => {
+    const m = new Map<number, Ubicacion>()
+    ubicaciones.forEach((u) => m.set(u.id, u))
+    return m
+  }, [ubicaciones])
 
-  const findLote = (id: number | null) =>
-    lotes.find((l) => l.id === id)
+  const loteMap = useMemo(() => {
+    const m = new Map<number, Lote>()
+    lotes.forEach((l) => m.set(l.id, l))
+    return m
+  }, [lotes])
 
   // --------- carga de datos ---------
   const cargarDatos = useCallback(async () => {
@@ -81,27 +102,29 @@ export default function GranjaSalidaMuertePage() {
           .select('id, codigo, nombre')
           .eq('activo', true)
           .order('codigo', { ascending: true }),
+
         supabase
           .from('granja_lotes')
           .select('id, codigo, fecha, tipo_origen')
           .order('fecha', { ascending: false })
-          .limit(100),
+          .limit(200),
+
         supabase
           .from('granja_bajas_muerte')
           .select(
-            'id, fecha, ubicacion_id, lote_id, cantidad, hembras, machos, motivo, foto_url'
+            'id, fecha, ubicacion_id, lote_id, cantidad, hembras, machos, motivo, foto_url, observaciones, reportado_por'
           )
           .order('fecha', { ascending: false })
-          .limit(20),
+          .limit(50),
       ])
 
       if (ubicError) console.error('Error cargando ubicaciones', ubicError)
       if (loteError) console.error('Error cargando lotes', loteError)
       if (bajasError) console.error('Error cargando bajas', bajasError)
 
-      if (ubicData) setUbicaciones(ubicData as Ubicacion[])
-      if (loteData) setLotes(loteData as Lote[])
-      if (bajasData) setBajasRecientes(bajasData as Baja[])
+      setUbicaciones((ubicData as Ubicacion[]) || [])
+      setLotes((loteData as Lote[]) || [])
+      setBajasRecientes((bajasData as Baja[]) || [])
     } finally {
       setLoading(false)
     }
@@ -113,23 +136,43 @@ export default function GranjaSalidaMuertePage() {
 
   // --------- guardar baja por muerte ---------
   const guardarBaja = async () => {
+    if (guardando) return
+
     if (!form.fecha || !form.ubicacion_id || !form.cantidad) {
       alert('Fecha, ubicación y cantidad son obligatorios.')
       return
     }
 
     const cantidad = Number(form.cantidad)
-    const hembrasNum = form.hembras ? Number(form.hembras) : null
-    const machosNum = form.machos ? Number(form.machos) : null
+    const hembrasNum = form.hembras.trim() !== '' ? Number(form.hembras) : null
+    const machosNum = form.machos.trim() !== '' ? Number(form.machos) : null
 
     if (Number.isNaN(cantidad) || cantidad <= 0) {
       alert('La cantidad debe ser un número mayor que cero.')
       return
     }
+    if (hembrasNum != null && (Number.isNaN(hembrasNum) || hembrasNum < 0)) {
+      alert('Hembras debe ser un número válido (>= 0).')
+      return
+    }
+    if (machosNum != null && (Number.isNaN(machosNum) || machosNum < 0)) {
+      alert('Machos debe ser un número válido (>= 0).')
+      return
+    }
 
     setGuardando(true)
     try {
-      // 1) insertar baja
+      const { data: userData, error: userErr } = await supabase.auth.getUser()
+      if (userErr) console.error('Error obteniendo usuario', userErr)
+      const userId = userData?.user?.id ?? null
+
+      // Si hay RLS que requiere userId, esto evita el 403 silencioso
+      if (!userId) {
+        alert('Sesión no válida. Vuelve a iniciar sesión.')
+        return
+      }
+
+      // 1) insertar baja (con reportado_por)
       const { data: bajaInsertada, error: bajaErr } = await supabase
         .from('granja_bajas_muerte')
         .insert({
@@ -139,10 +182,12 @@ export default function GranjaSalidaMuertePage() {
           cantidad,
           hembras: hembrasNum,
           machos: machosNum,
-          motivo: form.motivo || null,
-          foto_url: form.foto_url || null,
-          observaciones: form.observaciones || null,
-          // reportado_por se deja nulo por ahora (sin login de empleados)
+          motivo: form.motivo.trim() ? form.motivo.trim() : null,
+          foto_url: form.foto_url.trim() ? form.foto_url.trim() : null,
+          observaciones: form.observaciones.trim()
+            ? form.observaciones.trim()
+            : null,
+          reportado_por: userId,
         })
         .select('id')
         .single()
@@ -153,20 +198,27 @@ export default function GranjaSalidaMuertePage() {
         return
       }
 
-      // 2) movimiento en inventario (salida por muerte)
-      const { error: movErr } = await supabase
-        .from('granja_movimientos')
-        .insert({
-          ubicacion_id: Number(form.ubicacion_id),
-          tipo: 'SALIDA_MUERTE',
-          lote_id: form.lote_id ? Number(form.lote_id) : null,
-          cantidad: -cantidad, // negativo para debitar
-          hembras: hembrasNum,
-          machos: machosNum,
-          referencia_tabla: 'granja_bajas_muerte',
-          referencia_id: bajaInsertada.id,
-          observaciones: 'Salida de cerdos por muerte',
-        })
+      // 2) movimiento en inventario (salida por muerte) con user_id
+      const obsMov = [
+        'Salida de cerdos por muerte',
+        form.motivo.trim() ? `Motivo: ${form.motivo.trim()}` : null,
+      ]
+        .filter(Boolean)
+        .join(' · ')
+
+      const { error: movErr } = await supabase.from('granja_movimientos').insert({
+        fecha: new Date().toISOString(),
+        ubicacion_id: Number(form.ubicacion_id),
+        tipo: 'SALIDA_MUERTE',
+        lote_id: form.lote_id ? Number(form.lote_id) : null,
+        cantidad: -cantidad, // negativo para debitar
+        hembras: hembrasNum,
+        machos: machosNum,
+        referencia_tabla: 'granja_bajas_muerte',
+        referencia_id: bajaInsertada.id,
+        user_id: userId,
+        observaciones: obsMov || null,
+      })
 
       if (movErr) {
         console.error('Error registrando movimiento', movErr)
@@ -210,23 +262,17 @@ export default function GranjaSalidaMuertePage() {
           <h2 className="font-semibold mb-3">Nueva baja por muerte</h2>
 
           {loading && (
-            <p className="text-xs text-gray-500 mb-2">
-              Cargando catálogos…
-            </p>
+            <p className="text-xs text-gray-500 mb-2">Cargando catálogos…</p>
           )}
 
           <div className="grid grid-cols-2 gap-3">
             <div className="col-span-2">
-              <label className="block text-xs font-semibold mb-1">
-                Fecha
-              </label>
+              <label className="block text-xs font-semibold mb-1">Fecha</label>
               <input
                 type="date"
                 className="border rounded w-full p-2 text-sm"
                 value={form.fecha}
-                onChange={(e) =>
-                  setForm({ ...form, fecha: e.target.value })
-                }
+                onChange={(e) => setForm({ ...form, fecha: e.target.value })}
               />
             </div>
 
@@ -258,9 +304,7 @@ export default function GranjaSalidaMuertePage() {
               <select
                 className="border rounded w-full p-2 text-sm"
                 value={form.lote_id}
-                onChange={(e) =>
-                  setForm({ ...form, lote_id: e.target.value })
-                }
+                onChange={(e) => setForm({ ...form, lote_id: e.target.value })}
               >
                 <option value="">Sin lote específico</option>
                 {lotes.map((l) => (
@@ -293,9 +337,7 @@ export default function GranjaSalidaMuertePage() {
                 type="number"
                 className="border rounded w-full p-2 text-sm"
                 value={form.hembras}
-                onChange={(e) =>
-                  setForm({ ...form, hembras: e.target.value })
-                }
+                onChange={(e) => setForm({ ...form, hembras: e.target.value })}
               />
             </div>
 
@@ -307,23 +349,17 @@ export default function GranjaSalidaMuertePage() {
                 type="number"
                 className="border rounded w-full p-2 text-sm"
                 value={form.machos}
-                onChange={(e) =>
-                  setForm({ ...form, machos: e.target.value })
-                }
+                onChange={(e) => setForm({ ...form, machos: e.target.value })}
               />
             </div>
 
             <div className="col-span-2">
-              <label className="block text-xs font-semibold mb-1">
-                Motivo
-              </label>
+              <label className="block text-xs font-semibold mb-1">Motivo</label>
               <input
                 className="border rounded w-full p-2 text-sm"
                 placeholder="Ejemplo: aplastado, enfermedad, accidente"
                 value={form.motivo}
-                onChange={(e) =>
-                  setForm({ ...form, motivo: e.target.value })
-                }
+                onChange={(e) => setForm({ ...form, motivo: e.target.value })}
               />
             </div>
 
@@ -335,9 +371,7 @@ export default function GranjaSalidaMuertePage() {
                 className="border rounded w-full p-2 text-sm"
                 placeholder="Pegue aquí la URL de la foto si existe"
                 value={form.foto_url}
-                onChange={(e) =>
-                  setForm({ ...form, foto_url: e.target.value })
-                }
+                onChange={(e) => setForm({ ...form, foto_url: e.target.value })}
               />
             </div>
 
@@ -350,10 +384,7 @@ export default function GranjaSalidaMuertePage() {
                 rows={3}
                 value={form.observaciones}
                 onChange={(e) =>
-                  setForm({
-                    ...form,
-                    observaciones: e.target.value,
-                  })
+                  setForm({ ...form, observaciones: e.target.value })
                 }
               />
             </div>
@@ -381,9 +412,7 @@ export default function GranjaSalidaMuertePage() {
         <div className="border rounded-lg p-4 bg-white shadow-sm">
           <h2 className="font-semibold mb-3">Bajas recientes</h2>
           {bajasRecientes.length === 0 ? (
-            <p className="text-sm text-gray-600">
-              Aún no hay bajas registradas.
-            </p>
+            <p className="text-sm text-gray-600">Aún no hay bajas registradas.</p>
           ) : (
             <div className="overflow-x-auto max-h-[480px]">
               <table className="w-full text-xs">
@@ -400,33 +429,26 @@ export default function GranjaSalidaMuertePage() {
                 </thead>
                 <tbody>
                   {bajasRecientes.map((b) => {
-                    const u = findUbicacion(b.ubicacion_id)
-                    const l = findLote(b.lote_id)
+                    const u = ubicMap.get(b.ubicacion_id)
+                    const l = b.lote_id ? loteMap.get(b.lote_id) : undefined
+
                     return (
                       <tr key={b.id} className="border-t">
                         <td className="p-2">{b.fecha}</td>
                         <td className="p-2">
                           {u
-                            ? `${u.codigo}${
-                                u.nombre ? ` — ${u.nombre}` : ''
-                              }`
+                            ? `${u.codigo}${u.nombre ? ` — ${u.nombre}` : ''}`
                             : b.ubicacion_id}
                         </td>
-                        <td className="p-2">
-                          {l ? l.codigo : '—'}
-                        </td>
-                        <td className="p-2 text-right">
-                          {b.cantidad}
-                        </td>
+                        <td className="p-2">{l ? l.codigo : '—'}</td>
+                        <td className="p-2 text-right">{b.cantidad}</td>
                         <td className="p-2 text-right">
                           {b.hembras != null ? b.hembras : '—'}
                         </td>
                         <td className="p-2 text-right">
                           {b.machos != null ? b.machos : '—'}
                         </td>
-                        <td className="p-2">
-                          {b.motivo || '—'}
-                        </td>
+                        <td className="p-2">{b.motivo || '—'}</td>
                       </tr>
                     )
                   })}
