@@ -33,12 +33,20 @@ type Baja = {
 
 const hoyISO = () => new Date().toISOString().slice(0, 10)
 
+// fecha “segura” dentro del mismo día seleccionado (evita corrimientos por timezone)
+const fechaMediodiaISO = (yyyy_mm_dd: string) => {
+  // Sin “Z” para que JS lo interprete en hora local.
+  const d = new Date(`${yyyy_mm_dd}T12:00:00`)
+  return d.toISOString()
+}
+
 export default function GranjaSalidaMuertePage() {
   const [ubicaciones, setUbicaciones] = useState<Ubicacion[]>([])
   const [lotes, setLotes] = useState<Lote[]>([])
   const [bajasRecientes, setBajasRecientes] = useState<Baja[]>([])
   const [loading, setLoading] = useState(false)
   const [guardando, setGuardando] = useState(false)
+  const [eliminandoId, setEliminandoId] = useState<number | null>(null)
 
   const [form, setForm] = useState({
     fecha: hoyISO(),
@@ -77,7 +85,6 @@ export default function GranjaSalidaMuertePage() {
     return m
   }, [lotes])
 
-  // --------- carga de datos ---------
   const cargarDatos = useCallback(async () => {
     setLoading(true)
     try {
@@ -98,7 +105,6 @@ export default function GranjaSalidaMuertePage() {
           .order('fecha', { ascending: false })
           .limit(200),
 
-        // OJO: si aquí te daba 403, era RLS. Con el SQL de arriba se arregla.
         supabase
           .from('granja_bajas_muerte')
           .select(
@@ -124,14 +130,15 @@ export default function GranjaSalidaMuertePage() {
     cargarDatos()
   }, [cargarDatos])
 
-  // --------- guardar baja por muerte ---------
   const guardarBaja = async () => {
     if (!form.fecha || !form.ubicacion_id || !form.cantidad) {
       alert('Fecha, ubicación y cantidad son obligatorios.')
       return
     }
 
-    const cantidad = Number(form.cantidad)
+    const cantidadRaw = Number(form.cantidad)
+    const cantidad = Math.abs(cantidadRaw)
+
     const hembrasNum = form.hembras.trim() !== '' ? Number(form.hembras) : null
     const machosNum = form.machos.trim() !== '' ? Number(form.machos) : null
 
@@ -150,11 +157,10 @@ export default function GranjaSalidaMuertePage() {
 
     setGuardando(true)
     try {
-      const { data: userData, error: userErr } = await supabase.auth.getUser()
-      if (userErr) console.error('Error obteniendo usuario', userErr)
+      const { data: userData } = await supabase.auth.getUser()
       const userId = userData?.user?.id ?? null
 
-      // 1) insertar baja
+      // 1) Insertar baja
       const { data: bajaInsertada, error: bajaErr } = await supabase
         .from('granja_bajas_muerte')
         .insert({
@@ -169,25 +175,27 @@ export default function GranjaSalidaMuertePage() {
           observaciones: form.observaciones?.trim()
             ? form.observaciones.trim()
             : null,
-          reportado_por: userId, // importante si tu RLS lo requiere
+          reportado_por: userId,
         })
         .select('id')
         .single()
 
       if (bajaErr || !bajaInsertada) {
         console.error('Error guardando baja', bajaErr)
-        alert(
-          'No se pudo guardar la baja por muerte. Revisa RLS/policies (error en consola).'
-        )
+        alert('No se pudo guardar la baja por muerte.')
         return
       }
 
-      // 2) registrar movimiento (negativo = debitar inventario)
+      // 2) Insertar movimiento NEGATIVO para debitar inventario
+      const movCantidad = -Math.abs(cantidad)
+      const fechaMov = fechaMediodiaISO(form.fecha)
+
       const { error: movErr } = await supabase.from('granja_movimientos').insert({
+        fecha: fechaMov, // clave para que caiga dentro del corte del día
         ubicacion_id: Number(form.ubicacion_id),
         tipo: 'SALIDA_MUERTE',
         lote_id: form.lote_id ? Number(form.lote_id) : null,
-        cantidad: -cantidad,
+        cantidad: movCantidad,
         hembras: hembrasNum,
         machos: machosNum,
         referencia_tabla: 'granja_bajas_muerte',
@@ -199,14 +207,18 @@ export default function GranjaSalidaMuertePage() {
       })
 
       if (movErr) {
-        console.error('Error registrando movimiento', movErr)
+        // Rollback: no dejamos una baja sin movimiento
+        console.error('Error registrando movimiento (rollback)', movErr)
+
+        await supabase.from('granja_bajas_muerte').delete().eq('id', bajaInsertada.id)
+
         alert(
-          'Baja guardada, pero hubo un problema al registrar el movimiento de inventario.'
+          'No se pudo registrar el movimiento de inventario. Se revirtió la baja (para no dejar datos inconsistentes).'
         )
-      } else {
-        alert('Baja por muerte registrada correctamente.')
+        return
       }
 
+      alert('Baja por muerte registrada correctamente.')
       resetForm()
       await cargarDatos()
     } finally {
@@ -214,7 +226,56 @@ export default function GranjaSalidaMuertePage() {
     }
   }
 
-  // --------- UI ---------
+  const eliminarBaja = async (baja: Baja) => {
+    if (eliminandoId) return
+    const u = ubicMap.get(baja.ubicacion_id)
+    const desc = u ? `${u.codigo}` : `Ubicación ${baja.ubicacion_id}`
+
+    if (
+      !confirm(
+        `¿Eliminar esta baja por muerte?\n\nFecha: ${baja.fecha}\n${desc}\nCantidad: ${baja.cantidad}\n\nEsto también ajustará el inventario (elimina el movimiento).`
+      )
+    ) {
+      return
+    }
+
+    setEliminandoId(baja.id)
+    try {
+      // 1) borrar movimientos ligados a esta baja
+      //    (mismo referencia_tabla y referencia_id que insertamos)
+      const { error: delMovErr } = await supabase
+        .from('granja_movimientos')
+        .delete()
+        .eq('referencia_tabla', 'granja_bajas_muerte')
+        .eq('referencia_id', baja.id)
+
+      if (delMovErr) {
+        console.error('Error eliminando movimiento ligado', delMovErr)
+        alert(
+          'No se pudo eliminar el movimiento asociado (RLS/permiso). No se eliminó la baja.'
+        )
+        return
+      }
+
+      // 2) borrar la baja
+      const { error: delBajaErr } = await supabase
+        .from('granja_bajas_muerte')
+        .delete()
+        .eq('id', baja.id)
+
+      if (delBajaErr) {
+        console.error('Error eliminando baja', delBajaErr)
+        alert('No se pudo eliminar la baja (RLS/permiso).')
+        return
+      }
+
+      alert('Baja eliminada correctamente.')
+      await cargarDatos()
+    } finally {
+      setEliminandoId(null)
+    }
+  }
+
   return (
     <div className="p-6 max-w-5xl mx-auto">
       <div className="mb-6 flex items-center gap-3">
@@ -294,9 +355,7 @@ export default function GranjaSalidaMuertePage() {
             </div>
 
             <div>
-              <label className="block text-xs font-semibold mb-1">
-                Cantidad
-              </label>
+              <label className="block text-xs font-semibold mb-1">Cantidad</label>
               <input
                 type="number"
                 className="border rounded w-full p-2 text-sm"
@@ -399,37 +458,44 @@ export default function GranjaSalidaMuertePage() {
                     <th className="p-2 text-left">Ubicación</th>
                     <th className="p-2 text-left">Lote</th>
                     <th className="p-2 text-right">Cant.</th>
-                    <th className="p-2 text-right">H</th>
-                    <th className="p-2 text-right">M</th>
                     <th className="p-2 text-left">Motivo</th>
+                    <th className="p-2 text-right">Acciones</th>
                   </tr>
                 </thead>
                 <tbody>
                   {bajasRecientes.map((b) => {
                     const u = ubicMap.get(b.ubicacion_id)
                     const l = b.lote_id ? loteMap.get(b.lote_id) : undefined
+                    const ubicTxt = u
+                      ? `${u.codigo}${u.nombre ? ` — ${u.nombre}` : ''}`
+                      : String(b.ubicacion_id)
+
                     return (
                       <tr key={b.id} className="border-t">
                         <td className="p-2">{b.fecha}</td>
-                        <td className="p-2">
-                          {u
-                            ? `${u.codigo}${u.nombre ? ` — ${u.nombre}` : ''}`
-                            : b.ubicacion_id}
-                        </td>
+                        <td className="p-2">{ubicTxt}</td>
                         <td className="p-2">{l ? l.codigo : '—'}</td>
                         <td className="p-2 text-right">{b.cantidad}</td>
-                        <td className="p-2 text-right">
-                          {b.hembras != null ? b.hembras : '—'}
-                        </td>
-                        <td className="p-2 text-right">
-                          {b.machos != null ? b.machos : '—'}
-                        </td>
                         <td className="p-2">{b.motivo || '—'}</td>
+                        <td className="p-2 text-right">
+                          <button
+                            onClick={() => eliminarBaja(b)}
+                            disabled={eliminandoId === b.id}
+                            className="bg-red-600 hover:bg-red-700 disabled:opacity-60 text-white px-2 py-1 rounded text-[11px]"
+                          >
+                            {eliminandoId === b.id ? 'Eliminando…' : 'Eliminar'}
+                          </button>
+                        </td>
                       </tr>
                     )
                   })}
                 </tbody>
               </table>
+
+              <p className="mt-2 text-[11px] text-gray-500">
+                Al eliminar una baja, también se elimina el movimiento asociado para
+                mantener el inventario consistente.
+              </p>
             </div>
           )}
         </div>
