@@ -12,6 +12,8 @@ type VehiculoOption = {
   id: number
   placa: string | null
   alias: string | null
+  empresa_id?: number | null
+  division_id?: number | null
 }
 
 type Viaje = {
@@ -31,6 +33,8 @@ type Viaje = {
   observaciones: string | null
   km_recorridos: number | null
   consumo_por_galon: number | null
+  empresa_id?: number | null
+  division_id?: number | null
 }
 
 type GastoAdicional = {
@@ -43,12 +47,14 @@ type GastoAdicional = {
 
 /* ========================= Helpers ========================= */
 
-const toNum = (v: any) => {
-  const n = Number(v)
-  return Number.isFinite(n) ? n : 0
+const toNumOrNull = (v: string) => {
+  const t = (v ?? '').toString().trim()
+  if (!t) return null
+  const n = Number(t)
+  return Number.isFinite(n) ? n : null
 }
 
-const round2 = (n: number) => Math.round(n * 100) / 100
+const clampNonNegative = (n: number) => (n < 0 ? 0 : n)
 
 /* ========================= Página ========================= */
 
@@ -66,12 +72,7 @@ export default function VehiculosPage() {
     monto: '',
   })
 
-  const [filters, setFilters] = useState({
-    vehiculoId: '',
-    desde: '',
-    hasta: '',
-    texto: '',
-  })
+  const [diasManual, setDiasManual] = useState(false)
 
   const [form, setForm] = useState({
     id: 0,
@@ -91,8 +92,6 @@ export default function VehiculosPage() {
     km_recorridos: '',
     consumo_por_galon: '',
   })
-
-  const [diasManual, setDiasManual] = useState(false)
 
   const resetForm = () => {
     setForm({
@@ -119,7 +118,11 @@ export default function VehiculosPage() {
   /* ========================= Catálogo de vehículos ========================= */
 
   const cargarVehiculos = useCallback(async () => {
-    const { data, error } = await supabase.from('vehiculos').select('id, placa, alias').order('placa', { ascending: true })
+    // Si tu tabla vehiculos no tiene empresa_id/division_id, Supabase igual devuelve solo lo existente
+    const { data, error } = await supabase
+      .from('vehiculos')
+      .select('id, placa, alias, empresa_id, division_id')
+      .order('placa', { ascending: true })
 
     if (error) {
       console.error('Error cargando vehículos', error)
@@ -135,6 +138,17 @@ export default function VehiculosPage() {
     for (const v of vehiculos) {
       const etiqueta = (v.placa || `ID ${v.id}`) + (v.alias ? ` · ${v.alias}` : '')
       map.set(v.id, etiqueta)
+    }
+    return map
+  }, [vehiculos])
+
+  const vehiculoInfoMap = useMemo(() => {
+    const map = new Map<number, { empresa_id: number | null; division_id: number | null }>()
+    for (const v of vehiculos) {
+      map.set(v.id, {
+        empresa_id: (v.empresa_id ?? null) as number | null,
+        division_id: (v.division_id ?? null) as number | null,
+      })
     }
     return map
   }, [vehiculos])
@@ -163,13 +177,10 @@ export default function VehiculosPage() {
     cargarVehiculos()
   }, [cargarViajes, cargarVehiculos])
 
-  /* ========================= Calcular días automáticamente (pero editable) ========================= */
-
+  /* ========================= Calcular días automáticamente ========================= */
   useEffect(() => {
-    if (diasManual) return
-
     if (!form.fecha_inicio || !form.fecha_fin) {
-      if (form.dias !== '') setForm((prev) => ({ ...prev, dias: '' }))
+      // si no hay fechas, no forzamos nada
       return
     }
 
@@ -182,28 +193,60 @@ export default function VehiculosPage() {
     const rawDays = diffMs / msPerDay
 
     const diasCalc = diffMs >= 0 ? Math.floor(rawDays) + 1 : 0
-    setForm((prev) => ({ ...prev, dias: diasCalc ? String(diasCalc) : '' }))
-  }, [form.fecha_inicio, form.fecha_fin, diasManual])
+    const diasStr = diasCalc > 0 ? String(diasCalc) : ''
 
-  /* ========================= Filtrado UI (lista) ========================= */
+    // Solo auto-ajustar si el usuario NO lo editó manualmente
+    if (!diasManual && form.dias !== diasStr) {
+      setForm((prev) => ({ ...prev, dias: diasStr }))
+    }
+  }, [form.fecha_inicio, form.fecha_fin, form.dias, diasManual])
+
+  /* ========================= Calcular consumo por galón (usando galones consumidos) ========================= */
+
+  const galonesConsumidos = useMemo(() => {
+    const ini = Number(form.combustible_inicial || 0)
+    const desp = Number(form.combustible_despachado || 0)
+    const fin = Number(form.combustible_final || 0)
+    return clampNonNegative(ini + desp - fin)
+  }, [form.combustible_inicial, form.combustible_despachado, form.combustible_final])
+
+  useEffect(() => {
+    const km = Number(form.km_recorridos || 0)
+    const gal = Number(galonesConsumidos || 0)
+
+    if (km > 0 && gal > 0) {
+      const consumo = km / gal
+      const str = consumo.toFixed(2)
+      if (form.consumo_por_galon !== str) {
+        setForm((prev) => ({ ...prev, consumo_por_galon: str }))
+      }
+    } else {
+      if (form.consumo_por_galon !== '') {
+        setForm((prev) => ({ ...prev, consumo_por_galon: '' }))
+      }
+    }
+  }, [form.km_recorridos, galonesConsumidos, form.consumo_por_galon])
+
+  /* ========================= Filtros ========================= */
+
+  const [filters, setFilters] = useState({
+    vehiculoId: '',
+    desde: '',
+    hasta: '',
+    texto: '',
+  })
 
   const viajesFiltrados = useMemo(() => {
     return viajes.filter((v) => {
-      if (filters.vehiculoId && String(v.vehiculo_id || '') !== filters.vehiculoId) return false
+      if (filters.vehiculoId && String(v.vehiculo_id ?? '') !== filters.vehiculoId) return false
 
-      if (filters.desde) {
-        const f = v.fecha_inicio || ''
-        if (f && f < filters.desde) return false
-      }
-      if (filters.hasta) {
-        const f = v.fecha_fin || v.fecha_inicio || ''
-        if (f && f > filters.hasta) return false
-      }
+      if (filters.desde && v.fecha_inicio && v.fecha_inicio < filters.desde) return false
+      if (filters.hasta && v.fecha_inicio && v.fecha_inicio > filters.hasta) return false
 
       const t = filters.texto.trim().toLowerCase()
       if (t) {
         const fields = [v.conductor, v.origen, v.destino]
-        const match = fields.some((x) => (x || '').toLowerCase().includes(t))
+        const match = fields.some((f) => (f || '').toLowerCase().includes(t))
         if (!match) return false
       }
 
@@ -232,7 +275,7 @@ export default function VehiculosPage() {
 
   const seleccionarViaje = async (v: Viaje) => {
     setSelected(v)
-    setDiasManual(true) // respetar lo guardado (editable)
+    setDiasManual(false)
     setForm({
       id: v.id,
       vehiculo_id: v.vehiculo_id ? String(v.vehiculo_id) : '',
@@ -257,22 +300,41 @@ export default function VehiculosPage() {
   /* ========================= Guardar viaje ========================= */
 
   const guardarViaje = async () => {
-    const payload = {
-      vehiculo_id: form.vehiculo_id ? Number(form.vehiculo_id) : null,
+    // ✅ Evita el 400 más común: vehiculo_id vacío / fechas vacías
+    if (!form.vehiculo_id) {
+      alert('Selecciona un vehículo antes de guardar.')
+      return
+    }
+    if (!form.fecha_inicio) {
+      alert('Ingresa la fecha de inicio.')
+      return
+    }
+
+    const vehId = Number(form.vehiculo_id)
+    const info = vehiculoInfoMap.get(vehId)
+
+    const payload: any = {
+      vehiculo_id: vehId,
       fecha_inicio: form.fecha_inicio || null,
       fecha_fin: form.fecha_fin || null,
       origen: form.origen || null,
       destino: form.destino || null,
       conductor: form.conductor || null,
-      combustible_inicial: form.combustible_inicial ? Number(form.combustible_inicial) : null,
-      combustible_final: form.combustible_final ? Number(form.combustible_final) : null,
-      combustible_despachado: form.combustible_despachado ? Number(form.combustible_despachado) : null,
-      precio_galon: form.precio_galon ? Number(form.precio_galon) : null,
-      salario_diario: form.salario_diario ? Number(form.salario_diario) : null,
-      dias: form.dias ? Number(form.dias) : null,
+      combustible_inicial: toNumOrNull(form.combustible_inicial),
+      combustible_final: toNumOrNull(form.combustible_final),
+      combustible_despachado: toNumOrNull(form.combustible_despachado),
+      precio_galon: toNumOrNull(form.precio_galon),
+      salario_diario: toNumOrNull(form.salario_diario),
+      dias: toNumOrNull(form.dias), // ahora editable (ej 1.5)
       observaciones: form.observaciones || null,
-      km_recorridos: form.km_recorridos ? Number(form.km_recorridos) : null,
-      consumo_por_galon: form.consumo_por_galon ? Number(form.consumo_por_galon) : null,
+      km_recorridos: toNumOrNull(form.km_recorridos),
+      consumo_por_galon: toNumOrNull(form.consumo_por_galon),
+    }
+
+    // Si tu tabla requiere empresa/division, esto evita NULL (si está disponible en vehiculos)
+    if (info) {
+      payload.empresa_id = info.empresa_id
+      payload.division_id = info.division_id
     }
 
     if (form.id) {
@@ -287,7 +349,7 @@ export default function VehiculosPage() {
       const { error } = await supabase.from('viajes').insert(payload)
       if (error) {
         alert('No se pudo crear el viaje.')
-        console.error(error)
+        console.error(error) // aquí verás el motivo exacto (constraint/columna/etc)
         return
       }
       alert('Viaje creado.')
@@ -317,34 +379,33 @@ export default function VehiculosPage() {
     }
 
     if (selected?.id === id) {
-      resetForm()
       setSelected(null)
+      resetForm()
       setGastos([])
     }
 
     await cargarViajes()
-    alert('Viaje eliminado.')
   }
 
   /* ========================= Gastos adicionales ========================= */
 
   const agregarGasto = async () => {
-    if (!selected) return
-
+    if (!selected) {
+      alert('Primero selecciona/crea un viaje.')
+      return
+    }
     const payload = {
       viaje_id: selected.id,
       fecha: gastoNuevo.fecha || null,
       descripcion: gastoNuevo.descripcion || null,
       monto: gastoNuevo.monto ? Number(gastoNuevo.monto) : null,
     }
-
     const { error } = await supabase.from('viaje_gastos').insert(payload)
     if (error) {
       alert('No se pudo agregar el gasto.')
       console.error(error)
       return
     }
-
     setGastoNuevo({ fecha: '', descripcion: '', monto: '' })
     await cargarGastos(selected.id)
   }
@@ -363,35 +424,13 @@ export default function VehiculosPage() {
   /* ========================= Totales (preview) ========================= */
 
   const totales = useMemo(() => {
-    const ini = toNum(form.combustible_inicial)
-    const desp = toNum(form.combustible_despachado)
-    const fin = toNum(form.combustible_final)
-    const precio = toNum(form.precio_galon)
-
-    // ✅ NUEVO: (inicial + despachado - final) * precio
-    const galConsumidosRaw = ini + desp - fin
-    const galConsumidos = galConsumidosRaw < 0 ? 0 : galConsumidosRaw
-    const fuel = round2(galConsumidos * precio)
-
-    const salary = round2(toNum(form.salario_diario) * toNum(form.dias))
-    const otros = round2(gastos.reduce((s, g) => s + toNum(g.monto), 0))
-    const total = round2(fuel + salary + otros)
-
-    // opcional (si querés coherencia con el nuevo consumo)
-    const km = toNum(form.km_recorridos)
-    const consumoPorGal = galConsumidos > 0 ? round2(km / galConsumidos) : 0
-
-    return { fuel, salary, otros, total, galConsumidos, consumoPorGal }
-  }, [
-    form.combustible_inicial,
-    form.combustible_despachado,
-    form.combustible_final,
-    form.precio_galon,
-    form.salario_diario,
-    form.dias,
-    form.km_recorridos,
-    gastos,
-  ])
+    const price = Number(form.precio_galon || 0)
+    const fuelCost = (Number(galonesConsumidos || 0) * price) || 0
+    const salary = (Number(form.salario_diario || 0) * Number(form.dias || 0)) || 0
+    const otros = gastos.reduce((s, g) => s + Number(g.monto || 0), 0)
+    const total = fuelCost + salary + otros
+    return { fuelCost, salary, otros, total }
+  }, [galonesConsumidos, form.precio_galon, form.salario_diario, form.dias, gastos])
 
   /* ========================= UI ========================= */
 
@@ -400,7 +439,10 @@ export default function VehiculosPage() {
       <div className="mb-6 flex items-center gap-3">
         <img src="/logo.png" alt="Logo" className="h-10" />
         <h1 className="text-2xl font-bold">🚚 Vehículos — Viajes</h1>
-        <Link href="/menu" className="ml-auto inline-block bg-slate-700 hover:bg-slate-800 text-white px-3 py-2 rounded">
+        <Link
+          href="/menu"
+          className="ml-auto inline-block bg-slate-700 hover:bg-slate-800 text-white px-3 py-2 rounded"
+        >
           ⬅ Volver al Menú
         </Link>
       </div>
@@ -422,7 +464,11 @@ export default function VehiculosPage() {
         </div>
 
         <div className="mb-2 grid md:grid-cols-4 gap-2 text-sm">
-          <select className="border p-2 rounded" value={filters.vehiculoId} onChange={(e) => setFilters((f) => ({ ...f, vehiculoId: e.target.value }))}>
+          <select
+            className="border p-2 rounded"
+            value={filters.vehiculoId}
+            onChange={(e) => setFilters((f) => ({ ...f, vehiculoId: e.target.value }))}
+          >
             <option value="">Todos los vehículos</option>
             {vehiculos.map((v) => (
               <option key={v.id} value={v.id}>
@@ -430,10 +476,18 @@ export default function VehiculosPage() {
               </option>
             ))}
           </select>
-
-          <input type="date" className="border p-2 rounded" value={filters.desde} onChange={(e) => setFilters((f) => ({ ...f, desde: e.target.value }))} />
-          <input type="date" className="border p-2 rounded" value={filters.hasta} onChange={(e) => setFilters((f) => ({ ...f, hasta: e.target.value }))} />
-
+          <input
+            type="date"
+            className="border p-2 rounded"
+            value={filters.desde}
+            onChange={(e) => setFilters((f) => ({ ...f, desde: e.target.value }))}
+          />
+          <input
+            type="date"
+            className="border p-2 rounded"
+            value={filters.hasta}
+            onChange={(e) => setFilters((f) => ({ ...f, hasta: e.target.value }))}
+          />
           <input
             className="border p-2 rounded"
             placeholder="Buscar (conductor, origen, destino)"
@@ -442,7 +496,7 @@ export default function VehiculosPage() {
           />
         </div>
 
-        <div className="border rounded bg-white">
+        <div className="overflow-x-auto border rounded">
           <table className="w-full text-sm">
             <thead className="bg-gray-100">
               <tr>
@@ -473,20 +527,22 @@ export default function VehiculosPage() {
                 viajesFiltrados.map((v) => (
                   <tr key={v.id} className="border-t">
                     <td className="p-2">{v.id}</td>
-                    <td className="p-2">{v.vehiculo_id ? vehiculoMap.get(v.vehiculo_id) || `ID ${v.vehiculo_id}` : '—'}</td>
+                    <td className="p-2">
+                      {v.vehiculo_id != null ? vehiculoMap.get(v.vehiculo_id) || `ID ${v.vehiculo_id}` : '—'}
+                    </td>
                     <td className="p-2">{v.conductor || '—'}</td>
                     <td className="p-2">{v.fecha_inicio || '—'}</td>
                     <td className="p-2">{v.fecha_fin || '—'}</td>
                     <td className="p-2">{v.origen || '—'}</td>
                     <td className="p-2">{v.destino || '—'}</td>
-                    <td className="p-2 flex gap-2">
-                      <button onClick={() => seleccionarViaje(v)} className="px-3 py-1 rounded bg-slate-700 hover:bg-slate-800 text-white">
-                        Ver/Editar
+                    <td className="p-2 space-x-2">
+                      <button onClick={() => seleccionarViaje(v)} className="px-2 py-1 text-xs rounded bg-sky-600 text-white">
+                        Editar
                       </button>
-                      <Link href={`/vehiculos/reporte?id=${v.id}`} className="px-3 py-1 rounded bg-indigo-700 hover:bg-indigo-800 text-white">
+                      <Link href={`/vehiculos/reporte?id=${v.id}`} className="px-2 py-1 text-xs rounded bg-amber-600 text-white">
                         Reporte
                       </Link>
-                      <button onClick={() => eliminarViaje(v.id)} className="px-3 py-1 rounded bg-red-600 hover:bg-red-700 text-white">
+                      <button onClick={() => eliminarViaje(v.id)} className="px-2 py-1 text-xs rounded bg-red-600 text-white">
                         Eliminar
                       </button>
                     </td>
@@ -498,13 +554,18 @@ export default function VehiculosPage() {
         </div>
       </div>
 
-      {/* Formulario + gastos */}
+      {/* Form + gastos */}
       <div className="grid md:grid-cols-2 gap-6">
-        <div className="border rounded p-4 bg-white shadow-sm">
-          <h2 className="font-semibold mb-3">{selected ? `Editar viaje #${selected.id}` : 'Nuevo viaje'}</h2>
+        {/* Formulario */}
+        <div className="border rounded p-4">
+          <h3 className="font-semibold mb-3">{form.id ? `Editar viaje #${form.id}` : 'Nuevo viaje'}</h3>
 
-          <div className="grid gap-2 text-sm">
-            <select className="border p-2 rounded" value={form.vehiculo_id} onChange={(e) => setForm((p) => ({ ...p, vehiculo_id: e.target.value }))}>
+          <div className="grid grid-cols-2 gap-3">
+            <select
+              className="border p-2 rounded col-span-2"
+              value={form.vehiculo_id}
+              onChange={(e) => setForm({ ...form, vehiculo_id: e.target.value })}
+            >
               <option value="">— Selecciona vehículo —</option>
               {vehiculos.map((v) => (
                 <option key={v.id} value={v.id}>
@@ -513,147 +574,150 @@ export default function VehiculosPage() {
               ))}
             </select>
 
-            <div className="grid grid-cols-2 gap-2">
-              <input
-                type="date"
-                className="border p-2 rounded"
-                value={form.fecha_inicio}
-                onChange={(e) => {
-                  setDiasManual(false)
-                  setForm((p) => ({ ...p, fecha_inicio: e.target.value }))
-                }}
-              />
-              <input
-                type="date"
-                className="border p-2 rounded"
-                value={form.fecha_fin}
-                onChange={(e) => {
-                  setDiasManual(false)
-                  setForm((p) => ({ ...p, fecha_fin: e.target.value }))
-                }}
-              />
-            </div>
+            <input type="date" className="border p-2 rounded" value={form.fecha_inicio} onChange={(e) => setForm({ ...form, fecha_inicio: e.target.value })} />
+            <input type="date" className="border p-2 rounded" value={form.fecha_fin} onChange={(e) => setForm({ ...form, fecha_fin: e.target.value })} />
 
-            <div className="grid grid-cols-2 gap-2">
-              <input className="border p-2 rounded" placeholder="Origen" value={form.origen} onChange={(e) => setForm((p) => ({ ...p, origen: e.target.value }))} />
-              <input className="border p-2 rounded" placeholder="Destino" value={form.destino} onChange={(e) => setForm((p) => ({ ...p, destino: e.target.value }))} />
-            </div>
+            <input className="border p-2 rounded" placeholder="Origen" value={form.origen} onChange={(e) => setForm({ ...form, origen: e.target.value })} />
+            <input className="border p-2 rounded" placeholder="Destino" value={form.destino} onChange={(e) => setForm({ ...form, destino: e.target.value })} />
 
-            <input className="border p-2 rounded" placeholder="Conductor" value={form.conductor} onChange={(e) => setForm((p) => ({ ...p, conductor: e.target.value }))} />
+            <input className="border p-2 rounded col-span-2" placeholder="Conductor" value={form.conductor} onChange={(e) => setForm({ ...form, conductor: e.target.value })} />
 
-            <div className="grid grid-cols-2 gap-2">
-              <input
-                className="border p-2 rounded"
-                placeholder="Combustible inicial (gal)"
-                value={form.combustible_inicial}
-                onChange={(e) => setForm((p) => ({ ...p, combustible_inicial: e.target.value }))}
-              />
-              <input
-                className="border p-2 rounded"
-                placeholder="Combustible final (gal)"
-                value={form.combustible_final}
-                onChange={(e) => setForm((p) => ({ ...p, combustible_final: e.target.value }))}
-              />
-            </div>
+            <input
+              type="number"
+              className="border p-2 rounded"
+              placeholder="Combustible inicial (gal)"
+              value={form.combustible_inicial}
+              onChange={(e) => setForm({ ...form, combustible_inicial: e.target.value })}
+            />
+            <input
+              type="number"
+              className="border p-2 rounded"
+              placeholder="Combustible final (gal)"
+              value={form.combustible_final}
+              onChange={(e) => setForm({ ...form, combustible_final: e.target.value })}
+            />
+            <input
+              type="number"
+              className="border p-2 rounded"
+              placeholder="Despachado (gal)"
+              value={form.combustible_despachado}
+              onChange={(e) => setForm({ ...form, combustible_despachado: e.target.value })}
+            />
+            <input
+              type="number"
+              className="border p-2 rounded"
+              placeholder="Precio por galón"
+              value={form.precio_galon}
+              onChange={(e) => setForm({ ...form, precio_galon: e.target.value })}
+            />
 
-            <div className="grid grid-cols-2 gap-2">
-              <input
-                className="border p-2 rounded"
-                placeholder="Combustible despachado (gal)"
-                value={form.combustible_despachado}
-                onChange={(e) => setForm((p) => ({ ...p, combustible_despachado: e.target.value }))}
-              />
-              <input
-                className="border p-2 rounded"
-                placeholder="Precio galón (Q)"
-                value={form.precio_galon}
-                onChange={(e) => setForm((p) => ({ ...p, precio_galon: e.target.value }))}
-              />
-            </div>
+            <input
+              type="number"
+              className="border p-2 rounded"
+              placeholder="Salario diario"
+              value={form.salario_diario}
+              onChange={(e) => setForm({ ...form, salario_diario: e.target.value })}
+            />
 
-            <div className="grid grid-cols-2 gap-2">
-              <input
-                className="border p-2 rounded"
-                placeholder="Salario diario (Q)"
-                value={form.salario_diario}
-                onChange={(e) => setForm((p) => ({ ...p, salario_diario: e.target.value }))}
-              />
-              {/* ✅ editable, soporta 1.5 */}
-              <input
-                type="number"
-                step="0.5"
-                className="border p-2 rounded"
-                placeholder="Días"
-                value={form.dias}
-                onChange={(e) => {
-                  setDiasManual(true)
-                  setForm((p) => ({ ...p, dias: e.target.value }))
-                }}
-              />
-            </div>
+            <input
+              type="number"
+              className="border p-2 rounded"
+              placeholder="Días (editable)"
+              value={form.dias}
+              onChange={(e) => {
+                setDiasManual(true)
+                setForm({ ...form, dias: e.target.value })
+              }}
+            />
 
-            <div className="grid grid-cols-2 gap-2">
-              <input className="border p-2 rounded" placeholder="Km recorridos" value={form.km_recorridos} onChange={(e) => setForm((p) => ({ ...p, km_recorridos: e.target.value }))} />
-              <input
-                className="border p-2 rounded"
-                placeholder="Consumo por galón (km/gal)"
-                value={form.consumo_por_galon || (totales.consumoPorGal ? String(totales.consumoPorGal) : '')}
-                onChange={(e) => setForm((p) => ({ ...p, consumo_por_galon: e.target.value }))}
-              />
-            </div>
+            <input
+              type="number"
+              className="border p-2 rounded"
+              placeholder="Km recorridos"
+              value={form.km_recorridos}
+              onChange={(e) => setForm({ ...form, km_recorridos: e.target.value })}
+            />
+            <input type="number" className="border p-2 rounded" placeholder="Consumo (km/galón)" value={form.consumo_por_galon} readOnly />
 
-            <textarea className="border p-2 rounded" placeholder="Observaciones" value={form.observaciones} onChange={(e) => setForm((p) => ({ ...p, observaciones: e.target.value }))} />
+            <textarea
+              className="border p-2 rounded col-span-2"
+              placeholder="Observaciones"
+              value={form.observaciones}
+              onChange={(e) => setForm({ ...form, observaciones: e.target.value })}
+            />
+          </div>
 
-            <div className="flex gap-2">
-              <button onClick={guardarViaje} className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded">
-                Guardar
-              </button>
-              <button
-                onClick={() => {
-                  setSelected(null)
-                  resetForm()
-                  setGastos([])
-                }}
-                className="bg-gray-200 hover:bg-gray-300 text-black px-4 py-2 rounded"
-              >
-                Cancelar
-              </button>
-            </div>
+          <div className="mt-3 flex gap-2">
+            <button onClick={guardarViaje} className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded">
+              {form.id ? 'Actualizar' : 'Guardar'}
+            </button>
+            <button
+              onClick={() => {
+                resetForm()
+                setSelected(null)
+                setGastos([])
+              }}
+              className="bg-gray-200 px-4 py-2 rounded"
+            >
+              Cancelar
+            </button>
+            {form.id ? (
+              <Link href={`/vehiculos/reporte?id=${form.id}`} className="ml-auto bg-amber-600 hover:bg-amber-700 text-white px-4 py-2 rounded">
+                Ver Reporte
+              </Link>
+            ) : null}
+          </div>
 
-            <div className="border rounded p-3 bg-white mt-2">
-              <div className="font-semibold mb-1">Totales (pre-cálculo)</div>
-              <div className="text-sm">Consumo estimado: {totales.galConsumidos.toFixed(2)} gal</div>
-              <div className="text-sm">Combustible: Q{totales.fuel.toFixed(2)}</div>
-              <div className="text-sm">Salarios: Q{totales.salary.toFixed(2)}</div>
-              <div className="text-sm">Otros gastos: Q{totales.otros.toFixed(2)}</div>
-              <div className="text-sm font-semibold">Total: Q{totales.total.toFixed(2)}</div>
-            </div>
+          <div className="mt-4 text-sm bg-gray-50 border rounded p-3">
+            <div className="font-semibold mb-1">Totales (pré-cálculo)</div>
+            <div>Consumo estimado: {Number(galonesConsumidos || 0).toFixed(2)} gal</div>
+            <div>Combustible: Q{totales.fuelCost.toFixed(2)}</div>
+            <div>Salarios: Q{totales.salary.toFixed(2)}</div>
+            <div>Otros gastos: Q{totales.otros.toFixed(2)}</div>
+            <div className="font-semibold">Total: Q{totales.total.toFixed(2)}</div>
           </div>
         </div>
 
-        <div className="border rounded p-4 bg-white shadow-sm">
-          <h2 className="font-semibold mb-2">Gastos adicionales</h2>
+        {/* Gastos */}
+        <div className="border rounded p-4">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="font-semibold">Gastos adicionales</h3>
+            {selected ? <div className="text-xs text-gray-600">Viaje seleccionado: #{selected.id}</div> : null}
+          </div>
+
           {!selected ? (
-            <p className="text-sm text-gray-600">Selecciona o guarda un viaje para agregar gastos.</p>
+            <div className="text-sm text-gray-600">Selecciona o guarda un viaje para agregar gastos.</div>
           ) : (
             <>
-              <div className="grid gap-2 text-sm mb-3">
-                <input type="date" className="border p-2 rounded" value={gastoNuevo.fecha} onChange={(e) => setGastoNuevo((p) => ({ ...p, fecha: e.target.value }))} />
-                <input className="border p-2 rounded" placeholder="Descripción" value={gastoNuevo.descripcion} onChange={(e) => setGastoNuevo((p) => ({ ...p, descripcion: e.target.value }))} />
-                <input className="border p-2 rounded" placeholder="Monto (Q)" value={gastoNuevo.monto} onChange={(e) => setGastoNuevo((p) => ({ ...p, monto: e.target.value }))} />
-                <button onClick={agregarGasto} className="bg-indigo-700 hover:bg-indigo-800 text-white px-4 py-2 rounded">
-                  Agregar gasto
-                </button>
+              <div className="grid grid-cols-5 gap-2 mb-3">
+                <input type="date" className="border p-2 rounded" value={gastoNuevo.fecha} onChange={(e) => setGastoNuevo({ ...gastoNuevo, fecha: e.target.value })} />
+                <input
+                  className="border p-2 rounded col-span-3"
+                  placeholder="Descripción"
+                  value={gastoNuevo.descripcion}
+                  onChange={(e) => setGastoNuevo({ ...gastoNuevo, descripcion: e.target.value })}
+                />
+                <input
+                  type="number"
+                  className="border p-2 rounded"
+                  placeholder="Monto"
+                  value={gastoNuevo.monto}
+                  onChange={(e) => setGastoNuevo({ ...gastoNuevo, monto: e.target.value })}
+                />
               </div>
 
-              <div className="border rounded">
+              <button onClick={agregarGasto} className="bg-sky-600 hover:bg-sky-700 text-white px-3 py-2 rounded mb-3">
+                + Agregar gasto
+              </button>
+
+              <div className="overflow-x-auto border rounded">
                 <table className="w-full text-sm">
                   <thead className="bg-gray-100">
                     <tr>
                       <th className="p-2 text-left">Fecha</th>
                       <th className="p-2 text-left">Descripción</th>
                       <th className="p-2 text-right">Monto</th>
-                      <th className="p-2 text-left">Acciones</th>
+                      <th className="p-2">Acciones</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -668,9 +732,9 @@ export default function VehiculosPage() {
                         <tr key={g.id} className="border-t">
                           <td className="p-2">{g.fecha || '—'}</td>
                           <td className="p-2">{g.descripcion || '—'}</td>
-                          <td className="p-2 text-right">Q{toNum(g.monto).toFixed(2)}</td>
-                          <td className="p-2">
-                            <button onClick={() => eliminarGasto(g.id)} className="px-3 py-1 rounded bg-red-600 hover:bg-red-700 text-white">
+                          <td className="p-2 text-right">Q{Number(g.monto || 0).toFixed(2)}</td>
+                          <td className="p-2 text-center">
+                            <button onClick={() => eliminarGasto(g.id)} className="px-2 py-1 text-xs rounded bg-red-600 text-white">
                               Eliminar
                             </button>
                           </td>
