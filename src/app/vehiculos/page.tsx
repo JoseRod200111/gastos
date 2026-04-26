@@ -57,6 +57,9 @@ export default function VehiculosPage() {
     monto: '',
   })
 
+  // si el usuario edita "Días", no lo sobreescribimos con auto-cálculo
+  const [diasManual, setDiasManual] = useState(false)
+
   const [form, setForm] = useState({
     id: 0,
     vehiculo_id: '',
@@ -76,7 +79,8 @@ export default function VehiculosPage() {
     consumo_por_galon: '',
   })
 
-  const resetForm = () =>
+  const resetForm = () => {
+    setDiasManual(false)
     setForm({
       id: 0,
       vehiculo_id: '',
@@ -95,6 +99,7 @@ export default function VehiculosPage() {
       km_recorridos: '',
       consumo_por_galon: '',
     })
+  }
 
   /* ========================= Catálogo de vehículos ========================= */
 
@@ -152,6 +157,8 @@ export default function VehiculosPage() {
   /* ========================= Calcular días automáticamente ========================= */
 
   useEffect(() => {
+    if (diasManual) return
+
     if (!form.fecha_inicio || !form.fecha_fin) {
       if (form.dias !== '') {
         setForm((prev) => ({ ...prev, dias: '' }))
@@ -173,7 +180,7 @@ export default function VehiculosPage() {
     if (form.dias !== diasStr) {
       setForm((prev) => ({ ...prev, dias: diasStr }))
     }
-  }, [form.fecha_inicio, form.fecha_fin, form.dias])
+  }, [form.fecha_inicio, form.fecha_fin, form.dias, diasManual])
 
   /* ========================= Calcular consumo por galón ========================= */
 
@@ -248,6 +255,7 @@ export default function VehiculosPage() {
 
   const seleccionarViaje = async (v: Viaje) => {
     setSelected(v)
+    setDiasManual(false) // usa el valor guardado, pero permite que luego lo editen manualmente
     setForm({
       id: v.id,
       vehiculo_id: v.vehiculo_id ? String(v.vehiculo_id) : '',
@@ -377,12 +385,28 @@ export default function VehiculosPage() {
   /* ========================= Totales (preview) ========================= */
 
   const totales = useMemo(() => {
-    const fuel = (Number(form.combustible_despachado || 0) * Number(form.precio_galon || 0)) || 0
+    const ini = Number(form.combustible_inicial || 0)
+    const desp = Number(form.combustible_despachado || 0)
+    const fin = Number(form.combustible_final || 0)
+    const precio = Number(form.precio_galon || 0)
+
+    // consumo real en galones: (ini + desp - fin)
+    const galConsumidos = ini + desp - fin
+    const fuel = (galConsumidos * precio) || 0
+
     const salary = (Number(form.salario_diario || 0) * Number(form.dias || 0)) || 0
     const otros = gastos.reduce((s, g) => s + Number(g.monto || 0), 0)
     const total = fuel + salary + otros
-    return { fuel, salary, otros, total }
-  }, [form.combustible_despachado, form.precio_galon, form.salario_diario, form.dias, gastos])
+    return { fuel, salary, otros, total, galConsumidos }
+  }, [
+    form.combustible_inicial,
+    form.combustible_despachado,
+    form.combustible_final,
+    form.precio_galon,
+    form.salario_diario,
+    form.dias,
+    gastos,
+  ])
 
   /* ========================= UI ========================= */
 
@@ -403,7 +427,6 @@ export default function VehiculosPage() {
       <div className="mb-6">
         <div className="flex items-center justify-between mb-2">
           <h2 className="font-semibold">Viajes registrados</h2>
-          
         </div>
 
         <div className="mb-2 grid md:grid-cols-4 gap-2 text-sm">
@@ -455,44 +478,43 @@ export default function VehiculosPage() {
             </thead>
             <tbody>
               {loading ? (
-                <tr><td className="p-3" colSpan={8}>Cargando…</td></tr>
-              ) : viajesFiltrados.length === 0 ? (
-                <tr><td className="p-3" colSpan={8}>Sin registros.</td></tr>
-              ) : viajesFiltrados.map(v => (
-                <tr key={v.id} className="border-t">
-                  <td className="p-2">{v.id}</td>
-                  <td className="p-2">
-                    {v.vehiculo_id != null
-                      ? (vehiculoMap.get(v.vehiculo_id) || `ID ${v.vehiculo_id}`)
-                      : '—'}
-                  </td>
-                  <td className="p-2">{v.conductor || '—'}</td>
-                  <td className="p-2">{v.fecha_inicio || '—'}</td>
-                  <td className="p-2">{v.fecha_fin || '—'}</td>
-                  <td className="p-2">{v.origen || '—'}</td>
-                  <td className="p-2">{v.destino || '—'}</td>
-                  <td className="p-2 space-x-2">
-                    <button
-                      onClick={() => seleccionarViaje(v)}
-                      className="px-2 py-1 text-xs rounded bg-sky-600 text-white"
-                    >
-                      Editar
-                    </button>
-                    <Link
-                      href={`/vehiculos/reporte?id=${v.id}`}
-                      className="px-2 py-1 text-xs rounded bg-amber-600 text-white"
-                    >
-                      Reporte
-                    </Link>
-                    <button
-                      onClick={() => eliminarViaje(v.id)}
-                      className="px-2 py-1 text-xs rounded bg-red-600 text-white"
-                    >
-                      Eliminar
-                    </button>
+                <tr>
+                  <td className="p-3" colSpan={8}>
+                    Cargando…
                   </td>
                 </tr>
-              ))}
+              ) : viajesFiltrados.length === 0 ? (
+                <tr>
+                  <td className="p-3" colSpan={8}>
+                    Sin registros.
+                  </td>
+                </tr>
+              ) : (
+                viajesFiltrados.map((v) => (
+                  <tr key={v.id} className="border-t">
+                    <td className="p-2">{v.id}</td>
+                    <td className="p-2">
+                      {v.vehiculo_id != null ? vehiculoMap.get(v.vehiculo_id) || `ID ${v.vehiculo_id}` : '—'}
+                    </td>
+                    <td className="p-2">{v.conductor || '—'}</td>
+                    <td className="p-2">{v.fecha_inicio || '—'}</td>
+                    <td className="p-2">{v.fecha_fin || '—'}</td>
+                    <td className="p-2">{v.origen || '—'}</td>
+                    <td className="p-2">{v.destino || '—'}</td>
+                    <td className="p-2 space-x-2">
+                      <button onClick={() => seleccionarViaje(v)} className="px-2 py-1 text-xs rounded bg-sky-600 text-white">
+                        Editar
+                      </button>
+                      <Link href={`/vehiculos/reporte?id=${v.id}`} className="px-2 py-1 text-xs rounded bg-amber-600 text-white">
+                        Reporte
+                      </Link>
+                      <button onClick={() => eliminarViaje(v.id)} className="px-2 py-1 text-xs rounded bg-red-600 text-white">
+                        Eliminar
+                      </button>
+                    </td>
+                  </tr>
+                ))
+              )}
             </tbody>
           </table>
         </div>
@@ -502,9 +524,7 @@ export default function VehiculosPage() {
       <div className="grid md:grid-cols-2 gap-6">
         {/* Formulario */}
         <div className="border rounded p-4">
-          <h3 className="font-semibold mb-3">
-            {form.id ? `Editar viaje #${form.id}` : 'Nuevo viaje'}
-          </h3>
+          <h3 className="font-semibold mb-3">{form.id ? `Editar viaje #${form.id}` : 'Nuevo viaje'}</h3>
 
           <div className="grid grid-cols-2 gap-3">
             <select
@@ -524,32 +544,25 @@ export default function VehiculosPage() {
               type="date"
               className="border p-2 rounded"
               value={form.fecha_inicio}
-              onChange={(e) => setForm({ ...form, fecha_inicio: e.target.value })}
+              onChange={(e) => {
+                setDiasManual(false)
+                setForm({ ...form, fecha_inicio: e.target.value })
+              }}
             />
             <input
               type="date"
               className="border p-2 rounded"
               value={form.fecha_fin}
-              onChange={(e) => setForm({ ...form, fecha_fin: e.target.value })}
+              onChange={(e) => {
+                setDiasManual(false)
+                setForm({ ...form, fecha_fin: e.target.value })
+              }}
             />
-            <input
-              className="border p-2 rounded"
-              placeholder="Origen"
-              value={form.origen}
-              onChange={(e) => setForm({ ...form, origen: e.target.value })}
-            />
-            <input
-              className="border p-2 rounded"
-              placeholder="Destino"
-              value={form.destino}
-              onChange={(e) => setForm({ ...form, destino: e.target.value })}
-            />
-            <input
-              className="border p-2 rounded col-span-2"
-              placeholder="Conductor"
-              value={form.conductor}
-              onChange={(e) => setForm({ ...form, conductor: e.target.value })}
-            />
+
+            <input className="border p-2 rounded" placeholder="Origen" value={form.origen} onChange={(e) => setForm({ ...form, origen: e.target.value })} />
+            <input className="border p-2 rounded" placeholder="Destino" value={form.destino} onChange={(e) => setForm({ ...form, destino: e.target.value })} />
+
+            <input className="border p-2 rounded col-span-2" placeholder="Conductor" value={form.conductor} onChange={(e) => setForm({ ...form, conductor: e.target.value })} />
 
             <input
               type="number"
@@ -586,12 +599,18 @@ export default function VehiculosPage() {
               value={form.salario_diario}
               onChange={(e) => setForm({ ...form, salario_diario: e.target.value })}
             />
+
+            {/* DÍAS editable */}
             <input
               type="number"
+              step="0.5"
               className="border p-2 rounded"
-              placeholder="Días (calculado)"
+              placeholder="Días (auto / editable)"
               value={form.dias}
-              readOnly
+              onChange={(e) => {
+                setDiasManual(true)
+                setForm({ ...form, dias: e.target.value })
+              }}
             />
 
             <input
@@ -601,13 +620,7 @@ export default function VehiculosPage() {
               value={form.km_recorridos}
               onChange={(e) => setForm({ ...form, km_recorridos: e.target.value })}
             />
-            <input
-              type="number"
-              className="border p-2 rounded"
-              placeholder="Consumo (km/galón)"
-              value={form.consumo_por_galon}
-              readOnly
-            />
+            <input type="number" className="border p-2 rounded" placeholder="Consumo (km/galón)" value={form.consumo_por_galon} readOnly />
 
             <textarea
               className="border p-2 rounded col-span-2"
@@ -618,23 +631,21 @@ export default function VehiculosPage() {
           </div>
 
           <div className="mt-3 flex gap-2">
-            <button
-              onClick={guardarViaje}
-              className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded"
-            >
+            <button onClick={guardarViaje} className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded">
               {form.id ? 'Actualizar' : 'Guardar'}
             </button>
             <button
-              onClick={() => { resetForm(); setSelected(null); setGastos([]) }}
+              onClick={() => {
+                resetForm()
+                setSelected(null)
+                setGastos([])
+              }}
               className="bg-gray-200 px-4 py-2 rounded"
             >
               Cancelar
             </button>
             {form.id ? (
-              <Link
-                href={`/vehiculos/reporte?id=${form.id}`}
-                className="ml-auto bg-amber-600 hover:bg-amber-700 text-white px-4 py-2 rounded"
-              >
+              <Link href={`/vehiculos/reporte?id=${form.id}`} className="ml-auto bg-amber-600 hover:bg-amber-700 text-white px-4 py-2 rounded">
                 Ver Reporte
               </Link>
             ) : null}
@@ -642,6 +653,7 @@ export default function VehiculosPage() {
 
           <div className="mt-4 text-sm bg-gray-50 border rounded p-3">
             <div className="font-semibold mb-1">Totales (pré-cálculo)</div>
+            <div>Galones consumidos: {Number(totales.galConsumidos || 0).toFixed(2)}</div>
             <div>Combustible: Q{totales.fuel.toFixed(2)}</div>
             <div>Salarios: Q{totales.salary.toFixed(2)}</div>
             <div>Otros gastos: Q{totales.otros.toFixed(2)}</div>
@@ -653,15 +665,11 @@ export default function VehiculosPage() {
         <div className="border rounded p-4">
           <div className="flex items-center justify-between mb-3">
             <h3 className="font-semibold">Gastos adicionales</h3>
-            {selected ? (
-              <div className="text-xs text-gray-600">Viaje seleccionado: #{selected.id}</div>
-            ) : null}
+            {selected ? <div className="text-xs text-gray-600">Viaje seleccionado: #{selected.id}</div> : null}
           </div>
 
           {!selected ? (
-            <div className="text-sm text-gray-600">
-              Selecciona o guarda un viaje para agregar gastos.
-            </div>
+            <div className="text-sm text-gray-600">Selecciona o guarda un viaje para agregar gastos.</div>
           ) : (
             <>
               <div className="grid grid-cols-5 gap-2 mb-3">
@@ -685,10 +693,7 @@ export default function VehiculosPage() {
                   onChange={(e) => setGastoNuevo({ ...gastoNuevo, monto: e.target.value })}
                 />
               </div>
-              <button
-                onClick={agregarGasto}
-                className="bg-sky-600 hover:bg-sky-700 text-white px-3 py-2 rounded mb-3"
-              >
+              <button onClick={agregarGasto} className="bg-sky-600 hover:bg-sky-700 text-white px-3 py-2 rounded mb-3">
                 + Agregar gasto
               </button>
 
@@ -704,24 +709,25 @@ export default function VehiculosPage() {
                   </thead>
                   <tbody>
                     {gastos.length === 0 ? (
-                      <tr><td className="p-3" colSpan={4}>Sin gastos.</td></tr>
-                    ) : gastos.map(g => (
-                      <tr key={g.id} className="border-t">
-                        <td className="p-2">{g.fecha || '—'}</td>
-                        <td className="p-2">{g.descripcion || '—'}</td>
-                        <td className="p-2 text-right">
-                          Q{Number(g.monto || 0).toFixed(2)}
-                        </td>
-                        <td className="p-2 text-center">
-                          <button
-                            onClick={() => eliminarGasto(g.id)}
-                            className="px-2 py-1 text-xs rounded bg-red-600 text-white"
-                          >
-                            Eliminar
-                          </button>
+                      <tr>
+                        <td className="p-3" colSpan={4}>
+                          Sin gastos.
                         </td>
                       </tr>
-                    ))}
+                    ) : (
+                      gastos.map((g) => (
+                        <tr key={g.id} className="border-t">
+                          <td className="p-2">{g.fecha || '—'}</td>
+                          <td className="p-2">{g.descripcion || '—'}</td>
+                          <td className="p-2 text-right">Q{Number(g.monto || 0).toFixed(2)}</td>
+                          <td className="p-2 text-center">
+                            <button onClick={() => eliminarGasto(g.id)} className="px-2 py-1 text-xs rounded bg-red-600 text-white">
+                              Eliminar
+                            </button>
+                          </td>
+                        </tr>
+                      ))
+                    )}
                   </tbody>
                 </table>
               </div>
