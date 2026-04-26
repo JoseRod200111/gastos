@@ -8,16 +8,18 @@ type Ubicacion = {
   id: number
   codigo: string
   nombre: string | null
+  tipo?: string | null
 }
 
 type Lote = {
   id: number
   codigo: string
-  fecha: string
   tipo_origen: string
+  fecha: string
+  observaciones: string | null
 }
 
-type Parto = {
+type PartoRow = {
   id: number
   fecha: string
   ubicacion_id: number
@@ -27,26 +29,72 @@ type Parto = {
   nacidos_muertos: number
   momias: number
   peso_camda_kg: number | null
-  hembras: number | null
-  machos: number | null
+  hembras: number
+  machos: number
   observaciones: string | null
-  created_at?: string | null
+  user_id: string | null
+  created_at: string | null
+  granja_ubicaciones?: { codigo: string; nombre: string | null } | null
+  granja_lotes?: { codigo: string } | null
 }
 
-type PartoEditable = Parto & { _edit?: boolean }
+type FormState = {
+  fecha: string
+  ubicacion_id: string
+  lote_id: string
+  nuevo_lote_codigo: string
+  cerda_id: string
+  nacidos_vivos: string
+  nacidos_muertos: string
+  momias: string
+  peso_camda_kg: string
+  hembras: string
+  machos: string
+  observaciones: string
+}
 
-export default function GranjaEntradaPartoPage() {
-  const [ubicaciones, setUbicaciones] = useState<Ubicacion[]>([])
-  const [lotes, setLotes] = useState<Lote[]>([])
-  const [partosRecientes, setPartosRecientes] = useState<PartoEditable[]>([])
-  const [cerdasRegistradas, setCerdasRegistradas] = useState<string[]>([])
+const hoyISO = () => {
+  const d = new Date()
+  const yyyy = d.getFullYear()
+  const mm = String(d.getMonth() + 1).padStart(2, '0')
+  const dd = String(d.getDate()).padStart(2, '0')
+  return `${yyyy}-${mm}-${dd}`
+}
+
+const toInt = (v: string) => {
+  const t = v.trim()
+  if (t === '') return 0
+  const n = Number(t)
+  return Number.isFinite(n) ? Math.trunc(n) : NaN
+}
+
+const toNumOrNull = (v: string) => {
+  const t = v.trim()
+  if (!t) return null
+  const n = Number(t)
+  return Number.isFinite(n) ? n : NaN
+}
+
+const fechaISOaTimestampMediodia = (fechaISO: string) => {
+  // “mediodía” para evitar temas de TZ al comparar cortes por día
+  return new Date(`${fechaISO}T12:00:00`).toISOString()
+}
+
+export default function EntradaPartoPage() {
   const [loading, setLoading] = useState(false)
   const [guardando, setGuardando] = useState(false)
+
+  const [ubicaciones, setUbicaciones] = useState<Ubicacion[]>([])
+  const [lotes, setLotes] = useState<Lote[]>([])
+  const [partos, setPartos] = useState<PartoRow[]>([])
+
+  const [editId, setEditId] = useState<number | null>(null)
+  const [edit, setEdit] = useState<Partial<PartoRow>>({})
   const [guardandoEdicionId, setGuardandoEdicionId] = useState<number | null>(null)
   const [eliminandoId, setEliminandoId] = useState<number | null>(null)
 
-  const [form, setForm] = useState({
-    fecha: '',
+  const [form, setForm] = useState<FormState>({
+    fecha: hoyISO(),
     ubicacion_id: '',
     lote_id: '',
     nuevo_lote_codigo: '',
@@ -60,10 +108,90 @@ export default function GranjaEntradaPartoPage() {
     observaciones: '',
   })
 
-  const resetForm = () =>
+  const cargarDatos = useCallback(async () => {
+    setLoading(true)
+    try {
+      // ubicaciones
+      const uRes = await supabase
+        .from('granja_ubicaciones')
+        .select('id, codigo, nombre, tipo')
+        .eq('activo', true)
+        .order('codigo', { ascending: true })
+
+      if (uRes.error) {
+        console.error('Error cargando ubicaciones', uRes.error)
+        alert('No se pudieron cargar las ubicaciones.')
+        return
+      }
+
+      // lotes (OJO: granja_lotes NO tiene "activo")
+      const lRes = await supabase
+        .from('granja_lotes')
+        .select('id, codigo, tipo_origen, fecha, observaciones')
+        .order('fecha', { ascending: false })
+        .limit(300)
+
+      if (lRes.error) {
+        console.error('Error cargando lotes', lRes.error)
+        alert('No se pudieron cargar los lotes.')
+        return
+      }
+
+      // partos recientes
+      const pRes = await supabase
+        .from('granja_partos')
+        .select(
+          `
+          id, fecha, ubicacion_id, lote_id, cerda_id,
+          nacidos_vivos, nacidos_muertos, momias, peso_camda_kg,
+          hembras, machos, observaciones, user_id, created_at,
+          granja_ubicaciones ( codigo, nombre ),
+          granja_lotes ( codigo )
+        `
+        )
+        .order('fecha', { ascending: false })
+        .order('id', { ascending: false })
+        .limit(50)
+
+      if (pRes.error) {
+        console.error('Error cargando partos', pRes.error)
+        alert('No se pudieron cargar los partos.')
+        return
+      }
+
+      const ubis = (uRes.data || []) as Ubicacion[]
+      const lts = (lRes.data || []) as Lote[]
+      const pts = (pRes.data || []) as any[]
+
+      setUbicaciones(ubis)
+      setLotes(lts)
+      setPartos(pts as PartoRow[])
+
+      // default ubicacion si vacío
+      if (!form.ubicacion_id && ubis.length > 0) {
+        setForm((prev) => ({ ...prev, ubicacion_id: String(ubis[0].id) }))
+      }
+    } finally {
+      setLoading(false)
+    }
+  }, [form.ubicacion_id])
+
+  useEffect(() => {
+    cargarDatos()
+  }, [cargarDatos])
+
+  const totalNacidos = useMemo(() => {
+    const vivos = toInt(form.nacidos_vivos)
+    const muertos = toInt(form.nacidos_muertos)
+    const mom = toInt(form.momias)
+    if ([vivos, muertos, mom].some((x) => Number.isNaN(x))) return 0
+    return vivos + muertos + mom
+  }, [form.nacidos_vivos, form.nacidos_muertos, form.momias])
+
+  const resetForm = () => {
     setForm({
-      fecha: '',
-      ubicacion_id: '',
+      fecha: hoyISO(),
+      ubicacion_id: ubicaciones.length ? String(ubicaciones[0].id) : '',
       lote_id: '',
       nuevo_lote_codigo: '',
       cerda_id: '',
@@ -75,87 +203,16 @@ export default function GranjaEntradaPartoPage() {
       machos: '',
       observaciones: '',
     })
-
-  const findUbicacion = (id: number) => ubicaciones.find((u) => u.id === id)
-  const findLote = (id: number | null) => lotes.find((l) => l.id === id)
-
-  const cerdasDesdePartos = (rows: Parto[]) => {
-    const setCerdas = new Set<string>()
-    rows.forEach((row) => {
-      const c = (row.cerda_id || '').trim()
-      if (c) setCerdas.add(c)
-    })
-    return Array.from(setCerdas).sort((a, b) => a.localeCompare(b, 'es'))
   }
 
-  // -------- cargar catálogos y partos --------
-  const cargarDatos = useCallback(async () => {
-    setLoading(true)
-    try {
-      const [uRes, lRes, pRes] = await Promise.all([
-        supabase
-          .from('granja_ubicaciones')
-          .select('id, codigo, nombre')
-          .eq('activo', true)
-          .order('codigo', { ascending: true }),
-        supabase
-          .from('granja_lotes')
-          .select('id, codigo, fecha, tipo_origen')
-          .order('fecha', { ascending: false })
-          .limit(200),
-        supabase
-          .from('granja_partos')
-          .select(
-            'id, fecha, ubicacion_id, lote_id, cerda_id, nacidos_vivos, nacidos_muertos, momias, peso_camda_kg, hembras, machos, observaciones, created_at'
-          )
-          .order('fecha', { ascending: false })
-          .order('id', { ascending: false })
-          .limit(50),
-      ])
-
-      if (uRes.error) console.error('Error cargando ubicaciones', uRes.error)
-      if (lRes.error) console.error('Error cargando lotes', lRes.error)
-      if (pRes.error) console.error('Error cargando partos', pRes.error)
-
-      setUbicaciones(((uRes.data as Ubicacion[]) || []) as Ubicacion[])
-      setLotes(((lRes.data as Lote[]) || []) as Lote[])
-
-      const partos = ((pRes.data as Parto[]) || []) as Parto[]
-      setPartosRecientes(partos.map((p) => ({ ...p, _edit: false })))
-      setCerdasRegistradas(cerdasDesdePartos(partos))
-    } finally {
-      setLoading(false)
-    }
-  }, [])
-
-  useEffect(() => {
-    cargarDatos()
-  }, [cargarDatos])
-
-  // -------- helpers num --------
-  const toInt = (v: string) => {
-    const t = v.trim()
-    if (!t) return 0
-    const n = Number(t)
-    return Number.isFinite(n) ? Math.trunc(n) : NaN
-  }
-
-  const toNumOrNull = (v: string) => {
-    const t = v.trim()
-    if (!t) return null
-    const n = Number(t)
-    return Number.isFinite(n) ? n : NaN
-  }
-
-  // -------- obtener/crear lote (sin chocar UNIQUE) --------
-  const obtenerOLiberarLote = async (): Promise<number | null> => {
-    // si el usuario eligió un lote existente, usarlo
+  // -------- obtener/crear lote sin chocar UNIQUE (codigo) --------
+  const obtenerOCrearLote = async (): Promise<number | null> => {
+    // si el usuario eligió lote existente
     if (form.lote_id) return Number(form.lote_id)
 
-    // si no eligió lote, se crea / reutiliza por código
     const codigoBase = form.nuevo_lote_codigo.trim() || `P-${form.fecha.replace(/-/g, '')}`
 
-    // 1) buscar si ya existe por codigo
+    // 1) buscar si ya existe por código (evita 409)
     const { data: existente, error: exErr } = await supabase
       .from('granja_lotes')
       .select('id')
@@ -166,30 +223,28 @@ export default function GranjaEntradaPartoPage() {
       console.error('Error buscando lote existente', exErr)
       return null
     }
-
     if (existente?.id) return existente.id
 
-    // 2) si no existe, crearlo
-    const { data: loteInsertado, error: loteErr } = await supabase
+    // 2) crearlo
+    const { data: ins, error: insErr } = await supabase
       .from('granja_lotes')
       .insert({
         codigo: codigoBase,
         tipo_origen: 'PARTO',
         fecha: form.fecha,
-        observaciones: form.observaciones || null,
+        observaciones: form.observaciones?.trim() ? form.observaciones.trim() : null,
       })
       .select('id')
       .single()
 
-    if (loteErr || !loteInsertado) {
-      console.error('Error creando lote', loteErr)
+    if (insErr || !ins) {
+      console.error('Error creando lote', insErr)
       return null
     }
-
-    return loteInsertado.id
+    return ins.id
   }
 
-  // -------- insertar/actualizar movimiento de inventario para este parto --------
+  // -------- upsert movimiento inventario para un parto --------
   const upsertMovimientoParto = async (args: {
     partoId: number
     fecha: string
@@ -199,13 +254,12 @@ export default function GranjaEntradaPartoPage() {
     hembras: number | null
     machos: number | null
     peso_camda_kg: number | null
-    observaciones: string | null
     user_id: string | null
+    observaciones: string | null
   }) => {
-    // cantidad que afecta inventario (vivos)
+    // Solo vivos afectan inventario
     const cantidadInv = args.nacidos_vivos
 
-    // buscar si ya existe movimiento para ese parto
     const { data: movExist, error: movFindErr } = await supabase
       .from('granja_movimientos')
       .select('id')
@@ -220,7 +274,7 @@ export default function GranjaEntradaPartoPage() {
     }
 
     const payload = {
-      fecha: new Date(`${args.fecha}T12:00:00`).toISOString(), // timestamp
+      fecha: fechaISOaTimestampMediodia(args.fecha),
       ubicacion_id: args.ubicacion_id,
       tipo: 'ENTRADA_PARTO',
       lote_id: args.lote_id,
@@ -262,28 +316,29 @@ export default function GranjaEntradaPartoPage() {
       return
     }
     if (!form.cerda_id.trim()) {
-      alert('Debe indicar la cerda.')
+      alert('Debe indicar la cerda (arete/código).')
       return
     }
 
     const nacidosVivos = toInt(form.nacidos_vivos)
     const nacidosMuertos = toInt(form.nacidos_muertos)
     const momias = toInt(form.momias)
-    if ([nacidosVivos, nacidosMuertos, momias].some((x) => Number.isNaN(x))) {
-      alert('Vivos/Muertos/Momias deben ser números válidos.')
+
+    if ([nacidosVivos, nacidosMuertos, momias].some((x) => Number.isNaN(x) || x < 0)) {
+      alert('Vivos/Muertos/Momias deben ser números válidos (>= 0).')
       return
     }
 
     const hembras = form.hembras.trim() ? toInt(form.hembras) : null
     const machos = form.machos.trim() ? toInt(form.machos) : null
-    if ([hembras, machos].some((x) => x !== null && Number.isNaN(x))) {
-      alert('Hembras/Machos deben ser números válidos.')
+    if ([hembras, machos].some((x) => x !== null && (Number.isNaN(x) || (x as number) < 0))) {
+      alert('Hembras/Machos deben ser números válidos (>= 0).')
       return
     }
 
     const pesoCamada = toNumOrNull(form.peso_camda_kg)
-    if (pesoCamada !== null && Number.isNaN(pesoCamada)) {
-      alert('Peso de camada debe ser un número válido.')
+    if (pesoCamada !== null && (Number.isNaN(pesoCamada) || pesoCamada < 0)) {
+      alert('Peso de camada debe ser un número válido (>= 0).')
       return
     }
 
@@ -292,14 +347,14 @@ export default function GranjaEntradaPartoPage() {
       const { data: userData } = await supabase.auth.getUser()
       const userId = userData?.user?.id ?? null
 
-      const loteId = await obtenerOLiberarLote()
+      const loteId = await obtenerOCrearLote()
       if (!loteId) {
         alert('No se pudo determinar/crear el lote.')
         return
       }
 
       // insertar parto
-      const { data: partoInsertado, error: partoErr } = await supabase
+      const { data: partoIns, error: partoErr } = await supabase
         .from('granja_partos')
         .insert({
           fecha: form.fecha,
@@ -312,34 +367,34 @@ export default function GranjaEntradaPartoPage() {
           peso_camda_kg: pesoCamada,
           hembras: hembras ?? 0,
           machos: machos ?? 0,
-          observaciones: form.observaciones || null,
+          observaciones: form.observaciones?.trim() ? form.observaciones.trim() : null,
           user_id: userId,
         })
         .select('id')
         .single()
 
-      if (partoErr || !partoInsertado) {
+      if (partoErr || !partoIns) {
         console.error('Error guardando parto', partoErr)
         alert('No se pudo guardar el parto.')
         return
       }
 
-      // movimiento inventario (SOLO vivos)
+      // movimiento inventario (ENTRADA_PARTO) ✅
       const movRes = await upsertMovimientoParto({
-        partoId: partoInsertado.id,
+        partoId: partoIns.id,
         fecha: form.fecha,
         ubicacion_id: Number(form.ubicacion_id),
         lote_id: loteId,
         nacidos_vivos: nacidosVivos,
-        hembras,
-        machos,
+        hembras: hembras,
+        machos: machos,
         peso_camda_kg: pesoCamada,
-        observaciones: 'Entrada de cerdos por parto',
         user_id: userId,
+        observaciones: 'Entrada de cerdos por parto',
       })
 
       if (!movRes.ok) {
-        alert('Parto guardado, pero NO se pudo registrar el movimiento de inventario (revisar permisos/RLS).')
+        alert('Parto guardado, pero NO se pudo registrar el movimiento de inventario (revisa RLS).')
       } else {
         alert('Parto registrado correctamente (inventario actualizado).')
       }
@@ -351,30 +406,39 @@ export default function GranjaEntradaPartoPage() {
     }
   }
 
-  // -------- edición / eliminación (panel derecho) --------
-  const activarEdicion = (id: number) => {
-    setPartosRecientes((prev) => prev.map((p) => (p.id === id ? { ...p, _edit: true } : p)))
+  // -------- edición / eliminación --------
+  const empezarEditar = (p: PartoRow) => {
+    setEditId(p.id)
+    setEdit({ ...p })
   }
 
-  const cancelarEdicion = (id: number) => {
-    // recargar desde DB para deshacer cambios locales
-    cargarDatos()
+  const cancelarEditar = () => {
+    setEditId(null)
+    setEdit({})
   }
 
-  const setCampoParto = (id: number, field: keyof Parto, value: any) => {
-    setPartosRecientes((prev) =>
-      prev.map((p) => (p.id === id ? ({ ...p, [field]: value } as PartoEditable) : p))
-    )
-  }
+  const guardarEdicion = async () => {
+    if (!editId) return
+    const p = edit as PartoRow
 
-  const guardarEdicionParto = async (p: PartoEditable) => {
-    if (guardandoEdicionId) return
-    if (!p.fecha || !p.ubicacion_id || !p.cerda_id?.trim()) {
-      alert('Fecha, ubicación y cerda son obligatorias.')
+    if (!p.fecha || !p.ubicacion_id) {
+      alert('Fecha y ubicación son obligatorias.')
+      return
+    }
+    if (!String(p.cerda_id || '').trim()) {
+      alert('Debe indicar la cerda.')
       return
     }
 
-    setGuardandoEdicionId(p.id)
+    const vivos = Number(p.nacidos_vivos || 0)
+    const muertos = Number(p.nacidos_muertos || 0)
+    const mom = Number(p.momias || 0)
+    if ([vivos, muertos, mom].some((x) => !Number.isFinite(x) || x < 0)) {
+      alert('Vivos/Muertos/Momias deben ser válidos (>= 0).')
+      return
+    }
+
+    setGuardandoEdicionId(editId)
     try {
       const { data: userData } = await supabase.auth.getUser()
       const userId = userData?.user?.id ?? null
@@ -383,19 +447,19 @@ export default function GranjaEntradaPartoPage() {
         .from('granja_partos')
         .update({
           fecha: p.fecha,
-          ubicacion_id: p.ubicacion_id,
-          lote_id: p.lote_id,
-          cerda_id: p.cerda_id.trim(),
-          nacidos_vivos: Number(p.nacidos_vivos || 0),
-          nacidos_muertos: Number(p.nacidos_muertos || 0),
-          momias: Number(p.momias || 0),
+          ubicacion_id: Number(p.ubicacion_id),
+          lote_id: p.lote_id ? Number(p.lote_id) : null,
+          cerda_id: String(p.cerda_id).trim(),
+          nacidos_vivos: vivos,
+          nacidos_muertos: muertos,
+          momias: mom,
           peso_camda_kg: p.peso_camda_kg ?? null,
-          hembras: p.hembras ?? 0,
-          machos: p.machos ?? 0,
+          hembras: Number(p.hembras || 0),
+          machos: Number(p.machos || 0),
           observaciones: p.observaciones ?? null,
           user_id: userId,
         })
-        .eq('id', p.id)
+        .eq('id', editId)
 
       if (updErr) {
         console.error('Error actualizando parto', updErr)
@@ -404,37 +468,39 @@ export default function GranjaEntradaPartoPage() {
       }
 
       const movRes = await upsertMovimientoParto({
-        partoId: p.id,
+        partoId: editId,
         fecha: p.fecha,
-        ubicacion_id: p.ubicacion_id,
-        lote_id: p.lote_id,
-        nacidos_vivos: Number(p.nacidos_vivos || 0),
-        hembras: p.hembras ?? null,
-        machos: p.machos ?? null,
+        ubicacion_id: Number(p.ubicacion_id),
+        lote_id: p.lote_id ? Number(p.lote_id) : null,
+        nacidos_vivos: vivos,
+        hembras: Number.isFinite(Number(p.hembras)) ? Number(p.hembras) : null,
+        machos: Number.isFinite(Number(p.machos)) ? Number(p.machos) : null,
         peso_camda_kg: p.peso_camda_kg ?? null,
-        observaciones: 'Entrada de cerdos por parto (editado)',
         user_id: userId,
+        observaciones: 'Entrada de cerdos por parto (editado)',
       })
 
       if (!movRes.ok) {
-        alert('Parto actualizado, pero NO se pudo actualizar el movimiento de inventario.')
+        alert('Parto actualizado, pero NO se pudo actualizar el movimiento de inventario (revisa RLS).')
       } else {
-        alert('Parto actualizado e inventario ajustado.')
+        alert('Parto actualizado (inventario ajustado).')
       }
 
+      setEditId(null)
+      setEdit({})
       await cargarDatos()
     } finally {
       setGuardandoEdicionId(null)
     }
   }
 
-  const eliminarParto = async (p: PartoEditable) => {
+  const eliminarParto = async (p: PartoRow) => {
     if (eliminandoId) return
-    if (!confirm(`¿Eliminar el parto #${p.id}? Esto ajustará el inventario.`)) return
+    if (!confirm(`¿Eliminar el parto #${p.id}? Esto revertirá el inventario.`)) return
 
     setEliminandoId(p.id)
     try {
-      // 1) borrar movimiento asociado
+      // 1) borrar movimiento asociado (revierte inventario)
       const { error: delMovErr } = await supabase
         .from('granja_movimientos')
         .delete()
@@ -444,7 +510,7 @@ export default function GranjaEntradaPartoPage() {
 
       if (delMovErr) {
         console.error('Error eliminando movimiento', delMovErr)
-        alert('No se pudo eliminar el movimiento de inventario. Revisa permisos/RLS.')
+        alert('No se pudo eliminar el movimiento de inventario. No se eliminó el parto (revisa RLS).')
         return
       }
 
@@ -452,29 +518,20 @@ export default function GranjaEntradaPartoPage() {
       const { error: delErr } = await supabase.from('granja_partos').delete().eq('id', p.id)
       if (delErr) {
         console.error('Error eliminando parto', delErr)
-        alert('No se pudo eliminar el parto.')
+        alert('Se eliminó el movimiento, pero no se pudo eliminar el parto.')
         return
       }
 
-      alert('Parto eliminado (inventario ajustado).')
+      alert('Parto eliminado (inventario revertido).')
       await cargarDatos()
     } finally {
       setEliminandoId(null)
     }
   }
 
-  const totalNacidos = useMemo(() => {
-    const vivos = toInt(form.nacidos_vivos)
-    const muertos = toInt(form.nacidos_muertos)
-    const mom = toInt(form.momias)
-    if ([vivos, muertos, mom].some((x) => Number.isNaN(x))) return 0
-    return vivos + muertos + mom
-  }, [form.nacidos_vivos, form.nacidos_muertos, form.momias])
-
   // -------- UI --------
   return (
     <div className="p-6 max-w-5xl mx-auto">
-      {/* encabezado */}
       <div className="mb-6 flex items-center gap-3">
         <img src="/logo.png" alt="Logo" className="h-10" />
         <div>
@@ -490,374 +547,339 @@ export default function GranjaEntradaPartoPage() {
       </div>
 
       <div className="grid gap-6 md:grid-cols-2">
-        {/* ------ formulario ------ */}
+        {/* Formulario */}
         <div className="border rounded-lg p-4 bg-white shadow-sm">
           <h2 className="font-semibold mb-3">Nuevo parto</h2>
 
-          {loading && <p className="text-xs text-gray-500 mb-2">Cargando catálogos…</p>}
+          {loading ? <p className="text-xs text-gray-500 mb-2">Cargando…</p> : null}
 
           <div className="grid grid-cols-2 gap-3">
             <div className="col-span-2">
-              <label className="block text-xs font-semibold mb-1">Fecha</label>
+              <label className="text-xs text-gray-700">Fecha</label>
               <input
                 type="date"
-                className="border rounded w-full p-2 text-sm"
+                className="border p-2 w-full"
                 value={form.fecha}
-                onChange={(e) => setForm({ ...form, fecha: e.target.value })}
+                onChange={(e) => setForm((p) => ({ ...p, fecha: e.target.value }))}
               />
             </div>
 
             <div className="col-span-2">
-              <label className="block text-xs font-semibold mb-1">Ubicación (tramo o jaula)</label>
+              <label className="text-xs text-gray-700">Ubicación (tramo o jaula)</label>
               <select
-                className="border rounded w-full p-2 text-sm"
+                className="border p-2 w-full"
                 value={form.ubicacion_id}
-                onChange={(e) => setForm({ ...form, ubicacion_id: e.target.value })}
+                onChange={(e) => setForm((p) => ({ ...p, ubicacion_id: e.target.value }))}
               >
-                <option value="">Seleccione una ubicación</option>
                 {ubicaciones.map((u) => (
                   <option key={u.id} value={u.id}>
-                    {u.codigo}
-                    {u.nombre ? ` — ${u.nombre}` : ''}
+                    {u.codigo} — {u.nombre || ''}
                   </option>
                 ))}
               </select>
             </div>
 
-            {/* lote existente */}
-            <div>
-              <label className="block text-xs font-semibold mb-1">Lote existente</label>
+            <div className="col-span-1">
+              <label className="text-xs text-gray-700">Lote existente</label>
               <select
-                className="border rounded w-full p-2 text-sm"
+                className="border p-2 w-full"
                 value={form.lote_id}
-                onChange={(e) => setForm({ ...form, lote_id: e.target.value })}
+                onChange={(e) => setForm((p) => ({ ...p, lote_id: e.target.value }))}
               >
-                <option value="">Crear / reutilizar lote</option>
+                <option value="">Crear/reusar por código</option>
                 {lotes.map((l) => (
                   <option key={l.id} value={l.id}>
-                    {l.codigo} ({l.fecha})
+                    {l.codigo} ({l.tipo_origen})
                   </option>
                 ))}
               </select>
             </div>
 
-            {/* nuevo lote */}
-            <div>
-              <label className="block text-xs font-semibold mb-1">Código de nuevo lote</label>
+            <div className="col-span-1">
+              <label className="text-xs text-gray-700">Código de nuevo lote (opcional)</label>
               <input
-                className="border rounded w-full p-2 text-sm"
-                placeholder="Vacío = P-AAAAMMDD"
+                className="border p-2 w-full"
+                placeholder="Si se deja vacío: P-YYYYMMDD"
                 value={form.nuevo_lote_codigo}
-                onChange={(e) => setForm({ ...form, nuevo_lote_codigo: e.target.value })}
+                onChange={(e) => setForm((p) => ({ ...p, nuevo_lote_codigo: e.target.value }))}
+                disabled={Boolean(form.lote_id)}
               />
-              <p className="text-[10px] text-gray-500 mt-1">
-                Si registras varios partos el mismo día, se reutiliza el lote por código (sin error 409).
+            </div>
+
+            <div className="col-span-2">
+              <label className="text-xs text-gray-700">Cerda (arete / código)</label>
+              <input
+                className="border p-2 w-full"
+                value={form.cerda_id}
+                onChange={(e) => setForm((p) => ({ ...p, cerda_id: e.target.value }))}
+              />
+              <p className="text-[11px] text-gray-500 mt-1">
+                Si la cerda no está registrada en listas, igual puedes escribir el código.
               </p>
             </div>
 
-            {/* cerda */}
-            <div className="col-span-2">
-              <label className="block text-xs font-semibold mb-1">Cerda (arete / código)</label>
-              <div className="flex gap-2">
-                <input
-                  className="border rounded w-full p-2 text-sm"
-                  value={form.cerda_id}
-                  onChange={(e) => setForm({ ...form, cerda_id: e.target.value })}
-                  placeholder="Escriba o seleccione de la lista"
-                />
-                <select
-                  className="border rounded p-2 text-xs w-44"
-                  value=""
-                  onChange={(e) => setForm({ ...form, cerda_id: e.target.value })}
-                >
-                  <option value="">Cerdas registradas…</option>
-                  {cerdasRegistradas.map((c) => (
-                    <option key={c} value={c}>
-                      {c}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
-
             <div>
-              <label className="block text-xs font-semibold mb-1">Nacidos vivos</label>
+              <label className="text-xs text-gray-700">Nacidos vivos</label>
               <input
                 type="number"
-                className="border rounded w-full p-2 text-sm"
+                className="border p-2 w-full"
                 value={form.nacidos_vivos}
-                onChange={(e) => setForm({ ...form, nacidos_vivos: e.target.value })}
+                onChange={(e) => setForm((p) => ({ ...p, nacidos_vivos: e.target.value }))}
               />
             </div>
 
             <div>
-              <label className="block text-xs font-semibold mb-1">Nacidos muertos</label>
+              <label className="text-xs text-gray-700">Nacidos muertos</label>
               <input
                 type="number"
-                className="border rounded w-full p-2 text-sm"
+                className="border p-2 w-full"
                 value={form.nacidos_muertos}
-                onChange={(e) => setForm({ ...form, nacidos_muertos: e.target.value })}
+                onChange={(e) => setForm((p) => ({ ...p, nacidos_muertos: e.target.value }))}
               />
             </div>
 
             <div>
-              <label className="block text-xs font-semibold mb-1">Momias</label>
+              <label className="text-xs text-gray-700">Momias</label>
               <input
                 type="number"
-                className="border rounded w-full p-2 text-sm"
+                className="border p-2 w-full"
                 value={form.momias}
-                onChange={(e) => setForm({ ...form, momias: e.target.value })}
+                onChange={(e) => setForm((p) => ({ ...p, momias: e.target.value }))}
               />
             </div>
 
             <div>
-              <label className="block text-xs font-semibold mb-1">Peso camada (kg)</label>
+              <label className="text-xs text-gray-700">Peso camada (kg)</label>
               <input
                 type="number"
-                className="border rounded w-full p-2 text-sm"
+                className="border p-2 w-full"
                 value={form.peso_camda_kg}
-                onChange={(e) => setForm({ ...form, peso_camda_kg: e.target.value })}
+                onChange={(e) => setForm((p) => ({ ...p, peso_camda_kg: e.target.value }))}
               />
             </div>
 
             <div>
-              <label className="block text-xs font-semibold mb-1">Hembras</label>
+              <label className="text-xs text-gray-700">Hembras</label>
               <input
                 type="number"
-                className="border rounded w-full p-2 text-sm"
+                className="border p-2 w-full"
                 value={form.hembras}
-                onChange={(e) => setForm({ ...form, hembras: e.target.value })}
+                onChange={(e) => setForm((p) => ({ ...p, hembras: e.target.value }))}
               />
             </div>
 
             <div>
-              <label className="block text-xs font-semibold mb-1">Machos</label>
+              <label className="text-xs text-gray-700">Machos</label>
               <input
                 type="number"
-                className="border rounded w-full p-2 text-sm"
+                className="border p-2 w-full"
                 value={form.machos}
-                onChange={(e) => setForm({ ...form, machos: e.target.value })}
+                onChange={(e) => setForm((p) => ({ ...p, machos: e.target.value }))}
               />
             </div>
 
             <div className="col-span-2">
-              <label className="block text-xs font-semibold mb-1">Observaciones</label>
+              <label className="text-xs text-gray-700">Observaciones</label>
               <textarea
-                className="border rounded w-full p-2 text-sm"
+                className="border p-2 w-full"
                 rows={3}
                 value={form.observaciones}
-                onChange={(e) => setForm({ ...form, observaciones: e.target.value })}
+                onChange={(e) => setForm((p) => ({ ...p, observaciones: e.target.value }))}
               />
             </div>
           </div>
 
-          <div className="mt-3 text-xs text-gray-600">
-            Total nacidos (info): <span className="font-semibold">{totalNacidos}</span> ·
-            Inventario suma: <span className="font-semibold">{toInt(form.nacidos_vivos) || 0}</span> (solo vivos)
+          <div className="mt-3 text-sm text-gray-700">
+            Total nacidos (solo informativo): <span className="font-semibold">{totalNacidos}</span>
           </div>
 
           <div className="mt-4 flex gap-2">
             <button
               onClick={guardarParto}
               disabled={guardando}
-              className="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white px-4 py-2 rounded text-sm"
+              className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded"
             >
               {guardando ? 'Guardando…' : 'Guardar parto'}
             </button>
-            <button type="button" onClick={resetForm} className="bg-gray-200 px-4 py-2 rounded text-sm">
+            <button
+              onClick={resetForm}
+              className="bg-gray-200 hover:bg-gray-300 text-gray-900 px-4 py-2 rounded"
+            >
               Limpiar
             </button>
           </div>
         </div>
 
-        {/* ------ partos recientes ------ */}
+        {/* Lista derecha */}
         <div className="border rounded-lg p-4 bg-white shadow-sm">
-          <div className="flex items-center justify-between mb-3">
-            <h2 className="font-semibold">Partos recientes</h2>
-            <button
-              onClick={cargarDatos}
-              className="text-xs bg-slate-700 hover:bg-slate-800 text-white px-3 py-2 rounded"
-            >
-              Recargar
-            </button>
-          </div>
+          <h2 className="font-semibold mb-3">Partos recientes</h2>
 
-          {partosRecientes.length === 0 ? (
+          {partos.length === 0 ? (
             <p className="text-sm text-gray-600">Aún no hay partos registrados.</p>
           ) : (
-            <div className="overflow-x-auto max-h-[520px]">
-              <table className="w-full text-xs">
-                <thead className="bg-gray-100 sticky top-0">
-                  <tr>
-                    <th className="p-2 text-left">Fecha</th>
-                    <th className="p-2 text-left">Ubicación</th>
-                    <th className="p-2 text-left">Lote</th>
-                    <th className="p-2 text-left">Cerda</th>
-                    <th className="p-2 text-right">Vivos</th>
-                    <th className="p-2 text-right">Muertos</th>
-                    <th className="p-2 text-right">Momias</th>
-                    <th className="p-2 text-right">Acciones</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {partosRecientes.map((p) => {
-                    const u = findUbicacion(p.ubicacion_id)
-                    const l = findLote(p.lote_id)
-                    const saving = guardandoEdicionId === p.id
-                    const deleting = eliminandoId === p.id
+            <div className="space-y-3">
+              {partos.map((p) => {
+                const enEdicion = editId === p.id
+                const loteCodigo = p.granja_lotes?.codigo || (p.lote_id ? `#${p.lote_id}` : '—')
+                const ubi = p.granja_ubicaciones?.codigo || `#${p.ubicacion_id}`
 
-                    return (
-                      <tr key={p.id} className="border-t align-top">
-                        <td className="p-2">
-                          {p._edit ? (
+                return (
+                  <div key={p.id} className="border rounded p-3">
+                    <div className="flex items-start gap-2">
+                      <div className="flex-1">
+                        <div className="text-sm font-semibold">
+                          #{p.id} · {p.fecha} · {ubi}
+                        </div>
+                        <div className="text-xs text-gray-600">
+                          Lote: {loteCodigo} · Cerda: {p.cerda_id}
+                        </div>
+
+                        {!enEdicion ? (
+                          <div className="mt-2 text-sm">
+                            Vivos: <b>{p.nacidos_vivos}</b> · Muertos: <b>{p.nacidos_muertos}</b> · Momias: <b>{p.momias}</b>
+                          </div>
+                        ) : (
+                          <div className="mt-2 grid grid-cols-3 gap-2">
+                            <div>
+                              <label className="text-[11px] text-gray-600">Vivos</label>
+                              <input
+                                type="number"
+                                className="border p-1 w-full"
+                                value={String((edit.nacidos_vivos ?? 0) as any)}
+                                onChange={(e) => setEdit((pr) => ({ ...pr, nacidos_vivos: Number(e.target.value) }))}
+                              />
+                            </div>
+                            <div>
+                              <label className="text-[11px] text-gray-600">Muertos</label>
+                              <input
+                                type="number"
+                                className="border p-1 w-full"
+                                value={String((edit.nacidos_muertos ?? 0) as any)}
+                                onChange={(e) => setEdit((pr) => ({ ...pr, nacidos_muertos: Number(e.target.value) }))}
+                              />
+                            </div>
+                            <div>
+                              <label className="text-[11px] text-gray-600">Momias</label>
+                              <input
+                                type="number"
+                                className="border p-1 w-full"
+                                value={String((edit.momias ?? 0) as any)}
+                                onChange={(e) => setEdit((pr) => ({ ...pr, momias: Number(e.target.value) }))}
+                              />
+                            </div>
+                          </div>
+                        )}
+
+                        {!enEdicion ? null : (
+                          <div className="mt-2 grid grid-cols-2 gap-2">
+                            <div>
+                              <label className="text-[11px] text-gray-600">Fecha</label>
+                              <input
+                                type="date"
+                                className="border p-1 w-full"
+                                value={String(edit.fecha ?? p.fecha)}
+                                onChange={(e) => setEdit((pr) => ({ ...pr, fecha: e.target.value }))}
+                              />
+                            </div>
+                            <div>
+                              <label className="text-[11px] text-gray-600">Ubicación</label>
+                              <select
+                                className="border p-1 w-full"
+                                value={String(edit.ubicacion_id ?? p.ubicacion_id)}
+                                onChange={(e) => setEdit((pr) => ({ ...pr, ubicacion_id: Number(e.target.value) }))}
+                              >
+                                {ubicaciones.map((u) => (
+                                  <option key={u.id} value={u.id}>
+                                    {u.codigo}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+
+                            <div>
+                              <label className="text-[11px] text-gray-600">Lote</label>
+                              <select
+                                className="border p-1 w-full"
+                                value={String(edit.lote_id ?? (p.lote_id ?? ''))}
+                                onChange={(e) => setEdit((pr) => ({ ...pr, lote_id: e.target.value ? Number(e.target.value) : null }))}
+                              >
+                                <option value="">—</option>
+                                {lotes.map((l) => (
+                                  <option key={l.id} value={l.id}>
+                                    {l.codigo}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+
+                            <div>
+                              <label className="text-[11px] text-gray-600">Peso (kg)</label>
+                              <input
+                                type="number"
+                                className="border p-1 w-full"
+                                value={String(edit.peso_camda_kg ?? (p.peso_camda_kg ?? ''))}
+                                onChange={(e) =>
+                                  setEdit((pr) => ({
+                                    ...pr,
+                                    peso_camda_kg: e.target.value === '' ? null : Number(e.target.value),
+                                  }))
+                                }
+                              />
+                            </div>
+                          </div>
+                        )}
+
+                        {!enEdicion ? null : (
+                          <div className="mt-2">
+                            <label className="text-[11px] text-gray-600">Observaciones</label>
                             <input
-                              type="date"
-                              className="border rounded px-2 py-1 w-[140px]"
-                              value={p.fecha}
-                              onChange={(e) => setCampoParto(p.id, 'fecha', e.target.value)}
+                              className="border p-1 w-full"
+                              value={String(edit.observaciones ?? '')}
+                              onChange={(e) => setEdit((pr) => ({ ...pr, observaciones: e.target.value }))}
                             />
-                          ) : (
-                            p.fecha
-                          )}
-                        </td>
+                          </div>
+                        )}
+                      </div>
 
-                        <td className="p-2">
-                          {p._edit ? (
-                            <select
-                              className="border rounded px-2 py-1 w-[160px]"
-                              value={p.ubicacion_id}
-                              onChange={(e) => setCampoParto(p.id, 'ubicacion_id', Number(e.target.value))}
+                      <div className="flex flex-col gap-2">
+                        {!enEdicion ? (
+                          <>
+                            <button
+                              onClick={() => empezarEditar(p)}
+                              className="bg-slate-700 hover:bg-slate-800 text-white text-xs px-3 py-2 rounded"
                             >
-                              {ubicaciones.map((uu) => (
-                                <option key={uu.id} value={uu.id}>
-                                  {uu.codigo}
-                                </option>
-                              ))}
-                            </select>
-                          ) : u ? (
-                            `${u.codigo}${u.nombre ? ` — ${u.nombre}` : ''}`
-                          ) : (
-                            String(p.ubicacion_id)
-                          )}
-                        </td>
-
-                        <td className="p-2">
-                          {p._edit ? (
-                            <select
-                              className="border rounded px-2 py-1 w-[140px]"
-                              value={p.lote_id ?? ''}
-                              onChange={(e) =>
-                                setCampoParto(p.id, 'lote_id', e.target.value ? Number(e.target.value) : null)
-                              }
+                              Editar
+                            </button>
+                            <button
+                              onClick={() => eliminarParto(p)}
+                              disabled={eliminandoId === p.id}
+                              className="bg-red-600 hover:bg-red-700 text-white text-xs px-3 py-2 rounded"
                             >
-                              <option value="">—</option>
-                              {lotes.map((ll) => (
-                                <option key={ll.id} value={ll.id}>
-                                  {ll.codigo}
-                                </option>
-                              ))}
-                            </select>
-                          ) : (
-                            l?.codigo ?? '—'
-                          )}
-                        </td>
-
-                        <td className="p-2">
-                          {p._edit ? (
-                            <input
-                              className="border rounded px-2 py-1 w-[140px]"
-                              value={p.cerda_id}
-                              onChange={(e) => setCampoParto(p.id, 'cerda_id', e.target.value)}
-                            />
-                          ) : (
-                            p.cerda_id
-                          )}
-                        </td>
-
-                        <td className="p-2 text-right">
-                          {p._edit ? (
-                            <input
-                              type="number"
-                              className="border rounded px-2 py-1 w-[70px] text-right"
-                              value={Number(p.nacidos_vivos || 0)}
-                              onChange={(e) => setCampoParto(p.id, 'nacidos_vivos', Number(e.target.value))}
-                            />
-                          ) : (
-                            p.nacidos_vivos
-                          )}
-                        </td>
-
-                        <td className="p-2 text-right">
-                          {p._edit ? (
-                            <input
-                              type="number"
-                              className="border rounded px-2 py-1 w-[70px] text-right"
-                              value={Number(p.nacidos_muertos || 0)}
-                              onChange={(e) => setCampoParto(p.id, 'nacidos_muertos', Number(e.target.value))}
-                            />
-                          ) : (
-                            p.nacidos_muertos
-                          )}
-                        </td>
-
-                        <td className="p-2 text-right">
-                          {p._edit ? (
-                            <input
-                              type="number"
-                              className="border rounded px-2 py-1 w-[70px] text-right"
-                              value={Number(p.momias || 0)}
-                              onChange={(e) => setCampoParto(p.id, 'momias', Number(e.target.value))}
-                            />
-                          ) : (
-                            p.momias
-                          )}
-                        </td>
-
-                        <td className="p-2 text-right whitespace-nowrap">
-                          {!p._edit ? (
-                            <>
-                              <button
-                                onClick={() => activarEdicion(p.id)}
-                                className="bg-slate-700 hover:bg-slate-800 text-white px-2 py-1 rounded text-[11px] mr-2"
-                              >
-                                Editar
-                              </button>
-                              <button
-                                onClick={() => eliminarParto(p)}
-                                disabled={deleting}
-                                className="bg-red-600 hover:bg-red-700 disabled:opacity-60 text-white px-2 py-1 rounded text-[11px]"
-                              >
-                                {deleting ? 'Eliminando…' : 'Eliminar'}
-                              </button>
-                            </>
-                          ) : (
-                            <>
-                              <button
-                                onClick={() => guardarEdicionParto(p)}
-                                disabled={saving}
-                                className="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white px-2 py-1 rounded text-[11px] mr-2"
-                              >
-                                {saving ? 'Guardando…' : 'Guardar'}
-                              </button>
-                              <button
-                                onClick={() => cancelarEdicion(p.id)}
-                                className="bg-gray-200 px-2 py-1 rounded text-[11px]"
-                              >
-                                Cancelar
-                              </button>
-                            </>
-                          )}
-                        </td>
-                      </tr>
-                    )
-                  })}
-                </tbody>
-              </table>
-
-              <p className="text-[11px] text-gray-600 mt-3">
-                Nota: el inventario se actualiza con <b>nacidos vivos</b>. Muertos y momias quedan registrados en el parto,
-                pero no aumentan stock.
-              </p>
+                              {eliminandoId === p.id ? 'Eliminando…' : 'Eliminar'}
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            <button
+                              onClick={guardarEdicion}
+                              disabled={guardandoEdicionId === p.id}
+                              className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs px-3 py-2 rounded"
+                            >
+                              {guardandoEdicionId === p.id ? 'Guardando…' : 'Guardar'}
+                            </button>
+                            <button
+                              onClick={cancelarEditar}
+                              className="bg-gray-200 hover:bg-gray-300 text-gray-900 text-xs px-3 py-2 rounded"
+                            >
+                              Cancelar
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )
+              })}
             </div>
           )}
         </div>
