@@ -88,6 +88,10 @@ export default function EntradaPartoPage() {
   const [lotes, setLotes] = useState<Lote[]>([])
   const [partos, setPartos] = useState<PartoRow[]>([])
 
+  // ✅ lista de cerdas detectadas desde granja_partos
+  const [cerdas, setCerdas] = useState<string[]>([])
+  const [renombrandoCerda, setRenombrandoCerda] = useState(false)
+
   const [editId, setEditId] = useState<number | null>(null)
   const [edit, setEdit] = useState<Partial<PartoRow>>({})
   const [guardandoEdicionId, setGuardandoEdicionId] = useState<number | null>(null)
@@ -107,6 +111,27 @@ export default function EntradaPartoPage() {
     machos: '',
     observaciones: '',
   })
+
+  const cargarCerdas = useCallback(async () => {
+    // Traer varias para tener buena lista. Si hay MUCHÍSIMAS, luego hacemos paginación.
+    const { data, error } = await supabase
+      .from('granja_partos')
+      .select('cerda_id')
+      .order('cerda_id', { ascending: true })
+      .limit(2000)
+
+    if (error) {
+      console.error('Error cargando cerdas', error)
+      return
+    }
+
+    const uniq = new Set<string>()
+    for (const r of (data ?? []) as any[]) {
+      const val = String(r?.cerda_id ?? '').trim()
+      if (val) uniq.add(val)
+    }
+    setCerdas(Array.from(uniq).sort((a, b) => a.localeCompare(b, 'es')))
+  }, [])
 
   const cargarDatos = useCallback(async () => {
     setLoading(true)
@@ -171,10 +196,13 @@ export default function EntradaPartoPage() {
       if (!form.ubicacion_id && ubis.length > 0) {
         setForm((prev) => ({ ...prev, ubicacion_id: String(ubis[0].id) }))
       }
+
+      // ✅ cargar lista de cerdas
+      await cargarCerdas()
     } finally {
       setLoading(false)
     }
-  }, [form.ubicacion_id])
+  }, [form.ubicacion_id, cargarCerdas])
 
   useEffect(() => {
     cargarDatos()
@@ -309,6 +337,46 @@ export default function EntradaPartoPage() {
     return { ok: true as const }
   }
 
+  // ✅ Renombrar cerda (actualiza todos los partos que usan ese cerda_id)
+  const renombrarCerda = async (oldId: string) => {
+    const actual = oldId.trim()
+    if (!actual) return
+
+    const nuevo = prompt(`Nuevo código para la cerda "${actual}":`, actual)
+    if (!nuevo) return
+    const nuevoTrim = nuevo.trim()
+    if (!nuevoTrim) return
+    if (nuevoTrim === actual) return
+
+    if (!confirm(`¿Renombrar "${actual}" → "${nuevoTrim}"? Esto cambia el código en todos los partos.`)) return
+
+    setRenombrandoCerda(true)
+    try {
+      const { error } = await supabase.from('granja_partos').update({ cerda_id: nuevoTrim }).eq('cerda_id', actual)
+      if (error) {
+        console.error('Error renombrando cerda', error)
+        alert('No se pudo renombrar la cerda (revisa RLS).')
+        return
+      }
+
+      // si el form tenía ese valor, actualizarlo
+      setForm((p) => ({ ...p, cerda_id: p.cerda_id.trim() === actual ? nuevoTrim : p.cerda_id }))
+
+      // si está editando un parto con ese valor
+      setEdit((p) => {
+        const val = String(p.cerda_id ?? '').trim()
+        if (val === actual) return { ...p, cerda_id: nuevoTrim }
+        return p
+      })
+
+      alert('Cerda renombrada correctamente.')
+      await cargarCerdas()
+      await cargarDatos()
+    } finally {
+      setRenombrandoCerda(false)
+    }
+  }
+
   // -------- guardar parto --------
   const guardarParto = async () => {
     if (!form.fecha || !form.ubicacion_id) {
@@ -379,7 +447,7 @@ export default function EntradaPartoPage() {
         return
       }
 
-      // movimiento inventario (ENTRADA_PARTO) ✅
+      // movimiento inventario (ENTRADA_PARTO)
       const movRes = await upsertMovimientoParto({
         partoId: partoIns.id,
         fecha: form.fecha,
@@ -606,15 +674,38 @@ export default function EntradaPartoPage() {
               />
             </div>
 
+            {/* ✅ Cerda con droplist + editar */}
             <div className="col-span-2">
-              <label className="text-xs text-gray-700">Cerda (arete / código)</label>
+              <div className="flex items-end justify-between gap-2">
+                <label className="text-xs text-gray-700">Cerda (arete / código)</label>
+
+                <button
+                  type="button"
+                  onClick={() => renombrarCerda(form.cerda_id)}
+                  disabled={renombrandoCerda || !form.cerda_id.trim()}
+                  className="text-[11px] px-2 py-1 rounded bg-slate-700 hover:bg-slate-800 disabled:opacity-60 text-white"
+                  title="Renombrar este código de cerda en todos los partos"
+                >
+                  {renombrandoCerda ? 'Renombrando…' : 'Editar cerda'}
+                </button>
+              </div>
+
               <input
                 className="border p-2 w-full"
                 value={form.cerda_id}
                 onChange={(e) => setForm((p) => ({ ...p, cerda_id: e.target.value }))}
+                list="cerdas-list"
+                placeholder="Escribe o selecciona una cerda…"
               />
+
+              <datalist id="cerdas-list">
+                {cerdas.map((c) => (
+                  <option key={c} value={c} />
+                ))}
+              </datalist>
+
               <p className="text-[11px] text-gray-500 mt-1">
-                Si la cerda no está registrada en listas, igual puedes escribir el código.
+                Puedes escribir manual o seleccionar una existente.
               </p>
             </div>
 
@@ -739,35 +830,58 @@ export default function EntradaPartoPage() {
                             Vivos: <b>{p.nacidos_vivos}</b> · Muertos: <b>{p.nacidos_muertos}</b> · Momias: <b>{p.momias}</b>
                           </div>
                         ) : (
-                          <div className="mt-2 grid grid-cols-3 gap-2">
-                            <div>
-                              <label className="text-[11px] text-gray-600">Vivos</label>
-                              <input
-                                type="number"
-                                className="border p-1 w-full"
-                                value={String((edit.nacidos_vivos ?? 0) as any)}
-                                onChange={(e) => setEdit((pr) => ({ ...pr, nacidos_vivos: Number(e.target.value) }))}
-                              />
+                          <>
+                            <div className="mt-2">
+                              <label className="text-[11px] text-gray-600">Cerda</label>
+                              <div className="flex gap-2">
+                                <input
+                                  className="border p-1 w-full"
+                                  value={String(edit.cerda_id ?? '')}
+                                  onChange={(e) => setEdit((pr) => ({ ...pr, cerda_id: e.target.value }))}
+                                  list="cerdas-list"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => renombrarCerda(String(edit.cerda_id ?? ''))}
+                                  disabled={renombrandoCerda || !String(edit.cerda_id ?? '').trim()}
+                                  className="bg-slate-700 hover:bg-slate-800 disabled:opacity-60 text-white text-xs px-3 py-2 rounded"
+                                  title="Renombrar este código de cerda en todos los partos"
+                                >
+                                  {renombrandoCerda ? '…' : 'Editar'}
+                                </button>
+                              </div>
                             </div>
-                            <div>
-                              <label className="text-[11px] text-gray-600">Muertos</label>
-                              <input
-                                type="number"
-                                className="border p-1 w-full"
-                                value={String((edit.nacidos_muertos ?? 0) as any)}
-                                onChange={(e) => setEdit((pr) => ({ ...pr, nacidos_muertos: Number(e.target.value) }))}
-                              />
+
+                            <div className="mt-2 grid grid-cols-3 gap-2">
+                              <div>
+                                <label className="text-[11px] text-gray-600">Vivos</label>
+                                <input
+                                  type="number"
+                                  className="border p-1 w-full"
+                                  value={String((edit.nacidos_vivos ?? 0) as any)}
+                                  onChange={(e) => setEdit((pr) => ({ ...pr, nacidos_vivos: Number(e.target.value) }))}
+                                />
+                              </div>
+                              <div>
+                                <label className="text-[11px] text-gray-600">Muertos</label>
+                                <input
+                                  type="number"
+                                  className="border p-1 w-full"
+                                  value={String((edit.nacidos_muertos ?? 0) as any)}
+                                  onChange={(e) => setEdit((pr) => ({ ...pr, nacidos_muertos: Number(e.target.value) }))}
+                                />
+                              </div>
+                              <div>
+                                <label className="text-[11px] text-gray-600">Momias</label>
+                                <input
+                                  type="number"
+                                  className="border p-1 w-full"
+                                  value={String((edit.momias ?? 0) as any)}
+                                  onChange={(e) => setEdit((pr) => ({ ...pr, momias: Number(e.target.value) }))}
+                                />
+                              </div>
                             </div>
-                            <div>
-                              <label className="text-[11px] text-gray-600">Momias</label>
-                              <input
-                                type="number"
-                                className="border p-1 w-full"
-                                value={String((edit.momias ?? 0) as any)}
-                                onChange={(e) => setEdit((pr) => ({ ...pr, momias: Number(e.target.value) }))}
-                              />
-                            </div>
-                          </div>
+                          </>
                         )}
 
                         {!enEdicion ? null : (
