@@ -139,19 +139,24 @@ export default function ReporteViajePage() {
 
   const totales = useMemo(() => {
     if (!viaje) {
-      return { fuel: 0, salary: 0, otros: 0, total: 0 }
+      return { fuel: 0, salary: 0, otros: 0, total: 0, galConsumidos: 0 }
     }
-    const fuel =
-      Number(viaje.combustible_despachado || 0) *
-      Number(viaje.precio_galon || 0)
-    const salary =
-      Number(viaje.salario_diario || 0) * Number(viaje.dias || 0)
-    const otros = gastos.reduce(
-      (s, g) => s + Number(g.monto || 0),
-      0
-    )
+
+    const ini = Number(viaje.combustible_inicial || 0)
+    const desp = Number(viaje.combustible_despachado || 0)
+    const fin = Number(viaje.combustible_final || 0)
+    const precio = Number(viaje.precio_galon || 0)
+
+    // ✅ Fórmula correcta:
+    // (gal inicial + gal despachados - gal final) * precio
+    const galConsumidos = ini + desp - fin
+    const fuel = galConsumidos * precio
+
+    const salary = Number(viaje.salario_diario || 0) * Number(viaje.dias || 0)
+    const otros = gastos.reduce((s, g) => s + Number(g.monto || 0), 0)
     const total = fuel + salary + otros
-    return { fuel, salary, otros, total }
+
+    return { fuel, salary, otros, total, galConsumidos }
   }, [viaje, gastos])
 
   /* ========================= Generar PDF ========================= */
@@ -159,14 +164,11 @@ export default function ReporteViajePage() {
   const generarPDF = async () => {
     if (!viaje) return
 
-    // Crear doc A4 en mm
     const doc = new jsPDF('p', 'mm', 'a4')
 
-    // ----- Encabezado con logo y banda gris -----
     doc.setFillColor(245, 245, 245)
     doc.rect(0, 0, 210, 30, 'F')
 
-    // Cargar logo
     try {
       const img = new Image()
       img.src = '/logo.png'
@@ -176,15 +178,11 @@ export default function ReporteViajePage() {
         img.onerror = () => resolve()
       })
 
-      // Si cargó, lo dibujamos
-      // (si falla, simplemente no se verá el logo)
-      // ancho ~30mm, alto proporcional
       doc.addImage(img, 'PNG', 10, 5, 30, 18)
     } catch {
-      // ignorar errores de logo
+      // ignorar
     }
 
-    // Título y subtítulo
     doc.setTextColor(0, 0, 0)
     doc.setFontSize(16)
     doc.setFont('helvetica', 'bold')
@@ -192,9 +190,7 @@ export default function ReporteViajePage() {
 
     doc.setFontSize(10)
     doc.setFont('helvetica', 'normal')
-    doc.text('Sistema de Control de Gastos y Flota', 125, 20, {
-      align: 'center',
-    })
+    doc.text('Sistema de Control de Gastos y Flota', 125, 20, { align: 'center' })
 
     const fechaGen = new Date().toLocaleString()
     doc.setFontSize(9)
@@ -202,7 +198,7 @@ export default function ReporteViajePage() {
 
     let y = 36
 
-    // ----- Bloque: Vehículo -----
+    // Vehículo
     doc.setFontSize(11)
     doc.setFont('helvetica', 'bold')
     doc.text('Vehículo', 14, y)
@@ -212,12 +208,10 @@ export default function ReporteViajePage() {
     doc.setFont('helvetica', 'normal')
 
     const placaAlias = vehiculo
-      ? `${vehiculo.placa || ''}${
-          vehiculo.alias ? ' · ' + vehiculo.alias : ''
-        }`
+      ? `${vehiculo.placa || ''}${vehiculo.alias ? ' · ' + vehiculo.alias : ''}`
       : viaje.vehiculo_id != null
-      ? `ID ${viaje.vehiculo_id}`
-      : 'No registrado'
+        ? `ID ${viaje.vehiculo_id}`
+        : 'No registrado'
 
     const lineaVehiculo = [
       `Placa/Alias: ${placaAlias}`,
@@ -231,12 +225,11 @@ export default function ReporteViajePage() {
     doc.text(lineaVehiculo, 14, y)
     y += 8
 
-    // Línea divisoria
     doc.setDrawColor(200, 200, 200)
     doc.line(14, y, 196, y)
     y += 6
 
-    // ----- Bloque: Datos del viaje -----
+    // Datos del viaje
     doc.setFont('helvetica', 'bold')
     doc.setFontSize(11)
     doc.text('Datos del viaje', 14, y)
@@ -259,12 +252,11 @@ export default function ReporteViajePage() {
     doc.text(`Destino: ${viaje.destino || '—'}`, 14, y)
     y += 8
 
-    // Línea divisoria
     doc.setDrawColor(200, 200, 200)
     doc.line(14, y, 196, y)
     y += 6
 
-    // ----- Bloque: Distancia y consumo -----
+    // Distancia y consumo
     doc.setFont('helvetica', 'bold')
     doc.setFontSize(11)
     doc.text('Distancia y consumo', 14, y)
@@ -273,26 +265,19 @@ export default function ReporteViajePage() {
     doc.setFont('helvetica', 'normal')
     doc.setFontSize(9)
 
-    const km =
-      viaje.km_recorridos != null
-        ? Number(viaje.km_recorridos).toFixed(2)
-        : '—'
-    const consumo =
-      viaje.consumo_por_galon != null
-        ? Number(viaje.consumo_por_galon).toFixed(2)
-        : '—'
+    const km = viaje.km_recorridos != null ? Number(viaje.km_recorridos).toFixed(2) : '—'
+    const consumo = viaje.consumo_por_galon != null ? Number(viaje.consumo_por_galon).toFixed(2) : '—'
 
     doc.text(`Km recorridos: ${km} km`, 14, y)
     y += 5
     doc.text(`Consumo promedio: ${consumo} km/galón`, 14, y)
     y += 8
 
-    // Línea divisoria
     doc.setDrawColor(200, 200, 200)
     doc.line(14, y, 196, y)
     y += 6
 
-    // ----- Bloque: Costos principales -----
+    // Costos principales
     doc.setFont('helvetica', 'bold')
     doc.setFontSize(11)
     doc.text('Resumen de costos principales', 14, y)
@@ -301,29 +286,39 @@ export default function ReporteViajePage() {
     doc.setFont('helvetica', 'normal')
     doc.setFontSize(9)
 
-    const desp = Number(viaje.combustible_despachado || 0).toFixed(2)
+    const ini = Number(viaje.combustible_inicial || 0)
+    const desp = Number(viaje.combustible_despachado || 0)
+    const fin = Number(viaje.combustible_final || 0)
+    const galConsumidos = totales.galConsumidos
+
     const precio = Number(viaje.precio_galon || 0).toFixed(2)
     const fuelQ = totales.fuel.toFixed(2)
     const salDia = Number(viaje.salario_diario || 0).toFixed(2)
     const salarioQ = totales.salary.toFixed(2)
 
-    doc.text(`Combustible despachado: ${desp} gal`, 14, y)
+    doc.text(`Combustible inicial: ${ini.toFixed(2)} gal`, 14, y)
+    y += 5
+    doc.text(`Combustible despachado: ${desp.toFixed(2)} gal`, 14, y)
+    y += 5
+    doc.text(`Combustible final: ${fin.toFixed(2)} gal`, 14, y)
+    y += 5
+    doc.text(`Consumo calculado: ${galConsumidos.toFixed(2)} gal`, 14, y)
     y += 5
     doc.text(`Precio por galón: Q${precio}`, 14, y)
     y += 5
     doc.text(`Costo de combustible: Q${fuelQ}`, 14, y)
-    y += 5
+    y += 6
+
     doc.text(`Salario diario: Q${salDia}   Días: ${dias}`, 14, y)
     y += 5
     doc.text(`Total salarios: Q${salarioQ}`, 14, y)
     y += 8
 
-    // Línea divisoria
     doc.setDrawColor(200, 200, 200)
     doc.line(14, y, 196, y)
     y += 6
 
-    // ----- Bloque: Gastos adicionales -----
+    // Gastos adicionales
     doc.setFont('helvetica', 'bold')
     doc.setFontSize(11)
     doc.text('Gastos adicionales', 14, y)
@@ -336,11 +331,7 @@ export default function ReporteViajePage() {
       doc.text('Sin gastos adicionales registrados.', 14, y)
       y += 8
     } else {
-      doc.text(
-        'Fecha         Descripción                                      Monto (Q)',
-        14,
-        y
-      )
+      doc.text('Fecha         Descripción                                      Monto (Q)', 14, y)
       y += 4
       doc.setDrawColor(180, 180, 180)
       doc.line(14, y, 196, y)
@@ -370,7 +361,7 @@ export default function ReporteViajePage() {
       doc.setFontSize(9)
     }
 
-    // ----- Observaciones -----
+    // Observaciones
     if (viaje.observaciones) {
       doc.setDrawColor(200, 200, 200)
       doc.line(14, y, 196, y)
@@ -388,7 +379,7 @@ export default function ReporteViajePage() {
       y += obsLines.length * 5 + 4
     }
 
-    // ----- Total general -----
+    // Total
     const totalQ = totales.total.toFixed(2)
     doc.setDrawColor(0, 0, 0)
     doc.setLineWidth(0.3)
@@ -397,7 +388,7 @@ export default function ReporteViajePage() {
     doc.setFontSize(11)
     doc.text(`TOTAL GENERAL DEL VIAJE: Q${totalQ}`, 19, y + 7)
 
-    // ----- Footer -----
+    // Footer
     doc.setFont('helvetica', 'normal')
     doc.setFontSize(8)
     doc.setTextColor(120, 120, 120)
@@ -437,61 +428,59 @@ export default function ReporteViajePage() {
         <>
           <div className="border rounded p-4 mb-4 text-sm space-y-2">
             <div className="font-semibold">Viaje #{viaje.id}</div>
+
             <div>
               <span className="font-semibold">Vehículo:</span>{' '}
               {vehiculo
-                ? `${vehiculo.placa || ''}${
-                    vehiculo.alias ? ' · ' + vehiculo.alias : ''
-                  }`
+                ? `${vehiculo.placa || ''}${vehiculo.alias ? ' · ' + vehiculo.alias : ''}`
                 : viaje.vehiculo_id != null
-                ? `ID ${viaje.vehiculo_id}`
-                : 'No registrado'}
+                  ? `ID ${viaje.vehiculo_id}`
+                  : 'No registrado'}
             </div>
+
             <div>
-              <span className="font-semibold">Conductor:</span>{' '}
-              {viaje.conductor || '—'}
+              <span className="font-semibold">Conductor:</span> {viaje.conductor || '—'}
             </div>
+
             <div>
-              <span className="font-semibold">Desde:</span>{' '}
-              {viaje.fecha_inicio || '—'}{' '}
-              <span className="font-semibold ml-2">Hasta:</span>{' '}
-              {viaje.fecha_fin || '—'}{' '}
-              <span className="font-semibold ml-2">Días:</span>{' '}
-              {viaje.dias != null ? viaje.dias : '—'}
+              <span className="font-semibold">Desde:</span> {viaje.fecha_inicio || '—'}{' '}
+              <span className="font-semibold ml-2">Hasta:</span> {viaje.fecha_fin || '—'}{' '}
+              <span className="font-semibold ml-2">Días:</span> {viaje.dias != null ? viaje.dias : '—'}
             </div>
+
             <div>
-              <span className="font-semibold">Origen:</span>{' '}
-              {viaje.origen || '—'}{' '}
-              <span className="font-semibold ml-2">Destino:</span>{' '}
-              {viaje.destino || '—'}
+              <span className="font-semibold">Origen:</span> {viaje.origen || '—'}{' '}
+              <span className="font-semibold ml-2">Destino:</span> {viaje.destino || '—'}
             </div>
+
             <div>
               <span className="font-semibold">Km recorridos:</span>{' '}
               {viaje.km_recorridos != null ? viaje.km_recorridos : '—'} km{' '}
               <span className="font-semibold ml-2">Consumo:</span>{' '}
-              {viaje.consumo_por_galon != null
-                ? `${viaje.consumo_por_galon} km/galón`
-                : '—'}
+              {viaje.consumo_por_galon != null ? `${viaje.consumo_por_galon} km/galón` : '—'}
             </div>
+
+            <div className="border-t pt-2">
+              <span className="font-semibold">Combustible inicial:</span>{' '}
+              {viaje.combustible_inicial != null ? viaje.combustible_inicial : 0} gal{' '}
+              · <span className="font-semibold">Despachado:</span>{' '}
+              {viaje.combustible_despachado != null ? viaje.combustible_despachado : 0} gal{' '}
+              · <span className="font-semibold">Final:</span>{' '}
+              {viaje.combustible_final != null ? viaje.combustible_final : 0} gal
+            </div>
+
             <div>
-              <span className="font-semibold">Combustible despachado:</span>{' '}
-              {viaje.combustible_despachado != null
-                ? viaje.combustible_despachado
-                : 0}{' '}
-              gal · <span className="font-semibold">Precio galón:</span> Q
-              {viaje.precio_galon != null ? viaje.precio_galon : 0}
+              <span className="font-semibold">Consumo calculado:</span> {totales.galConsumidos.toFixed(2)} gal{' '}
+              · <span className="font-semibold">Precio galón:</span> Q{viaje.precio_galon != null ? viaje.precio_galon : 0}
             </div>
+
             <div>
-              <span className="font-semibold">Costo combustible:</span> Q
-              {totales.fuel.toFixed(2)}{' '}
-              · <span className="font-semibold">Salarios:</span> Q
-              {totales.salary.toFixed(2)}{' '}
-              · <span className="font-semibold">Otros gastos:</span> Q
-              {totales.otros.toFixed(2)}
+              <span className="font-semibold">Costo combustible:</span> Q{totales.fuel.toFixed(2)} ·{' '}
+              <span className="font-semibold">Salarios:</span> Q{totales.salary.toFixed(2)} ·{' '}
+              <span className="font-semibold">Otros gastos:</span> Q{totales.otros.toFixed(2)}
             </div>
-            <div className="font-semibold">
-              TOTAL GENERAL: Q{totales.total.toFixed(2)}
-            </div>
+
+            <div className="font-semibold">TOTAL GENERAL: Q{totales.total.toFixed(2)}</div>
           </div>
 
           <button
