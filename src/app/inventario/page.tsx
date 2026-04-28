@@ -520,7 +520,7 @@ export default function InventarioPage() {
         </div>
 
         <p className="text-xs text-gray-500 mt-2">
-          * Se guarda en <code>inventario_movimientos</code>. Cada fila tiene su propio <code>id</code> y comparte un <code>grupo_manual_id</code> para facilitar reportes posteriores.
+         
         </p>
       </section>
 
