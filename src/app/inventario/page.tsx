@@ -391,6 +391,7 @@ export default function InventarioPage() {
               checked={nuevoCtrlInv}
               onChange={(e) => setNuevoCtrlInv(e.target.checked)}
             />
+            
             Control de inventario
           </label>
         </div>
