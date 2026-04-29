@@ -347,30 +347,163 @@ export default function ReporteMovimientosManualesPage() {
 
   return (
     <div className="p-4 max-w-7xl mx-auto reporte-print-area">
-      <style>{`
-        @media print {
-          .no-print {
-            display: none !important;
-          }
+   <style>{`
+  @page {
+    size: letter landscape;
+    margin: 8mm;
+  }
 
-          body {
-            background: white !important;
-          }
+  @media print {
+    html,
+    body {
+      background: white !important;
+      margin: 0 !important;
+      padding: 0 !important;
+      width: 100% !important;
+    }
 
-          .print-card {
-            border: none !important;
-            box-shadow: none !important;
-          }
+    .no-print {
+      display: none !important;
+    }
 
-          .print-table {
-            font-size: 10px !important;
-          }
+    .reporte-print-area {
+      max-width: none !important;
+      width: 100% !important;
+      margin: 0 !important;
+      padding: 0 !important;
+    }
 
-          .print-title {
-            text-align: center !important;
-          }
-        }
-      `}</style>
+    .print-title {
+      display: block !important;
+      text-align: center !important;
+      margin-bottom: 8px !important;
+    }
+
+    .print-title h1 {
+      font-size: 15px !important;
+      margin: 0 !important;
+    }
+
+    .print-title p {
+      font-size: 9px !important;
+      margin: 2px 0 0 0 !important;
+    }
+
+    .print-summary {
+      display: grid !important;
+      grid-template-columns: repeat(4, 1fr) !important;
+      gap: 4px !important;
+      margin-bottom: 8px !important;
+    }
+
+    .print-summary > div {
+      padding: 5px !important;
+      border: 1px solid #333 !important;
+      page-break-inside: avoid !important;
+    }
+
+    .print-summary .text-xs {
+      font-size: 7px !important;
+    }
+
+    .print-summary .text-lg {
+      font-size: 10px !important;
+    }
+
+    .print-card {
+      border: none !important;
+      box-shadow: none !important;
+      padding: 0 !important;
+    }
+
+    .print-card h2 {
+      font-size: 11px !important;
+      margin-bottom: 5px !important;
+    }
+
+    .overflow-x-auto {
+      overflow: visible !important;
+    }
+
+    .print-table {
+      width: 100% !important;
+      min-width: 0 !important;
+      table-layout: fixed !important;
+      border-collapse: collapse !important;
+      font-size: 6.5px !important;
+    }
+
+    .print-table th,
+    .print-table td {
+      padding: 2px !important;
+      border: 1px solid #333 !important;
+      vertical-align: top !important;
+      word-break: break-word !important;
+      overflow-wrap: anywhere !important;
+      line-height: 1.15 !important;
+    }
+
+    .print-table th:nth-child(1),
+    .print-table td:nth-child(1) {
+      width: 6%;
+    }
+
+    .print-table th:nth-child(2),
+    .print-table td:nth-child(2) {
+      width: 5%;
+    }
+
+    .print-table th:nth-child(3),
+    .print-table td:nth-child(3) {
+      width: 11%;
+    }
+
+    .print-table th:nth-child(4),
+    .print-table td:nth-child(4) {
+      width: 15%;
+    }
+
+    .print-table th:nth-child(5),
+    .print-table td:nth-child(5) {
+      width: 16%;
+    }
+
+    .print-table th:nth-child(6),
+    .print-table td:nth-child(6) {
+      width: 6%;
+    }
+
+    .print-table th:nth-child(7),
+    .print-table td:nth-child(7) {
+      width: 7%;
+    }
+
+    .print-table th:nth-child(8),
+    .print-table td:nth-child(8) {
+      width: 7%;
+    }
+
+    .print-table th:nth-child(9),
+    .print-table td:nth-child(9) {
+      width: 7%;
+      text-align: right !important;
+    }
+
+    .print-table th:nth-child(10),
+    .print-table td:nth-child(10) {
+      width: 10%;
+    }
+
+    .print-table th:nth-child(11),
+    .print-table td:nth-child(11) {
+      width: 10%;
+    }
+
+    tr {
+      page-break-inside: avoid !important;
+    }
+  }
+`}</style>
 
       <div className="flex items-center justify-between mb-4 no-print">
         <div className="flex items-center gap-3">
