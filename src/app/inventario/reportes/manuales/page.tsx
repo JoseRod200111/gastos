@@ -58,6 +58,7 @@ function qNum(n: any) {
 
 function fechaHora(valor: string | null | undefined) {
   if (!valor) return '—'
+
   try {
     return new Date(valor).toLocaleString('es-GT', {
       year: 'numeric',
@@ -183,7 +184,6 @@ export default function ReporteMovimientosManualesPage() {
       }))
 
       setMovimientos(normalizados)
-
       await cargarGruposYUsuarios(normalizados)
     } catch (err: any) {
       console.error(err)
@@ -342,168 +342,225 @@ export default function ReporteMovimientosManualesPage() {
   }, [movimientosFiltrados])
 
   function imprimirReporte() {
-    window.print()
+    setTimeout(() => {
+      window.print()
+    }, 100)
   }
 
   return (
     <div className="p-4 max-w-7xl mx-auto reporte-print-area">
-   <style>{`
-  @page {
-    size: letter landscape;
-    margin: 8mm;
-  }
+      <style>{`
+        @page {
+          size: letter landscape;
+          margin: 5mm;
+        }
 
-  @media print {
-    html,
-    body {
-      background: white !important;
-      margin: 0 !important;
-      padding: 0 !important;
-      width: 100% !important;
-    }
+        .only-print {
+          display: none;
+        }
 
-    .no-print {
-      display: none !important;
-    }
+        @media print {
+          html,
+          body {
+            background: white !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            width: 100% !important;
+          }
 
-    .reporte-print-area {
-      max-width: none !important;
-      width: 100% !important;
-      margin: 0 !important;
-      padding: 0 !important;
-    }
+          .no-print {
+            display: none !important;
+          }
 
-    .print-title {
-      display: block !important;
-      text-align: center !important;
-      margin-bottom: 8px !important;
-    }
+          .only-print {
+            display: block !important;
+          }
 
-    .print-title h1 {
-      font-size: 15px !important;
-      margin: 0 !important;
-    }
+          .reporte-print-area {
+            max-width: none !important;
+            width: 100% !important;
+            margin: 0 !important;
+            padding: 0 !important;
+          }
 
-    .print-title p {
-      font-size: 9px !important;
-      margin: 2px 0 0 0 !important;
-    }
+          .print-title {
+            text-align: center !important;
+            margin: 0 0 5px 0 !important;
+            padding: 0 !important;
+          }
 
-    .print-summary {
-      display: grid !important;
-      grid-template-columns: repeat(4, 1fr) !important;
-      gap: 4px !important;
-      margin-bottom: 8px !important;
-    }
+          .print-title h1 {
+            font-size: 16px !important;
+            line-height: 1.1 !important;
+            margin: 0 !important;
+            padding: 0 !important;
+          }
 
-    .print-summary > div {
-      padding: 5px !important;
-      border: 1px solid #333 !important;
-      page-break-inside: avoid !important;
-    }
+          .print-title p {
+            font-size: 9px !important;
+            margin: 2px 0 0 0 !important;
+            padding: 0 !important;
+          }
 
-    .print-summary .text-xs {
-      font-size: 7px !important;
-    }
+          .screen-summary {
+            display: none !important;
+          }
 
-    .print-summary .text-lg {
-      font-size: 10px !important;
-    }
+          .print-summary-compact {
+            display: table !important;
+            width: 100% !important;
+            border-collapse: collapse !important;
+            margin: 0 0 6px 0 !important;
+            font-size: 9px !important;
+          }
 
-    .print-card {
-      border: none !important;
-      box-shadow: none !important;
-      padding: 0 !important;
-    }
+          .print-summary-compact th,
+          .print-summary-compact td {
+            border: 1px solid #222 !important;
+            padding: 3px 5px !important;
+            text-align: center !important;
+            line-height: 1.15 !important;
+          }
 
-    .print-card h2 {
-      font-size: 11px !important;
-      margin-bottom: 5px !important;
-    }
+          .print-summary-compact th {
+            background: #f1f1f1 !important;
+            font-weight: 700 !important;
+          }
 
-    .overflow-x-auto {
-      overflow: visible !important;
-    }
+          .print-summary-compact .entrada {
+            color: #008a3d !important;
+            font-weight: 700 !important;
+          }
 
-    .print-table {
-      width: 100% !important;
-      min-width: 0 !important;
-      table-layout: fixed !important;
-      border-collapse: collapse !important;
-      font-size: 6.5px !important;
-    }
+          .print-summary-compact .salida {
+            color: #c00000 !important;
+            font-weight: 700 !important;
+          }
 
-    .print-table th,
-    .print-table td {
-      padding: 2px !important;
-      border: 1px solid #333 !important;
-      vertical-align: top !important;
-      word-break: break-word !important;
-      overflow-wrap: anywhere !important;
-      line-height: 1.15 !important;
-    }
+          .print-card {
+            border: none !important;
+            box-shadow: none !important;
+            padding: 0 !important;
+            margin: 0 !important;
+          }
 
-    .print-table th:nth-child(1),
-    .print-table td:nth-child(1) {
-      width: 6%;
-    }
+          .print-card-header {
+            margin: 0 0 4px 0 !important;
+            padding: 0 !important;
+          }
 
-    .print-table th:nth-child(2),
-    .print-table td:nth-child(2) {
-      width: 5%;
-    }
+          .print-card h2 {
+            font-size: 11px !important;
+            line-height: 1.1 !important;
+            margin: 0 !important;
+            padding: 0 !important;
+          }
 
-    .print-table th:nth-child(3),
-    .print-table td:nth-child(3) {
-      width: 11%;
-    }
+          .overflow-x-auto {
+            overflow: visible !important;
+          }
 
-    .print-table th:nth-child(4),
-    .print-table td:nth-child(4) {
-      width: 15%;
-    }
+          .print-table {
+            width: 100% !important;
+            min-width: 0 !important;
+            table-layout: fixed !important;
+            border-collapse: collapse !important;
+            font-size: 7.8px !important;
+            line-height: 1.18 !important;
+          }
 
-    .print-table th:nth-child(5),
-    .print-table td:nth-child(5) {
-      width: 16%;
-    }
+          .print-table th,
+          .print-table td {
+            padding: 2.5px 2px !important;
+            border: 1px solid #222 !important;
+            vertical-align: top !important;
+            word-break: normal !important;
+            overflow-wrap: anywhere !important;
+            white-space: normal !important;
+          }
 
-    .print-table th:nth-child(6),
-    .print-table td:nth-child(6) {
-      width: 6%;
-    }
+          .print-table th {
+            background: #f1f1f1 !important;
+            font-weight: 700 !important;
+          }
 
-    .print-table th:nth-child(7),
-    .print-table td:nth-child(7) {
-      width: 7%;
-    }
+          .print-table th:nth-child(1),
+          .print-table td:nth-child(1) {
+            width: 5%;
+          }
 
-    .print-table th:nth-child(8),
-    .print-table td:nth-child(8) {
-      width: 7%;
-    }
+          .print-table th:nth-child(2),
+          .print-table td:nth-child(2) {
+            width: 4%;
+          }
 
-    .print-table th:nth-child(9),
-    .print-table td:nth-child(9) {
-      width: 7%;
-      text-align: right !important;
-    }
+          .print-table th:nth-child(3),
+          .print-table td:nth-child(3) {
+            width: 10%;
+          }
 
-    .print-table th:nth-child(10),
-    .print-table td:nth-child(10) {
-      width: 10%;
-    }
+          .print-table th:nth-child(4),
+          .print-table td:nth-child(4) {
+            width: 14%;
+          }
 
-    .print-table th:nth-child(11),
-    .print-table td:nth-child(11) {
-      width: 10%;
-    }
+          .print-table th:nth-child(5),
+          .print-table td:nth-child(5) {
+            width: 18%;
+          }
 
-    tr {
-      page-break-inside: avoid !important;
-    }
-  }
-`}</style>
+          .print-table th:nth-child(6),
+          .print-table td:nth-child(6) {
+            width: 5%;
+          }
+
+          .print-table th:nth-child(7),
+          .print-table td:nth-child(7) {
+            width: 6%;
+          }
+
+          .print-table th:nth-child(8),
+          .print-table td:nth-child(8) {
+            width: 7%;
+          }
+
+          .print-table th:nth-child(9),
+          .print-table td:nth-child(9) {
+            width: 7%;
+            text-align: right !important;
+          }
+
+          .print-table th:nth-child(10),
+          .print-table td:nth-child(10) {
+            width: 12%;
+          }
+
+          .print-table th:nth-child(11),
+          .print-table td:nth-child(11) {
+            width: 12%;
+          }
+
+          .print-table tr {
+            page-break-inside: avoid !important;
+            break-inside: avoid !important;
+          }
+
+          .tipo-entrada {
+            color: #008a3d !important;
+            font-weight: 700 !important;
+          }
+
+          .tipo-salida {
+            color: #c00000 !important;
+            font-weight: 700 !important;
+          }
+
+          .tipo-ajuste {
+            color: #222 !important;
+            font-weight: 700 !important;
+          }
+        }
+      `}</style>
 
       <div className="flex items-center justify-between mb-4 no-print">
         <div className="flex items-center gap-3">
@@ -533,11 +590,9 @@ export default function ReporteMovimientosManualesPage() {
         </div>
       </div>
 
-      <div className="hidden print:block mb-4 print-title">
-        <h1 className="text-xl font-bold">Reporte de Movimientos Manuales de Inventario</h1>
-        <p className="text-sm">
-          Generado: {fechaHora(new Date().toISOString())}
-        </p>
+      <div className="only-print print-title">
+        <h1>Reporte de Movimientos Manuales de Inventario</h1>
+        <p>Generado: {fechaHora(new Date().toISOString())}</p>
       </div>
 
       {msg && (
@@ -657,7 +712,7 @@ export default function ReporteMovimientosManualesPage() {
         </div>
       </section>
 
-      <section className="grid grid-cols-1 md:grid-cols-4 gap-3 mb-5">
+      <section className="grid grid-cols-1 md:grid-cols-4 gap-3 mb-5 screen-summary">
         <div className="border rounded p-3 bg-white">
           <div className="text-xs text-gray-500">Movimientos</div>
           <div className="text-lg font-semibold">{resumen.cantidadMovimientos}</div>
@@ -679,8 +734,27 @@ export default function ReporteMovimientosManualesPage() {
         </div>
       </section>
 
+      <table className="only-print print-summary-compact">
+        <thead>
+          <tr>
+            <th>Movimientos</th>
+            <th>Total entradas</th>
+            <th>Total salidas</th>
+            <th>Neto</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>{resumen.cantidadMovimientos}</td>
+            <td className="entrada">{qNum(resumen.entradas)}</td>
+            <td className="salida">{qNum(resumen.salidas)}</td>
+            <td>{qNum(resumen.neto)}</td>
+          </tr>
+        </tbody>
+      </table>
+
       <section className="border rounded p-4 bg-white print-card">
-        <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center justify-between mb-3 print-card-header">
           <h2 className="font-semibold">Datos del reporte</h2>
           <span className="text-xs text-gray-500 no-print">
             {loading ? 'Cargando...' : `${movimientosFiltrados.length} resultado(s)`}
@@ -716,29 +790,39 @@ export default function ReporteMovimientosManualesPage() {
                 movimientosFiltrados.map((m) => (
                   <tr key={m.id} className="border-t">
                     <td className="p-2 border">#{m.id}</td>
+
                     <td className="p-2 border">
                       {m.grupo_manual_id ? `#${m.grupo_manual_id}` : '—'}
                     </td>
+
                     <td className="p-2 border">{fechaHora(m.created_at)}</td>
+
                     <td className="p-2 border">{usuarioMovimiento(m)}</td>
+
                     <td className="p-2 border">{m.productos?.nombre || '—'}</td>
+
                     <td className="p-2 border">{m.productos?.sku || '—'}</td>
+
                     <td className="p-2 border">{m.productos?.unidad || '—'}</td>
+
                     <td className="p-2 border">
                       <span
                         className={
                           m.tipo === 'ENTRADA'
-                            ? 'text-green-700 font-semibold'
+                            ? 'tipo-entrada text-green-700 font-semibold'
                             : m.tipo === 'SALIDA'
-                              ? 'text-red-700 font-semibold'
-                              : 'font-semibold'
+                              ? 'tipo-salida text-red-700 font-semibold'
+                              : 'tipo-ajuste font-semibold'
                         }
                       >
                         {m.tipo}
                       </span>
                     </td>
+
                     <td className="p-2 border text-right">{qNum(m.cantidad)}</td>
+
                     <td className="p-2 border">{m.observaciones || '—'}</td>
+
                     <td className="p-2 border">{obsGrupo(m)}</td>
                   </tr>
                 ))
