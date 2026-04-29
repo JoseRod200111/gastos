@@ -2,6 +2,8 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
+import jsPDF from 'jspdf'
+import autoTable from 'jspdf-autotable'
 import { supabase } from '@/lib/supabaseClient'
 
 type ProductoRel = {
@@ -70,6 +72,14 @@ function fechaHora(valor: string | null | undefined) {
   } catch {
     return valor
   }
+}
+
+function fechaArchivo() {
+  return new Date()
+    .toISOString()
+    .replace(/[-:]/g, '')
+    .replace('T', '_')
+    .slice(0, 15)
 }
 
 function usuarioCorto(id: string | null | undefined) {
@@ -271,6 +281,8 @@ export default function ReporteMovimientosManualesPage() {
       usuario: '',
       texto: '',
     })
+
+    setTimeout(() => cargarReporte(), 0)
   }
 
   function usuarioMovimiento(m: Movimiento) {
@@ -341,234 +353,175 @@ export default function ReporteMovimientosManualesPage() {
     }
   }, [movimientosFiltrados])
 
-  function imprimirReporte() {
-    setTimeout(() => {
-      window.print()
-    }, 100)
+  function generarPDFReporte() {
+    const doc = new jsPDF('l', 'mm', 'letter')
+
+    const pageWidth = doc.internal.pageSize.getWidth()
+    const pageHeight = doc.internal.pageSize.getHeight()
+
+    const fechaGenerado = fechaHora(new Date().toISOString())
+
+    const periodo =
+      filtros.desde || filtros.hasta
+        ? `${filtros.desde || 'inicio'} a ${filtros.hasta || 'fin'}`
+        : 'Todas las fechas'
+
+    doc.setFont('helvetica', 'bold')
+    doc.setFontSize(13)
+    doc.text('Reporte de Movimientos Manuales de Inventario', pageWidth / 2, 10, {
+      align: 'center',
+    })
+
+    doc.setFont('helvetica', 'normal')
+    doc.setFontSize(8)
+    doc.text(`Generado: ${fechaGenerado}`, pageWidth / 2, 15, {
+      align: 'center',
+    })
+    doc.text(`Período: ${periodo}`, pageWidth / 2, 20, {
+      align: 'center',
+    })
+
+    autoTable(doc, {
+      startY: 24,
+      head: [['Movimientos', 'Total entradas', 'Total salidas', 'Neto']],
+      body: [[
+        String(resumen.cantidadMovimientos),
+        qNum(resumen.entradas),
+        qNum(resumen.salidas),
+        qNum(resumen.neto),
+      ]],
+      theme: 'grid',
+      margin: { left: 8, right: 8 },
+      styles: {
+        font: 'helvetica',
+        fontSize: 7,
+        cellPadding: 1.5,
+        halign: 'center',
+        valign: 'middle',
+        lineWidth: 0.1,
+        lineColor: [40, 40, 40],
+      },
+      headStyles: {
+        fillColor: [235, 235, 235],
+        textColor: [0, 0, 0],
+        fontStyle: 'bold',
+      },
+      bodyStyles: {
+        textColor: [0, 0, 0],
+        fontStyle: 'bold',
+      },
+      didParseCell: (data) => {
+        if (data.section === 'body' && data.column.index === 1) {
+          data.cell.styles.textColor = [0, 130, 60]
+        }
+
+        if (data.section === 'body' && data.column.index === 2) {
+          data.cell.styles.textColor = [190, 0, 0]
+        }
+      },
+    })
+
+    const rows = movimientosFiltrados.map((m) => [
+      `#${m.id}`,
+      m.grupo_manual_id ? `#${m.grupo_manual_id}` : '—',
+      fechaHora(m.created_at),
+      usuarioMovimiento(m),
+      m.productos?.nombre || '—',
+      m.productos?.sku || '—',
+      m.productos?.unidad || '—',
+      m.tipo,
+      qNum(m.cantidad),
+      m.observaciones || '—',
+      obsGrupo(m),
+    ])
+
+    autoTable(doc, {
+      startY: ((doc as any).lastAutoTable?.finalY || 32) + 5,
+      head: [[
+        'ID Mov.',
+        'Grupo',
+        'Fecha y hora',
+        'Usuario',
+        'Producto',
+        'SKU',
+        'Unidad',
+        'Tipo',
+        'Cantidad',
+        'Obs. movimiento',
+        'Obs. grupo',
+      ]],
+      body: rows,
+      theme: 'grid',
+      margin: { left: 8, right: 8, top: 8, bottom: 10 },
+      tableWidth: 'auto',
+      styles: {
+        font: 'helvetica',
+        fontSize: 6.2,
+        cellPadding: 1.1,
+        overflow: 'linebreak',
+        valign: 'top',
+        lineWidth: 0.08,
+        lineColor: [40, 40, 40],
+        textColor: [0, 0, 0],
+      },
+      headStyles: {
+        fillColor: [235, 235, 235],
+        textColor: [0, 0, 0],
+        fontStyle: 'bold',
+        fontSize: 6,
+        halign: 'center',
+      },
+      columnStyles: {
+        0: { cellWidth: 13 },
+        1: { cellWidth: 10 },
+        2: { cellWidth: 23 },
+        3: { cellWidth: 34 },
+        4: { cellWidth: 48 },
+        5: { cellWidth: 12 },
+        6: { cellWidth: 16 },
+        7: { cellWidth: 17 },
+        8: { cellWidth: 17, halign: 'right' },
+        9: { cellWidth: 36 },
+        10: { cellWidth: 37 },
+      },
+      didParseCell: (data) => {
+        if (data.section === 'body' && data.column.index === 7) {
+          const value = String(data.cell.raw || '')
+
+          if (value === 'ENTRADA') {
+            data.cell.styles.textColor = [0, 130, 60]
+            data.cell.styles.fontStyle = 'bold'
+          }
+
+          if (value === 'SALIDA') {
+            data.cell.styles.textColor = [190, 0, 0]
+            data.cell.styles.fontStyle = 'bold'
+          }
+
+          if (value === 'AJUSTE') {
+            data.cell.styles.textColor = [0, 0, 0]
+            data.cell.styles.fontStyle = 'bold'
+          }
+        }
+      },
+      didDrawPage: () => {
+        const currentPage = doc.getCurrentPageInfo().pageNumber
+
+        doc.setFontSize(7)
+        doc.setFont('helvetica', 'normal')
+        doc.text('AGRO INDUSTRIAS RYB', 8, pageHeight - 4)
+        doc.text(`Página ${currentPage}`, pageWidth - 8, pageHeight - 4, {
+          align: 'right',
+        })
+      },
+    })
+
+    doc.save(`reporte_movimientos_manuales_${fechaArchivo()}.pdf`)
   }
 
   return (
-    <div className="p-4 max-w-7xl mx-auto reporte-print-area">
-     <style>{`
-  @page {
-    size: letter landscape;
-    margin: 10mm;
-  }
-
-  .only-print {
-    display: none;
-  }
-
-  @media print {
-    html,
-    body {
-      background: white !important;
-      margin: 0 !important;
-      padding: 0 !important;
-      width: 100% !important;
-      -webkit-print-color-adjust: exact !important;
-      print-color-adjust: exact !important;
-    }
-
-    .no-print {
-      display: none !important;
-    }
-
-    .only-print {
-      display: block !important;
-    }
-
-    .reporte-print-area {
-      max-width: none !important;
-      width: 100% !important;
-      margin: 0 auto !important;
-      padding: 0 !important;
-    }
-
-    .print-title {
-      text-align: center !important;
-      margin: 0 0 4px 0 !important;
-      padding: 0 !important;
-    }
-
-    .print-title h1 {
-      font-size: 13px !important;
-      line-height: 1.05 !important;
-      margin: 0 !important;
-      padding: 0 !important;
-    }
-
-    .print-title p {
-      font-size: 7px !important;
-      margin: 1px 0 0 0 !important;
-      padding: 0 !important;
-    }
-
-    .screen-summary {
-      display: none !important;
-    }
-
-    .print-summary-compact {
-      display: table !important;
-      width: 100% !important;
-      border-collapse: collapse !important;
-      margin: 0 0 4px 0 !important;
-      font-size: 6.5px !important;
-      table-layout: fixed !important;
-    }
-
-    .print-summary-compact th,
-    .print-summary-compact td {
-      border: 1px solid #222 !important;
-      padding: 1.5px 3px !important;
-      text-align: center !important;
-      line-height: 1.05 !important;
-    }
-
-    .print-summary-compact th {
-      background: #f1f1f1 !important;
-      font-weight: 700 !important;
-    }
-
-    .print-summary-compact .entrada {
-      color: #008a3d !important;
-      font-weight: 700 !important;
-    }
-
-    .print-summary-compact .salida {
-      color: #c00000 !important;
-      font-weight: 700 !important;
-    }
-
-    .print-card {
-      border: none !important;
-      box-shadow: none !important;
-      padding: 0 !important;
-      margin: 0 !important;
-      width: 100% !important;
-    }
-
-    .print-card-header {
-      margin: 0 0 2px 0 !important;
-      padding: 0 !important;
-    }
-
-    .print-card h2 {
-      font-size: 8px !important;
-      line-height: 1.05 !important;
-      margin: 0 !important;
-      padding: 0 !important;
-    }
-
-    .overflow-x-auto {
-      overflow: visible !important;
-      width: 100% !important;
-    }
-
-    .print-table {
-      width: 100% !important;
-      max-width: 100% !important;
-      min-width: 0 !important;
-      table-layout: fixed !important;
-      border-collapse: collapse !important;
-      font-size: 5.7px !important;
-      line-height: 1.05 !important;
-    }
-
-    .print-table th,
-    .print-table td {
-      padding: 1.4px 1.3px !important;
-      border: 1px solid #222 !important;
-      vertical-align: top !important;
-      word-break: normal !important;
-      overflow-wrap: anywhere !important;
-      white-space: normal !important;
-    }
-
-    .print-table th {
-      background: #f1f1f1 !important;
-      font-weight: 700 !important;
-    }
-
-    .print-table th:nth-child(1),
-    .print-table td:nth-child(1) {
-      width: 5%;
-    }
-
-    .print-table th:nth-child(2),
-    .print-table td:nth-child(2) {
-      width: 4%;
-    }
-
-    .print-table th:nth-child(3),
-    .print-table td:nth-child(3) {
-      width: 10%;
-    }
-
-    .print-table th:nth-child(4),
-    .print-table td:nth-child(4) {
-      width: 14%;
-    }
-
-    .print-table th:nth-child(5),
-    .print-table td:nth-child(5) {
-      width: 19%;
-    }
-
-    .print-table th:nth-child(6),
-    .print-table td:nth-child(6) {
-      width: 5%;
-    }
-
-    .print-table th:nth-child(7),
-    .print-table td:nth-child(7) {
-      width: 6%;
-    }
-
-    .print-table th:nth-child(8),
-    .print-table td:nth-child(8) {
-      width: 7%;
-    }
-
-    .print-table th:nth-child(9),
-    .print-table td:nth-child(9) {
-      width: 7%;
-      text-align: right !important;
-    }
-
-    .print-table th:nth-child(10),
-    .print-table td:nth-child(10) {
-      width: 11%;
-    }
-
-    .print-table th:nth-child(11),
-    .print-table td:nth-child(11) {
-      width: 12%;
-    }
-
-    .print-table tr {
-      page-break-inside: avoid !important;
-      break-inside: avoid !important;
-    }
-
-    .tipo-entrada {
-      color: #008a3d !important;
-      font-weight: 700 !important;
-    }
-
-    .tipo-salida {
-      color: #c00000 !important;
-      font-weight: 700 !important;
-    }
-
-    .tipo-ajuste {
-      color: #222 !important;
-      font-weight: 700 !important;
-    }
-  }
-`}</style>
-
-      <div className="flex items-center justify-between mb-4 no-print">
+    <div className="p-4 max-w-7xl mx-auto">
+      <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-3">
           <img src="/logo.png" alt="Logo" className="h-10" />
           <div>
@@ -596,18 +549,13 @@ export default function ReporteMovimientosManualesPage() {
         </div>
       </div>
 
-      <div className="only-print print-title">
-        <h1>Reporte de Movimientos Manuales de Inventario</h1>
-        <p>Generado: {fechaHora(new Date().toISOString())}</p>
-      </div>
-
       {msg && (
-        <div className="mb-4 bg-yellow-100 border border-yellow-300 text-yellow-800 px-4 py-2 rounded no-print">
+        <div className="mb-4 bg-yellow-100 border border-yellow-300 text-yellow-800 px-4 py-2 rounded">
           {msg}
         </div>
       )}
 
-      <section className="border rounded p-4 mb-5 bg-white no-print">
+      <section className="border rounded p-4 mb-5 bg-white">
         <h2 className="font-semibold mb-3">Filtros de búsqueda</h2>
 
         <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
@@ -698,10 +646,7 @@ export default function ReporteMovimientosManualesPage() {
           </button>
 
           <button
-            onClick={() => {
-              limpiarFiltros()
-              setTimeout(() => cargarReporte(), 0)
-            }}
+            onClick={limpiarFiltros}
             disabled={loading}
             className="bg-gray-500 hover:bg-gray-600 text-white px-4 py-2 rounded disabled:opacity-60"
           >
@@ -709,16 +654,16 @@ export default function ReporteMovimientosManualesPage() {
           </button>
 
           <button
-            onClick={imprimirReporte}
+            onClick={generarPDFReporte}
             disabled={loading}
             className="bg-green-700 hover:bg-green-800 text-white px-4 py-2 rounded disabled:opacity-60"
           >
-            Imprimir reporte
+            Generar PDF ajustado
           </button>
         </div>
       </section>
 
-      <section className="grid grid-cols-1 md:grid-cols-4 gap-3 mb-5 screen-summary">
+      <section className="grid grid-cols-1 md:grid-cols-4 gap-3 mb-5">
         <div className="border rounded p-3 bg-white">
           <div className="text-xs text-gray-500">Movimientos</div>
           <div className="text-lg font-semibold">{resumen.cantidadMovimientos}</div>
@@ -740,35 +685,16 @@ export default function ReporteMovimientosManualesPage() {
         </div>
       </section>
 
-      <table className="only-print print-summary-compact">
-        <thead>
-          <tr>
-            <th>Movimientos</th>
-            <th>Total entradas</th>
-            <th>Total salidas</th>
-            <th>Neto</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td>{resumen.cantidadMovimientos}</td>
-            <td className="entrada">{qNum(resumen.entradas)}</td>
-            <td className="salida">{qNum(resumen.salidas)}</td>
-            <td>{qNum(resumen.neto)}</td>
-          </tr>
-        </tbody>
-      </table>
-
-      <section className="border rounded p-4 bg-white print-card">
-        <div className="flex items-center justify-between mb-3 print-card-header">
+      <section className="border rounded p-4 bg-white">
+        <div className="flex items-center justify-between mb-3">
           <h2 className="font-semibold">Datos del reporte</h2>
-          <span className="text-xs text-gray-500 no-print">
+          <span className="text-xs text-gray-500">
             {loading ? 'Cargando...' : `${movimientosFiltrados.length} resultado(s)`}
           </span>
         </div>
 
         <div className="overflow-x-auto">
-        <table className="w-full border text-sm print-table">
+          <table className="min-w-full border text-sm">
             <thead className="bg-gray-100">
               <tr>
                 <th className="p-2 border text-left">ID Mov.</th>
@@ -815,10 +741,10 @@ export default function ReporteMovimientosManualesPage() {
                       <span
                         className={
                           m.tipo === 'ENTRADA'
-                            ? 'tipo-entrada text-green-700 font-semibold'
+                            ? 'text-green-700 font-semibold'
                             : m.tipo === 'SALIDA'
-                              ? 'tipo-salida text-red-700 font-semibold'
-                              : 'tipo-ajuste font-semibold'
+                              ? 'text-red-700 font-semibold'
+                              : 'font-semibold'
                         }
                       >
                         {m.tipo}
