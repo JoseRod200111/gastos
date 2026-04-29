@@ -349,218 +349,224 @@ export default function ReporteMovimientosManualesPage() {
 
   return (
     <div className="p-4 max-w-7xl mx-auto reporte-print-area">
-      <style>{`
-        @page {
-          size: letter landscape;
-          margin: 5mm;
-        }
+     <style>{`
+  @page {
+    size: letter landscape;
+    margin: 10mm;
+  }
 
-        .only-print {
-          display: none;
-        }
+  .only-print {
+    display: none;
+  }
 
-        @media print {
-          html,
-          body {
-            background: white !important;
-            margin: 0 !important;
-            padding: 0 !important;
-            width: 100% !important;
-          }
+  @media print {
+    html,
+    body {
+      background: white !important;
+      margin: 0 !important;
+      padding: 0 !important;
+      width: 100% !important;
+      -webkit-print-color-adjust: exact !important;
+      print-color-adjust: exact !important;
+    }
 
-          .no-print {
-            display: none !important;
-          }
+    .no-print {
+      display: none !important;
+    }
 
-          .only-print {
-            display: block !important;
-          }
+    .only-print {
+      display: block !important;
+    }
 
-          .reporte-print-area {
-            max-width: none !important;
-            width: 100% !important;
-            margin: 0 !important;
-            padding: 0 !important;
-          }
+    .reporte-print-area {
+      max-width: none !important;
+      width: 100% !important;
+      margin: 0 auto !important;
+      padding: 0 !important;
+    }
 
-          .print-title {
-            text-align: center !important;
-            margin: 0 0 5px 0 !important;
-            padding: 0 !important;
-          }
+    .print-title {
+      text-align: center !important;
+      margin: 0 0 4px 0 !important;
+      padding: 0 !important;
+    }
 
-          .print-title h1 {
-            font-size: 16px !important;
-            line-height: 1.1 !important;
-            margin: 0 !important;
-            padding: 0 !important;
-          }
+    .print-title h1 {
+      font-size: 13px !important;
+      line-height: 1.05 !important;
+      margin: 0 !important;
+      padding: 0 !important;
+    }
 
-          .print-title p {
-            font-size: 9px !important;
-            margin: 2px 0 0 0 !important;
-            padding: 0 !important;
-          }
+    .print-title p {
+      font-size: 7px !important;
+      margin: 1px 0 0 0 !important;
+      padding: 0 !important;
+    }
 
-          .screen-summary {
-            display: none !important;
-          }
+    .screen-summary {
+      display: none !important;
+    }
 
-          .print-summary-compact {
-            display: table !important;
-            width: 100% !important;
-            border-collapse: collapse !important;
-            margin: 0 0 6px 0 !important;
-            font-size: 9px !important;
-          }
+    .print-summary-compact {
+      display: table !important;
+      width: 100% !important;
+      border-collapse: collapse !important;
+      margin: 0 0 4px 0 !important;
+      font-size: 6.5px !important;
+      table-layout: fixed !important;
+    }
 
-          .print-summary-compact th,
-          .print-summary-compact td {
-            border: 1px solid #222 !important;
-            padding: 3px 5px !important;
-            text-align: center !important;
-            line-height: 1.15 !important;
-          }
+    .print-summary-compact th,
+    .print-summary-compact td {
+      border: 1px solid #222 !important;
+      padding: 1.5px 3px !important;
+      text-align: center !important;
+      line-height: 1.05 !important;
+    }
 
-          .print-summary-compact th {
-            background: #f1f1f1 !important;
-            font-weight: 700 !important;
-          }
+    .print-summary-compact th {
+      background: #f1f1f1 !important;
+      font-weight: 700 !important;
+    }
 
-          .print-summary-compact .entrada {
-            color: #008a3d !important;
-            font-weight: 700 !important;
-          }
+    .print-summary-compact .entrada {
+      color: #008a3d !important;
+      font-weight: 700 !important;
+    }
 
-          .print-summary-compact .salida {
-            color: #c00000 !important;
-            font-weight: 700 !important;
-          }
+    .print-summary-compact .salida {
+      color: #c00000 !important;
+      font-weight: 700 !important;
+    }
 
-          .print-card {
-            border: none !important;
-            box-shadow: none !important;
-            padding: 0 !important;
-            margin: 0 !important;
-          }
+    .print-card {
+      border: none !important;
+      box-shadow: none !important;
+      padding: 0 !important;
+      margin: 0 !important;
+      width: 100% !important;
+    }
 
-          .print-card-header {
-            margin: 0 0 4px 0 !important;
-            padding: 0 !important;
-          }
+    .print-card-header {
+      margin: 0 0 2px 0 !important;
+      padding: 0 !important;
+    }
 
-          .print-card h2 {
-            font-size: 11px !important;
-            line-height: 1.1 !important;
-            margin: 0 !important;
-            padding: 0 !important;
-          }
+    .print-card h2 {
+      font-size: 8px !important;
+      line-height: 1.05 !important;
+      margin: 0 !important;
+      padding: 0 !important;
+    }
 
-          .overflow-x-auto {
-            overflow: visible !important;
-          }
+    .overflow-x-auto {
+      overflow: visible !important;
+      width: 100% !important;
+    }
 
-          .print-table {
-            width: 100% !important;
-            min-width: 0 !important;
-            table-layout: fixed !important;
-            border-collapse: collapse !important;
-            font-size: 7.8px !important;
-            line-height: 1.18 !important;
-          }
+    .print-table {
+      width: 100% !important;
+      max-width: 100% !important;
+      min-width: 0 !important;
+      table-layout: fixed !important;
+      border-collapse: collapse !important;
+      font-size: 5.7px !important;
+      line-height: 1.05 !important;
+    }
 
-          .print-table th,
-          .print-table td {
-            padding: 2.5px 2px !important;
-            border: 1px solid #222 !important;
-            vertical-align: top !important;
-            word-break: normal !important;
-            overflow-wrap: anywhere !important;
-            white-space: normal !important;
-          }
+    .print-table th,
+    .print-table td {
+      padding: 1.4px 1.3px !important;
+      border: 1px solid #222 !important;
+      vertical-align: top !important;
+      word-break: normal !important;
+      overflow-wrap: anywhere !important;
+      white-space: normal !important;
+    }
 
-          .print-table th {
-            background: #f1f1f1 !important;
-            font-weight: 700 !important;
-          }
+    .print-table th {
+      background: #f1f1f1 !important;
+      font-weight: 700 !important;
+    }
 
-          .print-table th:nth-child(1),
-          .print-table td:nth-child(1) {
-            width: 5%;
-          }
+    .print-table th:nth-child(1),
+    .print-table td:nth-child(1) {
+      width: 5%;
+    }
 
-          .print-table th:nth-child(2),
-          .print-table td:nth-child(2) {
-            width: 4%;
-          }
+    .print-table th:nth-child(2),
+    .print-table td:nth-child(2) {
+      width: 4%;
+    }
 
-          .print-table th:nth-child(3),
-          .print-table td:nth-child(3) {
-            width: 10%;
-          }
+    .print-table th:nth-child(3),
+    .print-table td:nth-child(3) {
+      width: 10%;
+    }
 
-          .print-table th:nth-child(4),
-          .print-table td:nth-child(4) {
-            width: 14%;
-          }
+    .print-table th:nth-child(4),
+    .print-table td:nth-child(4) {
+      width: 14%;
+    }
 
-          .print-table th:nth-child(5),
-          .print-table td:nth-child(5) {
-            width: 18%;
-          }
+    .print-table th:nth-child(5),
+    .print-table td:nth-child(5) {
+      width: 19%;
+    }
 
-          .print-table th:nth-child(6),
-          .print-table td:nth-child(6) {
-            width: 5%;
-          }
+    .print-table th:nth-child(6),
+    .print-table td:nth-child(6) {
+      width: 5%;
+    }
 
-          .print-table th:nth-child(7),
-          .print-table td:nth-child(7) {
-            width: 6%;
-          }
+    .print-table th:nth-child(7),
+    .print-table td:nth-child(7) {
+      width: 6%;
+    }
 
-          .print-table th:nth-child(8),
-          .print-table td:nth-child(8) {
-            width: 7%;
-          }
+    .print-table th:nth-child(8),
+    .print-table td:nth-child(8) {
+      width: 7%;
+    }
 
-          .print-table th:nth-child(9),
-          .print-table td:nth-child(9) {
-            width: 7%;
-            text-align: right !important;
-          }
+    .print-table th:nth-child(9),
+    .print-table td:nth-child(9) {
+      width: 7%;
+      text-align: right !important;
+    }
 
-          .print-table th:nth-child(10),
-          .print-table td:nth-child(10) {
-            width: 12%;
-          }
+    .print-table th:nth-child(10),
+    .print-table td:nth-child(10) {
+      width: 11%;
+    }
 
-          .print-table th:nth-child(11),
-          .print-table td:nth-child(11) {
-            width: 12%;
-          }
+    .print-table th:nth-child(11),
+    .print-table td:nth-child(11) {
+      width: 12%;
+    }
 
-          .print-table tr {
-            page-break-inside: avoid !important;
-            break-inside: avoid !important;
-          }
+    .print-table tr {
+      page-break-inside: avoid !important;
+      break-inside: avoid !important;
+    }
 
-          .tipo-entrada {
-            color: #008a3d !important;
-            font-weight: 700 !important;
-          }
+    .tipo-entrada {
+      color: #008a3d !important;
+      font-weight: 700 !important;
+    }
 
-          .tipo-salida {
-            color: #c00000 !important;
-            font-weight: 700 !important;
-          }
+    .tipo-salida {
+      color: #c00000 !important;
+      font-weight: 700 !important;
+    }
 
-          .tipo-ajuste {
-            color: #222 !important;
-            font-weight: 700 !important;
-          }
-        }
-      `}</style>
+    .tipo-ajuste {
+      color: #222 !important;
+      font-weight: 700 !important;
+    }
+  }
+`}</style>
 
       <div className="flex items-center justify-between mb-4 no-print">
         <div className="flex items-center gap-3">
@@ -762,7 +768,7 @@ export default function ReporteMovimientosManualesPage() {
         </div>
 
         <div className="overflow-x-auto">
-          <table className="min-w-full border text-sm print-table">
+        <table className="w-full border text-sm print-table">
             <thead className="bg-gray-100">
               <tr>
                 <th className="p-2 border text-left">ID Mov.</th>
