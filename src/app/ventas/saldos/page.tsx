@@ -51,7 +51,9 @@ function nombreArchivo() {
   const now = new Date()
   const pad = (n: number) => (n < 10 ? `0${n}` : `${n}`)
 
-  return `reporte_saldos_clientes_${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}.pdf`
+  return `reporte_saldos_clientes_${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(
+    now.getDate()
+  )}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}.pdf`
 }
 
 export default function SaldosPorClientePage() {
@@ -152,7 +154,9 @@ export default function SaldosPorClientePage() {
       doc.setFontSize(10)
 
       const clienteTxt = selectedClienteId
-        ? `Cliente: ${clientes.find((c) => c.id === Number(selectedClienteId))?.nombre || 'Seleccionado'}`
+        ? `Cliente: ${
+            clientes.find((c) => c.id === Number(selectedClienteId))?.nombre || 'Seleccionado'
+          }`
         : 'Cliente: Todos los clientes con saldo pendiente'
 
       doc.text(clienteTxt, 14, 41)
@@ -163,7 +167,7 @@ export default function SaldosPorClientePage() {
         body: [
           ['Total a crédito', fmtQ(totals.tCredito)],
           ['Total abonado', fmtQ(totals.tAbonado)],
-          ['Saldo total', fmtQ(totals.tSaldo)],
+          ['Saldo pendiente', fmtQ(totals.tSaldo)],
         ],
         theme: 'grid',
         styles: {
@@ -184,7 +188,7 @@ export default function SaldosPorClientePage() {
 
       autoTable(doc, {
         startY: y,
-        head: [['Cliente', 'NIT', 'Crédito', 'Abonado', 'Saldo']],
+        head: [['Cliente', 'NIT', 'Crédito', 'Abonado', 'Saldo pendiente']],
         body: rows.map((r) => [
           r.nombre,
           r.nit || '—',
@@ -208,7 +212,7 @@ export default function SaldosPorClientePage() {
           1: { cellWidth: 30 },
           2: { halign: 'right', cellWidth: 30 },
           3: { halign: 'right', cellWidth: 30 },
-          4: { halign: 'right', cellWidth: 30 },
+          4: { halign: 'right', cellWidth: 35 },
         },
         didDrawPage: () => {
           const pageWidth = doc.internal.pageSize.getWidth()
@@ -289,7 +293,7 @@ export default function SaldosPorClientePage() {
         <div>Total a crédito: {fmtQ(totals.tCredito)}</div>
         <div>Total abonado: {fmtQ(totals.tAbonado)}</div>
         <div>
-          <b>Saldo total: {fmtQ(totals.tSaldo)}</b>
+          <b>Saldo pendiente: {fmtQ(totals.tSaldo)}</b>
         </div>
       </div>
 
@@ -301,7 +305,7 @@ export default function SaldosPorClientePage() {
               <th className="p-2 text-left">NIT</th>
               <th className="p-2 text-right">Crédito</th>
               <th className="p-2 text-right">Abonado</th>
-              <th className="p-2 text-right">Saldo</th>
+              <th className="p-2 text-right">Saldo pendiente</th>
               <th className="p-2 text-left">Acciones</th>
             </tr>
           </thead>
@@ -329,7 +333,9 @@ export default function SaldosPorClientePage() {
                   <td className="p-2 text-right font-semibold">{fmtQ(r.saldo)}</td>
                   <td className="p-2">
                     <Link
-                      href={`/ventas/saldos/vista?cliente_id=${r.cliente_id}&nombre=${encodeURIComponent(r.nombre)}`}
+                      href={`/ventas/saldos/vista?cliente_id=${r.cliente_id}&nombre=${encodeURIComponent(
+                        r.nombre
+                      )}`}
                       className="inline-block bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-1 rounded text-xs"
                     >
                       Detalle / Registrar pago
