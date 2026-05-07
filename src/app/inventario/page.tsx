@@ -2,6 +2,8 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
+import jsPDF from 'jspdf'
+import autoTable from 'jspdf-autotable'
 import { supabase } from '@/lib/supabaseClient'
 
 type Producto = {
@@ -31,9 +33,56 @@ const movimientoVacio = (): MovimientoManual => ({
   observaciones: '',
 })
 
+function qNum(n: any) {
+  return Number(n || 0).toLocaleString('es-GT', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })
+}
+
+function fechaHora(valor: string | Date) {
+  try {
+    return new Date(valor).toLocaleString('es-GT', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    })
+  } catch {
+    return String(valor)
+  }
+}
+
+function nombreArchivoInventario() {
+  const now = new Date()
+  const pad = (n: number) => (n < 10 ? `0${n}` : `${n}`)
+
+  return `reporte_productos_inventario_${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(
+    now.getDate()
+  )}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}.pdf`
+}
+
+async function fetchLogoDataUrl(): Promise<string | null> {
+  try {
+    const res = await fetch('/logo.png')
+    const blob = await res.blob()
+
+    return await new Promise((resolve) => {
+      const reader = new FileReader()
+      reader.onload = () => resolve(String(reader.result))
+      reader.onerror = () => resolve(null)
+      reader.readAsDataURL(blob)
+    })
+  } catch {
+    return null
+  }
+}
+
 export default function InventarioPage() {
   const [loading, setLoading] = useState(false)
   const [msg, setMsg] = useState<string>('')
+  const [generandoPDF, setGenerandoPDF] = useState(false)
 
   // Nuevo producto
   const [nuevoNombre, setNuevoNombre] = useState('')
@@ -68,6 +117,29 @@ export default function InventarioPage() {
         (p.sku ?? '').toLowerCase().includes(t)
     )
   }, [busqueda, productos])
+
+  const resumenInventario = useMemo(() => {
+    const totalProductos = productosFiltrados.length
+    const conControl = productosFiltrados.filter((p) => p.control_inventario).length
+    const sinControl = productosFiltrados.filter((p) => !p.control_inventario).length
+
+    const existenciaTotal = productosFiltrados.reduce((sum, p) => {
+      if (!p.control_inventario) return sum
+      return sum + Number(existenciaDe(p.id) || 0)
+    }, 0)
+
+    const negativos = productosFiltrados.filter(
+      (p) => p.control_inventario && Number(existenciaDe(p.id) || 0) < 0
+    ).length
+
+    return {
+      totalProductos,
+      conControl,
+      sinControl,
+      existenciaTotal,
+      negativos,
+    }
+  }, [productosFiltrados, existencias])
 
   async function cargarDatos() {
     setLoading(true)
@@ -329,6 +401,161 @@ export default function InventarioPage() {
     }
   }
 
+  async function generarPDFProductos() {
+    setGenerandoPDF(true)
+    setMsg('')
+
+    try {
+      const doc = new jsPDF({
+        orientation: 'landscape',
+        unit: 'mm',
+        format: 'letter',
+      })
+
+      const pageWidth = doc.internal.pageSize.getWidth()
+      const pageHeight = doc.internal.pageSize.getHeight()
+      const logo = await fetchLogoDataUrl()
+
+      if (logo) {
+        doc.addImage(logo, 'PNG', pageWidth / 2 - 18, 6, 36, 15)
+      }
+
+      doc.setFont('helvetica', 'bold')
+      doc.setFontSize(15)
+      doc.text('Reporte de Productos e Inventario', pageWidth / 2, 27, {
+        align: 'center',
+      })
+
+      doc.setFont('helvetica', 'normal')
+      doc.setFontSize(9)
+      doc.text(`Generado: ${fechaHora(new Date())}`, pageWidth / 2, 33, {
+        align: 'center',
+      })
+
+      const filtroTexto = busqueda.trim()
+        ? `Filtro aplicado: ${busqueda.trim()}`
+        : 'Filtro aplicado: Todos los productos'
+
+      doc.text(filtroTexto, pageWidth / 2, 38, {
+        align: 'center',
+      })
+
+      autoTable(doc, {
+        startY: 44,
+        head: [['Resumen', 'Valor']],
+        body: [
+          ['Productos listados', String(resumenInventario.totalProductos)],
+          ['Con control de inventario', String(resumenInventario.conControl)],
+          ['Sin control de inventario', String(resumenInventario.sinControl)],
+          ['Productos con existencia negativa', String(resumenInventario.negativos)],
+          ['Existencia total registrada', qNum(resumenInventario.existenciaTotal)],
+        ],
+        theme: 'grid',
+        margin: { left: 10, right: 10 },
+        styles: {
+          font: 'helvetica',
+          fontSize: 8,
+          cellPadding: 1.8,
+          lineWidth: 0.1,
+          lineColor: [40, 40, 40],
+        },
+        headStyles: {
+          fillColor: [220, 225, 232],
+          textColor: [0, 0, 0],
+          fontStyle: 'bold',
+        },
+        columnStyles: {
+          0: { cellWidth: 70 },
+          1: { cellWidth: 45, halign: 'right' },
+        },
+      })
+
+      const rows = productosFiltrados.map((p) => {
+        const existencia = p.control_inventario ? Number(existenciaDe(p.id) || 0) : null
+
+        return [
+          String(p.id),
+          p.nombre || '—',
+          p.sku || '—',
+          p.unidad || '—',
+          p.control_inventario ? 'Sí' : 'No',
+          p.control_inventario ? qNum(existencia) : '—',
+          existencia !== null && existencia < 0 ? 'Existencia negativa' : '—',
+        ]
+      })
+
+      autoTable(doc, {
+        startY: ((doc as any).lastAutoTable?.finalY || 68) + 6,
+        head: [['ID', 'Producto', 'SKU / Código', 'Unidad', 'Control', 'Existencia', 'Observación']],
+        body: rows,
+        theme: 'grid',
+        margin: { left: 10, right: 10, top: 8, bottom: 10 },
+        tableWidth: 'auto',
+        styles: {
+          font: 'helvetica',
+          fontSize: 7.2,
+          cellPadding: 1.5,
+          overflow: 'linebreak',
+          valign: 'middle',
+          lineWidth: 0.08,
+          lineColor: [40, 40, 40],
+          textColor: [0, 0, 0],
+        },
+        headStyles: {
+          fillColor: [220, 225, 232],
+          textColor: [0, 0, 0],
+          fontStyle: 'bold',
+          halign: 'center',
+        },
+        columnStyles: {
+          0: { cellWidth: 14, halign: 'center' },
+          1: { cellWidth: 80 },
+          2: { cellWidth: 35 },
+          3: { cellWidth: 35 },
+          4: { cellWidth: 22, halign: 'center' },
+          5: { cellWidth: 32, halign: 'right' },
+          6: { cellWidth: 40 },
+        },
+        didParseCell: (data) => {
+          if (data.section === 'body' && data.column.index === 5) {
+            const raw = String(data.cell.raw || '').replace(/,/g, '')
+            const num = Number(raw)
+
+            if (Number.isFinite(num) && num < 0) {
+              data.cell.styles.textColor = [190, 0, 0]
+              data.cell.styles.fontStyle = 'bold'
+            }
+          }
+
+          if (data.section === 'body' && data.column.index === 6) {
+            const raw = String(data.cell.raw || '')
+            if (raw.includes('negativa')) {
+              data.cell.styles.textColor = [190, 0, 0]
+              data.cell.styles.fontStyle = 'bold'
+            }
+          }
+        },
+        didDrawPage: () => {
+          const currentPage = doc.getCurrentPageInfo().pageNumber
+
+          doc.setFontSize(7)
+          doc.setFont('helvetica', 'normal')
+          doc.text('AGRO INDUSTRIAS RYB', 10, pageHeight - 5)
+          doc.text(`Página ${currentPage}`, pageWidth - 10, pageHeight - 5, {
+            align: 'right',
+          })
+        },
+      })
+
+      doc.save(nombreArchivoInventario())
+    } catch (err: any) {
+      console.error(err)
+      setMsg(err.message ?? 'Error al generar el PDF.')
+    } finally {
+      setGenerandoPDF(false)
+    }
+  }
+
   return (
     <div className="p-4 max-w-6xl mx-auto">
       <div className="flex items-center justify-between mb-4">
@@ -344,6 +571,14 @@ export default function InventarioPage() {
           >
             📄 Reporte ingresos manuales
           </Link>
+
+          <button
+            onClick={generarPDFProductos}
+            disabled={generandoPDF || productosFiltrados.length === 0}
+            className="inline-flex items-center gap-2 bg-blue-700 hover:bg-blue-800 text-white px-4 py-2 rounded disabled:opacity-60"
+          >
+            {generandoPDF ? 'Generando…' : '📦 Reporte productos PDF'}
+          </button>
 
           <Link
             href="/menu"
@@ -391,7 +626,6 @@ export default function InventarioPage() {
               checked={nuevoCtrlInv}
               onChange={(e) => setNuevoCtrlInv(e.target.checked)}
             />
-            
             Control de inventario
           </label>
         </div>
@@ -519,22 +753,35 @@ export default function InventarioPage() {
             Limpiar movimientos
           </button>
         </div>
-
-        <p className="text-xs text-gray-500 mt-2">
-         
-        </p>
       </section>
 
       <section className="border rounded p-4">
-        <h2 className="font-semibold mb-3">📦 Productos</h2>
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-3">
+          <div>
+            <h2 className="font-semibold">📦 Productos</h2>
+            <p className="text-xs text-gray-500">
+              Total productos: {resumenInventario.totalProductos} · Con control:{' '}
+              {resumenInventario.conControl} · Sin control: {resumenInventario.sinControl} ·
+              Existencia total: {qNum(resumenInventario.existenciaTotal)}
+            </p>
+          </div>
 
-        <div className="flex justify-end mb-3">
-          <input
-            value={busqueda}
-            onChange={(e) => setBusqueda(e.target.value)}
-            placeholder="Buscar por nombre o SKU…"
-            className="border p-2 rounded w-full md:w-80"
-          />
+          <div className="flex flex-col md:flex-row gap-2">
+            <input
+              value={busqueda}
+              onChange={(e) => setBusqueda(e.target.value)}
+              placeholder="Buscar por nombre o SKU…"
+              className="border p-2 rounded w-full md:w-80"
+            />
+
+            <button
+              onClick={generarPDFProductos}
+              disabled={generandoPDF || productosFiltrados.length === 0}
+              className="bg-blue-700 hover:bg-blue-800 text-white px-4 py-2 rounded disabled:opacity-60"
+            >
+              {generandoPDF ? 'Generando…' : 'Reporte PDF'}
+            </button>
+          </div>
         </div>
 
         <div className="overflow-x-auto">
@@ -607,8 +854,14 @@ export default function InventarioPage() {
                       </label>
                     </td>
 
-                    <td className="p-2 border text-right">
-                      {p.control_inventario ? existenciaDe(p.id) : '—'}
+                    <td
+                      className={`p-2 border text-right ${
+                        p.control_inventario && existenciaDe(p.id) < 0
+                          ? 'text-red-700 font-semibold'
+                          : ''
+                      }`}
+                    >
+                      {p.control_inventario ? qNum(existenciaDe(p.id)) : '—'}
                     </td>
 
                     <td className="p-2 border whitespace-nowrap">
