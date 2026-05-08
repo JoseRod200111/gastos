@@ -23,7 +23,6 @@ type Linea = {
   concepto: string
   cantidad: number
   precio_unitario: number
-  forma_pago_id: string
   documento: string
 }
 
@@ -32,7 +31,6 @@ const lineaVacia = (): Linea => ({
   concepto: '',
   cantidad: 0,
   precio_unitario: 0,
-  forma_pago_id: '',
   documento: '',
 })
 
@@ -109,7 +107,8 @@ export default function NuevaVenta() {
 
   const totalCalculado = useMemo(() => round2(Number(form.total || 0)), [form.total])
   const pagadoNum = useMemo(() => round2(toNum(pagadoInicial)), [pagadoInicial])
-  const deudaCalculada = useMemo(
+
+  const saldoPendiente = useMemo(
     () => round2(Math.max(0, totalCalculado - pagadoNum)),
     [totalCalculado, pagadoNum]
   )
@@ -124,6 +123,13 @@ export default function NuevaVenta() {
   const metodosPagoSinPendiente = useMemo(() => {
     return metodosPago.filter((m) => !m.metodo.toLowerCase().includes('pendiente de pago'))
   }, [metodosPago])
+
+  const estadoPago = useMemo(() => {
+    if (totalCalculado <= 0) return 'SIN_TOTAL'
+    if (pagadoNum <= 0) return 'CREDITO_TOTAL'
+    if (pagadoNum < totalCalculado) return 'PAGO_PARCIAL'
+    return 'PAGADA'
+  }, [totalCalculado, pagadoNum])
 
   const handleDetalleChange = (i: number, field: keyof Linea, val: any) => {
     setDetalles((prev) => {
@@ -215,11 +221,14 @@ export default function NuevaVenta() {
       if (lineas.length === 0) return alert('Agrega al menos una línea válida')
 
       const totalVenta = round2(
-        lineas.reduce((s, d) => s + Number(d.cantidad || 0) * Number(d.precio_unitario || 0), 0)
+        lineas.reduce(
+          (s, d) => s + Number(d.cantidad || 0) * Number(d.precio_unitario || 0),
+          0
+        )
       )
 
       const pagoInicial = round2(toNum(pagadoInicial))
-      const deuda = round2(Math.max(0, totalVenta - pagoInicial))
+      const saldo = round2(Math.max(0, totalVenta - pagoInicial))
 
       if (pagoInicial < 0) {
         return alert('El pago inicial no puede ser negativo.')
@@ -229,18 +238,22 @@ export default function NuevaVenta() {
         return alert('El pago inicial no puede ser mayor que el total de la venta.')
       }
 
-      if ((pagoInicial > 0 || deuda > 0) && !form.cliente_id) {
-        return alert('Selecciona un cliente para registrar pago o deuda.')
+      if (!form.cliente_id) {
+        return alert('Selecciona un cliente para guardar la venta.')
       }
 
       if (pagoInicial > 0 && !metodoPagoInicialId) {
-        return alert('Selecciona el método del pago inicial.')
+        return alert('Selecciona el método del pago recibido.')
       }
 
-      if (deuda > 0 && !metodoPendiente?.id) {
+      if (saldo > 0 && !metodoPendiente?.id) {
         return alert(
-          'No se encontró el método de pago "Pendiente de Pago". Créalo en forma_pago antes de guardar ventas con deuda.'
+          'No se encontró el método de pago "Pendiente de Pago". Créalo en forma_pago antes de guardar ventas con saldo pendiente.'
         )
+      }
+
+      if (saldo <= 0 && !metodoPagoInicialId) {
+        return alert('Selecciona el método de pago de la venta.')
       }
 
       for (const it of lineas) {
@@ -259,7 +272,7 @@ export default function NuevaVenta() {
       const cabecera: any = {
         empresa_id: form.empresa_id ? Number(form.empresa_id) : null,
         division_id: form.division_id ? Number(form.division_id) : null,
-        cliente_id: form.cliente_id ? Number(form.cliente_id) : null,
+        cliente_id: Number(form.cliente_id),
         fecha: form.fecha,
         observaciones: form.observaciones || null,
         cantidad: totalVenta,
@@ -276,6 +289,11 @@ export default function NuevaVenta() {
 
       const ventaId = (venta as any).id as number
 
+      const formaPagoDetalle =
+        saldo > 0
+          ? Number(metodoPendiente?.id)
+          : Number(metodoPagoInicialId)
+
       const payload = lineas.map((d) => {
         const importe = round2(d.cantidad * d.precio_unitario)
 
@@ -286,14 +304,7 @@ export default function NuevaVenta() {
           cantidad: d.cantidad,
           precio_unitario: d.precio_unitario,
           importe,
-          forma_pago_id:
-            deuda > 0
-              ? Number(metodoPendiente?.id)
-              : d.forma_pago_id
-                ? Number(d.forma_pago_id)
-                : metodoPagoInicialId
-                  ? Number(metodoPagoInicialId)
-                  : null,
+          forma_pago_id: formaPagoDetalle,
           documento: d.documento || documentoPagoInicial || null,
         }
       })
@@ -506,18 +517,17 @@ export default function NuevaVenta() {
         .
       </p>
 
-      <div className="grid grid-cols-1 md:grid-cols-7 gap-2 text-xs font-semibold text-gray-700 mb-1">
+      <div className="grid grid-cols-1 md:grid-cols-6 gap-2 text-xs font-semibold text-gray-700 mb-1">
         <div>Producto</div>
         <div>Concepto</div>
         <div>Cant.</div>
         <div>P. Unit</div>
-        <div>Método de pago</div>
         <div>Documento</div>
         <div>Acción</div>
       </div>
 
       {detalles.map((d, i) => (
-        <div key={i} className="grid grid-cols-1 md:grid-cols-7 gap-2 mb-2">
+        <div key={i} className="grid grid-cols-1 md:grid-cols-6 gap-2 mb-2">
           <select
             className="border p-2"
             value={d.producto_id || ''}
@@ -562,21 +572,6 @@ export default function NuevaVenta() {
             aria-label="Precio unitario"
           />
 
-          <select
-            className="border p-2"
-            value={d.forma_pago_id}
-            onChange={(e) => handleDetalleChange(i, 'forma_pago_id', e.target.value)}
-            aria-label="Método de pago"
-            disabled={deudaCalculada > 0}
-          >
-            <option value="">Método de pago</option>
-            {metodosPago.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.metodo}
-              </option>
-            ))}
-          </select>
-
           <input
             className="border p-2"
             placeholder="Documento"
@@ -603,7 +598,12 @@ export default function NuevaVenta() {
       </button>
 
       <section className="border rounded p-4 bg-gray-50 mb-5">
-        <h2 className="font-semibold mb-3">💵 Pago inicial / deuda</h2>
+        <h2 className="font-semibold mb-3">💵 Pago de la venta</h2>
+
+        <p className="text-xs text-gray-600 mb-3">
+          Usa esta sección para definir si la venta queda pagada, con abono parcial o totalmente pendiente.
+          El método de pago se selecciona una sola vez para evitar conflictos.
+        </p>
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-3">
           <div>
@@ -630,15 +630,15 @@ export default function NuevaVenta() {
               placeholder="0.00"
             />
             <p className="text-[11px] text-gray-500 mt-1">
-              Si queda deuda, se registrará como pendiente de pago.
+              Puede ser 0, parcial o el total completo.
             </p>
           </div>
 
           <div>
-            <label className="block text-sm font-medium mb-1">Deuda (Q)</label>
+            <label className="block text-sm font-medium mb-1">Saldo pendiente (Q)</label>
             <input
               className="border p-2 w-full bg-white"
-              value={deudaCalculada.toFixed(2)}
+              value={saldoPendiente.toFixed(2)}
               readOnly
             />
             <p className="text-[11px] text-gray-500 mt-1">
@@ -650,7 +650,7 @@ export default function NuevaVenta() {
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
           <div>
             <label className="block text-sm font-medium mb-1">
-              Método del pago inicial
+              Método del pago recibido
             </label>
             <select
               className="border p-2 w-full"
@@ -664,6 +664,9 @@ export default function NuevaVenta() {
                 </option>
               ))}
             </select>
+            <p className="text-[11px] text-gray-500 mt-1">
+              Solo se necesita si hay pago recibido.
+            </p>
           </div>
 
           <div>
@@ -691,18 +694,21 @@ export default function NuevaVenta() {
           </div>
         </div>
 
-        {deudaCalculada > 0 && (
-          <div className="mt-3 text-sm bg-yellow-100 border border-yellow-300 text-yellow-800 rounded p-2">
-            Esta venta quedará con saldo pendiente de Q{deudaCalculada.toFixed(2)}.
-            Las líneas se guardarán con el método{' '}
-            <b>{metodoPendiente?.metodo || 'Pendiente de Pago'}</b> y el pago inicial
-            se registrará como abono.
+        {estadoPago === 'CREDITO_TOTAL' && (
+          <div className="mt-3 text-sm bg-yellow-50 border border-yellow-300 text-yellow-800 rounded p-2">
+            La venta quedará completamente pendiente de pago por Q{saldoPendiente.toFixed(2)}.
           </div>
         )}
 
-        {deudaCalculada <= 0 && pagadoNum > 0 && (
-          <div className="mt-3 text-sm bg-emerald-100 border border-emerald-300 text-emerald-800 rounded p-2">
-            Esta venta quedará pagada completamente.
+        {estadoPago === 'PAGO_PARCIAL' && (
+          <div className="mt-3 text-sm bg-blue-50 border border-blue-300 text-blue-800 rounded p-2">
+            Se registrará un abono inicial de Q{pagadoNum.toFixed(2)} y quedará saldo pendiente de Q{saldoPendiente.toFixed(2)}.
+          </div>
+        )}
+
+        {estadoPago === 'PAGADA' && (
+          <div className="mt-3 text-sm bg-emerald-50 border border-emerald-300 text-emerald-800 rounded p-2">
+            La venta quedará pagada completamente.
           </div>
         )}
       </section>
