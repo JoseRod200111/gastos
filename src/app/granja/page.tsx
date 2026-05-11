@@ -36,6 +36,7 @@ export default function GranjaMenuPage() {
             >
               🐖 Compra de cerdos
             </Link>
+
             <Link
               href="/granja/entrada-parto"
               className="block bg-emerald-500 hover:bg-emerald-600 text-white text-center py-3 rounded"
@@ -55,6 +56,7 @@ export default function GranjaMenuPage() {
             >
               💰 Venta de cerdos
             </Link>
+
             <Link
               href="/granja/salida-muerte"
               className="block bg-red-600 hover:bg-red-700 text-white text-center py-3 rounded"
@@ -75,6 +77,7 @@ export default function GranjaMenuPage() {
             >
               📋 Inventario por ubicación
             </Link>
+
             <Link
               href="/granja/inventario-diario"
               className="block bg-amber-500 hover:bg-amber-600 text-white text-center py-3 rounded"
@@ -82,7 +85,6 @@ export default function GranjaMenuPage() {
               🗓 Inventario diario (conteo físico)
             </Link>
 
-            {/* ✅ NUEVO: Movimiento de cerdos */}
             <Link
               href="/granja/movimiento-cerdos"
               className="block bg-orange-600 hover:bg-orange-700 text-white text-center py-3 rounded"
@@ -102,6 +104,13 @@ export default function GranjaMenuPage() {
               className="block bg-sky-600 hover:bg-sky-700 text-white text-center py-3 rounded"
             >
               📊 Reportes del módulo de granja
+            </Link>
+
+            <Link
+              href="/granja/compras"
+              className="block bg-teal-700 hover:bg-teal-800 text-white text-center py-3 rounded"
+            >
+              🐖 Ver / editar compras de cerdos
             </Link>
           </div>
         </section>
