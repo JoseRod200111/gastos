@@ -29,6 +29,7 @@ export default function GranjaMenuPage() {
         {/* ENTRADAS */}
         <section className="border rounded-lg p-4 shadow-sm bg-white">
           <h2 className="font-semibold mb-3">Entradas de cerdos</h2>
+
           <div className="grid gap-2">
             <Link
               href="/granja/entrada-compra"
@@ -49,6 +50,7 @@ export default function GranjaMenuPage() {
         {/* SALIDAS */}
         <section className="border rounded-lg p-4 shadow-sm bg-white">
           <h2 className="font-semibold mb-3">Salidas de cerdos</h2>
+
           <div className="grid gap-2">
             <Link
               href="/granja/salida-venta"
@@ -111,6 +113,13 @@ export default function GranjaMenuPage() {
               className="block bg-teal-700 hover:bg-teal-800 text-white text-center py-3 rounded"
             >
               🐖 Ver / editar compras de cerdos
+            </Link>
+
+            <Link
+              href="/granja/ventas"
+              className="block bg-violet-700 hover:bg-violet-800 text-white text-center py-3 rounded"
+            >
+              💰 Ver / editar ventas de cerdos
             </Link>
           </div>
         </section>
