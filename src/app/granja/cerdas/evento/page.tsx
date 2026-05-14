@@ -167,7 +167,6 @@ export default function GranjaCerdasEventosPage() {
     setLoadingEventos(true)
     try {
       // Preferimos la vista si existe; si no, caemos a la tabla y resolvemos arete por separado.
-      // (La vista se creó para traer arete/ubicación más fácil.)
       const fromView = await supabase
         .from('v_granja_cerda_eventos')
         .select(
@@ -238,7 +237,6 @@ export default function GranjaCerdasEventosPage() {
   }, [fDesde, fHasta])
 
   const estadoSugerido = useMemo(() => {
-    // Estado “operativo” automático, simple (puedes ajustarlo luego):
     if (tipo === 'MONTA' || tipo === 'INSEMINACION') return 'SERVIDA'
     if (tipo === 'REVISION_EMBARAZO') {
       if (resultado === 'POSITIVO') return 'PRENADA'
@@ -281,7 +279,6 @@ export default function GranjaCerdasEventosPage() {
     const { data: userData } = await supabase.auth.getUser()
     const userId = userData?.user?.id ?? null
 
-    // datos variables por tipo
     const datos: any = {}
     if (tipo === 'MONTA') {
       if (macho.trim()) datos.macho = macho.trim()
@@ -302,7 +299,6 @@ export default function GranjaCerdasEventosPage() {
       if (medProxFecha) datos.proxima_fecha = medProxFecha
     }
 
-    // inserta evento
     const ins = await supabase
       .from('granja_cerda_eventos')
       .insert({
@@ -325,16 +321,12 @@ export default function GranjaCerdasEventosPage() {
       return
     }
 
-    // actualiza estado cerda (simple)
     if (estadoSugerido) {
       const patch: any = {
         estado: estadoSugerido,
         updated_at: new Date().toISOString(),
       }
-      // muerte: desactiva
       if (estadoSugerido === 'MUERTA') patch.activa = false
-
-      // si en el evento le pusiste ubicación/lote, lo reflejamos
       if (ubicacionId) patch.ubicacion_id = Number(ubicacionId)
       if (loteId) patch.lote_id = Number(loteId)
 
@@ -752,7 +744,6 @@ export default function GranjaCerdasEventosPage() {
                         ? `${r.arete}${r.cerda_nombre ? ` — ${r.cerda_nombre}` : ''}`
                         : `#${r.cerda_id}`
 
-                      // resumen humano del JSON
                       let detalle = ''
                       const d = r.datos || {}
                       if (r.tipo === 'MONTA' && d.macho) detalle = `Macho: ${d.macho}`
@@ -798,8 +789,8 @@ export default function GranjaCerdasEventosPage() {
           </div>
 
           <div className="text-xs text-gray-500 mt-2">
-            Nota: esta pantalla registra historial por cerda (tabla <code>granja_cerda_eventos</code>) y puede actualizar el estado
-            de <code>granja_cerdas</code>. :contentReference[oaicite:2]{index=2}
+            Nota: esta pantalla registra historial por cerda (tabla <code>granja_cerda_eventos</code>) y puede actualizar el
+            estado de <code>granja_cerdas</code>.
           </div>
         </section>
       </div>
