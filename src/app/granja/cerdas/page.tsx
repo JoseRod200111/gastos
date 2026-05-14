@@ -441,7 +441,7 @@ export default function GranjaCerdasPage() {
           </div>
 
           <div>
-            <label className="text-xs text-gray-600">Peso kg (opcional)</label>
+            <label className="text-xs text-gray-600">Peso libras (opcional)</label>
             <input
               type="number"
               className="border p-2 w-full"
