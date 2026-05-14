@@ -123,6 +123,45 @@ export default function GranjaMenuPage() {
             </Link>
           </div>
         </section>
+
+        {/* HEMBRAS / CERDAS (NUEVO MÓDULO) */}
+        <section className="border rounded-lg p-4 shadow-sm bg-white md:col-span-2">
+          <h2 className="font-semibold mb-3">Hembras (Cerdas)</h2>
+
+          <div className="grid gap-2 md:grid-cols-2">
+            <Link
+              href="/granja/cerdas"
+              className="block bg-fuchsia-700 hover:bg-fuchsia-800 text-white text-center py-3 rounded"
+            >
+              🐷 Registro de cerdas (arete, estado, ubicación)
+            </Link>
+
+            <Link
+              href="/granja/cerdas/pendientes"
+              className="block bg-pink-700 hover:bg-pink-800 text-white text-center py-3 rounded"
+            >
+              ⏰ Próximos eventos / pendientes (21 días, 115 días, destete)
+            </Link>
+
+            <Link
+              href="/granja/cerdas/eventos"
+              className="block bg-rose-700 hover:bg-rose-800 text-white text-center py-3 rounded"
+            >
+              🧾 Registrar evento (monta/inseminación, revisión, parto, destete…)
+            </Link>
+
+            <Link
+              href="/granja/cerdas/reportes"
+              className="block bg-slate-800 hover:bg-slate-900 text-white text-center py-3 rounded"
+            >
+              📑 Reportes de eventos (filtros + PDF)
+            </Link>
+          </div>
+
+          <p className="text-xs text-gray-600 mt-3">
+            Nota: el módulo de cerdas usará <b>libras (lb)</b> para peso.
+          </p>
+        </section>
       </div>
     </div>
   )
