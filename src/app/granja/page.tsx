@@ -159,7 +159,7 @@ export default function GranjaMenuPage() {
           </div>
 
           <p className="text-xs text-gray-600 mt-3">
-            Nota: el módulo de cerdas usará <b>libras (lb)</b> para peso.
+           
           </p>
         </section>
       </div>
