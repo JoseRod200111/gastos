@@ -4,229 +4,202 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabaseClient'
 
-
 type Ubicacion = {
   id: number
   codigo: string
   nombre: string | null
-  tipo?: string | null
-  activo?: boolean | null
 }
 
 type Lote = {
   id: number
   codigo: string
-  tipo_origen?: string | null
-  fecha?: string | null
-  observaciones?: string | null
+  fecha: string
+  tipo_origen: string
 }
-
-type CerdaEstado =
-  | 'VACIA'
-  | 'SERVIDA'
-  | 'PRENADA'
-  | 'LACTANDO'
-  | 'DESTETADA'
-  | 'ABORTO'
-  | 'MUERTA'
-  | 'BAJA'
 
 type Cerda = {
   id: number
   arete: string
   nombre: string
-  estado: CerdaEstado
+  estado: string
   ubicacion_id: number | null
   lote_id: number | null
   fecha_nacimiento: string | null
-  peso_kg: number | null
+  peso_lb: number | null
   notas: string | null
   activa: boolean
-  created_at: string | null
-  updated_at: string | null
-  granja_ubicaciones?: { codigo: string; nombre: string | null } | null
-  granja_lotes?: { codigo: string } | null
+  created_at?: string | null
+  updated_at?: string | null
 }
 
-type FormCerda = {
-  arete: string
-  nombre: string
-  estado: CerdaEstado
-  ubicacion_id: string
-  lote_id: string
-  fecha_nacimiento: string
-  peso_kg: string
-  notas: string
-  activa: boolean
-}
+const ESTADOS = [
+  'VACIA',
+  'SERVIDA',
+  'PRENADA',
+  'LACTANDO',
+  'DESTETADA',
+  'ABORTO',
+  'MUERTA',
+  'BAJA',
+] as const
 
-const hoyISO = () => {
-  const d = new Date()
-  const yyyy = d.getFullYear()
-  const mm = String(d.getMonth() + 1).padStart(2, '0')
-  const dd = String(d.getDate()).padStart(2, '0')
-  return `${yyyy}-${mm}-${dd}`
-}
+const hoyISO = () => new Date().toISOString().slice(0, 10)
 
-const toNumOrNull = (v: string) => {
-  const t = (v ?? '').trim()
-  if (!t) return null
-  const n = Number(t)
-  return Number.isFinite(n) ? n : NaN
-}
-
-export default function GranjaCerdasPage() {
+export default function GranjaHembrasPage() {
   const [loading, setLoading] = useState(false)
   const [guardando, setGuardando] = useState(false)
-
   const [ubicaciones, setUbicaciones] = useState<Ubicacion[]>([])
   const [lotes, setLotes] = useState<Lote[]>([])
   const [cerdas, setCerdas] = useState<Cerda[]>([])
 
-  // filtros
-  const [fArete, setFArete] = useState('')
-  const [fNombre, setFNombre] = useState('')
-  const [fEstado, setFEstado] = useState<string>('') // '' = todos
-  const [fUbicacion, setFUbicacion] = useState<string>('') // '' = todas
-  const [fActivas, setFActivas] = useState<boolean>(true)
+  const [filtros, setFiltros] = useState({
+    q: '',
+    estado: 'TODAS',
+    ubicacion_id: 'TODAS',
+    incluir_inactivas: false,
+  })
 
-  // alta
-  const [form, setForm] = useState<FormCerda>({
+  const [form, setForm] = useState({
     arete: '',
     nombre: '',
     estado: 'VACIA',
     ubicacion_id: '',
     lote_id: '',
     fecha_nacimiento: '',
-    peso_kg: '',
+    peso_lb: '',
     notas: '',
     activa: true,
   })
 
-  // edición
-  const [editId, setEditId] = useState<number | null>(null)
-  const [edit, setEdit] = useState<FormCerda | null>(null)
-  const [guardandoEditId, setGuardandoEditId] = useState<number | null>(null)
-
-  const estados: CerdaEstado[] = useMemo(
-    () => ['VACIA', 'SERVIDA', 'PRENADA', 'LACTANDO', 'DESTETADA', 'ABORTO', 'MUERTA', 'BAJA'],
-    []
-  )
-
-  const cargarCatalogos = useCallback(async () => {
-    // ubicaciones (aquí SÍ existe "activo" en tu BD, pero si no existe igual no lo usamos obligatorio)
-    const uRes = await supabase
-      .from('granja_ubicaciones')
-      .select('id, codigo, nombre, tipo, activo')
-      .order('codigo', { ascending: true })
-
-    if (uRes.error) {
-      console.error('Error cargando ubicaciones', uRes.error)
-      alert('No se pudieron cargar las ubicaciones.')
-      return
-    }
-
-    // lotes (IMPORTANTE: NO filtrar por "activo" porque tu tabla granja_lotes NO tiene esa columna)
-    const lRes = await supabase
-      .from('granja_lotes')
-      .select('id, codigo, tipo_origen, fecha, observaciones')
-      .order('fecha', { ascending: false })
-      .limit(500)
-
-    if (lRes.error) {
-      console.error('Error cargando lotes', lRes.error)
-      alert('No se pudieron cargar los lotes.')
-      return
-    }
-
-    const ubis = (uRes.data ?? []) as Ubicacion[]
-    const lts = (lRes.data ?? []) as Lote[]
-
-    setUbicaciones(ubis)
-    setLotes(lts)
-
-    // default ubicacion para alta si está vacío
-    if (!form.ubicacion_id && ubis.length > 0) {
-      setForm((p) => ({ ...p, ubicacion_id: String(ubis[0].id) }))
-    }
-  }, [form.ubicacion_id])
-
-  const cargarCerdas = useCallback(async () => {
-    setLoading(true)
-    try {
-      let q = supabase
-        .from('granja_cerdas')
-        .select(
-          `
-          id, arete, nombre, estado, ubicacion_id, lote_id,
-          fecha_nacimiento, peso_kg, notas, activa, created_at, updated_at,
-          granja_ubicaciones ( codigo, nombre ),
-          granja_lotes ( codigo )
-        `
-        )
-        .order('activa', { ascending: false })
-        .order('arete', { ascending: true })
-
-      // filtros
-      if (fActivas) q = q.eq('activa', true)
-      if (fArete.trim()) q = q.ilike('arete', `%${fArete.trim()}%`)
-      if (fNombre.trim()) q = q.ilike('nombre', `%${fNombre.trim()}%`)
-      if (fEstado) q = q.eq('estado', fEstado)
-      if (fUbicacion) q = q.eq('ubicacion_id', Number(fUbicacion))
-
-      const { data, error } = await q
-      if (error) {
-        console.error('Error cargando cerdas', error)
-        alert('No se pudieron cargar las cerdas.')
-        setCerdas([])
-        return
-      }
-
-      setCerdas(((data ?? []) as any[]) as Cerda[])
-    } finally {
-      setLoading(false)
-    }
-  }, [fActivas, fArete, fNombre, fEstado, fUbicacion])
-
-  useEffect(() => {
-    cargarCatalogos()
-  }, [cargarCatalogos])
-
-  useEffect(() => {
-    cargarCerdas()
-  }, [cargarCerdas])
-
-  const limpiarFiltros = () => {
-    setFArete('')
-    setFNombre('')
-    setFEstado('')
-    setFUbicacion('')
-    setFActivas(true)
-  }
-
-  const resetForm = () => {
+  const resetForm = () =>
     setForm({
       arete: '',
       nombre: '',
       estado: 'VACIA',
-      ubicacion_id: ubicaciones.length ? String(ubicaciones[0].id) : '',
+      ubicacion_id: '',
       lote_id: '',
       fecha_nacimiento: '',
-      peso_kg: '',
+      peso_lb: '',
       notas: '',
       activa: true,
     })
+
+  const ubicMap = useMemo(() => {
+    const m = new Map<number, Ubicacion>()
+    ubicaciones.forEach((u) => m.set(u.id, u))
+    return m
+  }, [ubicaciones])
+
+  const loteMap = useMemo(() => {
+    const m = new Map<number, Lote>()
+    lotes.forEach((l) => m.set(l.id, l))
+    return m
+  }, [lotes])
+
+  const cargarDatos = useCallback(async () => {
+    setLoading(true)
+    try {
+      const [uRes, lRes, cRes] = await Promise.all([
+        supabase
+          .from('granja_ubicaciones')
+          .select('id, codigo, nombre')
+          .eq('activo', true)
+          .order('codigo', { ascending: true }),
+        supabase
+          .from('granja_lotes')
+          .select('id, codigo, fecha, tipo_origen')
+          .order('fecha', { ascending: false })
+          .limit(300),
+        supabase
+          .from('granja_cerdas')
+          .select(
+            'id, arete, nombre, estado, ubicacion_id, lote_id, fecha_nacimiento, peso_lb, notas, activa, created_at, updated_at'
+          )
+          .order('activa', { ascending: false })
+          .order('arete', { ascending: true })
+          .limit(2000),
+      ])
+
+      if (uRes.error) console.error('Error ubicaciones', uRes.error)
+      if (lRes.error) console.error('Error lotes', lRes.error)
+      if (cRes.error) console.error('Error cerdas', cRes.error)
+
+      setUbicaciones((uRes.data as Ubicacion[]) || [])
+      setLotes((lRes.data as Lote[]) || [])
+      setCerdas((cRes.data as Cerda[]) || [])
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    cargarDatos()
+  }, [cargarDatos])
+
+  const handleFiltroChange = (
+    e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>
+  ) => {
+    const { name, value, type } = e.target as any
+    if (type === 'checkbox') {
+      setFiltros((p) => ({ ...p, [name]: (e.target as HTMLInputElement).checked }))
+    } else {
+      setFiltros((p) => ({ ...p, [name]: value }))
+    }
   }
 
-  const crearCerda = async () => {
+  const handleFormChange = (
+    e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>
+  ) => {
+    const { name, value, type } = e.target as any
+    if (type === 'checkbox') {
+      setForm((p) => ({ ...p, [name]: (e.target as HTMLInputElement).checked }))
+    } else {
+      setForm((p) => ({ ...p, [name]: value }))
+    }
+  }
+
+  const cerdasFiltradas = useMemo(() => {
+    let rows = [...cerdas]
+
+    if (!filtros.incluir_inactivas) rows = rows.filter((c) => c.activa)
+
+    const q = filtros.q.trim().toLowerCase()
+    if (q) {
+      rows = rows.filter((c) => {
+        const a = (c.arete || '').toLowerCase()
+        const n = (c.nombre || '').toLowerCase()
+        return a.includes(q) || n.includes(q)
+      })
+    }
+
+    if (filtros.estado !== 'TODAS') rows = rows.filter((c) => c.estado === filtros.estado)
+
+    if (filtros.ubicacion_id !== 'TODAS') {
+      const id = Number(filtros.ubicacion_id)
+      rows = rows.filter((c) => (c.ubicacion_id || 0) === id)
+    }
+
+    return rows
+  }, [cerdas, filtros])
+
+  const guardarCerda = async () => {
     const arete = form.arete.trim()
     const nombre = form.nombre.trim()
+    if (!arete || !nombre) {
+      alert('Areté y nombre son obligatorios.')
+      return
+    }
 
-    if (!arete) return alert('El arete es obligatorio.')
-    if (!nombre) return alert('El nombre es obligatorio.')
+    if (!/^[A-Za-z0-9\-_.]+$/.test(arete)) {
+      alert('El arete solo debe tener letras/números y - _ .')
+      return
+    }
 
-    const peso = toNumOrNull(form.peso_kg)
-    if (Number.isNaN(peso)) return alert('Peso inválido.')
+    const peso = form.peso_lb.trim() ? Number(form.peso_lb) : null
+    if (peso !== null && (Number.isNaN(peso) || peso < 0)) {
+      alert('Peso (lb) inválido.')
+      return
+    }
 
     setGuardando(true)
     try {
@@ -237,501 +210,461 @@ export default function GranjaCerdasPage() {
         ubicacion_id: form.ubicacion_id ? Number(form.ubicacion_id) : null,
         lote_id: form.lote_id ? Number(form.lote_id) : null,
         fecha_nacimiento: form.fecha_nacimiento ? form.fecha_nacimiento : null,
-        peso_kg: peso,
+        peso_lb: peso,
         notas: form.notas?.trim() ? form.notas.trim() : null,
-        activa: form.activa,
+        activa: !!form.activa,
         updated_at: new Date().toISOString(),
       }
 
+      // insert
       const { error } = await supabase.from('granja_cerdas').insert(payload)
+
       if (error) {
-        console.error('Error creando cerda', error)
-        // típico: unique violation por arete
-        alert(`No se pudo crear. ${error.message}`)
+        console.error('Error insertando cerda', error)
+        if ((error as any)?.code === '23505') {
+          alert('Ese arete ya existe. Debe ser único.')
+        } else {
+          alert('No se pudo guardar la cerda.')
+        }
         return
       }
 
-      resetForm()
-      await cargarCerdas()
       alert('Cerda registrada.')
+      resetForm()
+      await cargarDatos()
     } finally {
       setGuardando(false)
     }
   }
 
-  const empezarEdicion = (c: Cerda) => {
-    setEditId(c.id)
-    setEdit({
-      arete: c.arete ?? '',
-      nombre: c.nombre ?? '',
-      estado: (c.estado as CerdaEstado) ?? 'VACIA',
-      ubicacion_id: c.ubicacion_id ? String(c.ubicacion_id) : '',
-      lote_id: c.lote_id ? String(c.lote_id) : '',
-      fecha_nacimiento: c.fecha_nacimiento ?? '',
-      peso_kg: c.peso_kg == null ? '' : String(c.peso_kg),
-      notas: c.notas ?? '',
-      activa: Boolean(c.activa),
-    })
-  }
+  const toggleActiva = async (c: Cerda) => {
+    if (
+      !confirm(
+        `${c.activa ? 'Desactivar' : 'Activar'} la cerda ${c.arete}?`
+      )
+    )
+      return
 
-  const cancelarEdicion = () => {
-    setEditId(null)
-    setEdit(null)
-  }
-
-  const guardarEdicion = async (id: number) => {
-    if (!edit) return
-    const arete = edit.arete.trim()
-    const nombre = edit.nombre.trim()
-
-    if (!arete) return alert('El arete es obligatorio.')
-    if (!nombre) return alert('El nombre es obligatorio.')
-
-    const peso = toNumOrNull(edit.peso_kg)
-    if (Number.isNaN(peso)) return alert('Peso inválido.')
-
-    setGuardandoEditId(id)
-    try {
-      const payload = {
-        arete,
-        nombre,
-        estado: edit.estado,
-        ubicacion_id: edit.ubicacion_id ? Number(edit.ubicacion_id) : null,
-        lote_id: edit.lote_id ? Number(edit.lote_id) : null,
-        fecha_nacimiento: edit.fecha_nacimiento ? edit.fecha_nacimiento : null,
-        peso_kg: peso,
-        notas: edit.notas?.trim() ? edit.notas.trim() : null,
-        activa: edit.activa,
-        updated_at: new Date().toISOString(),
-      }
-
-      const { error } = await supabase.from('granja_cerdas').update(payload).eq('id', id)
-      if (error) {
-        console.error('Error actualizando cerda', error)
-        alert(`No se pudo actualizar. ${error.message}`)
-        return
-      }
-
-      cancelarEdicion()
-      await cargarCerdas()
-      alert('Cerda actualizada.')
-    } finally {
-      setGuardandoEditId(null)
-    }
-  }
-
-  const bajaLogica = async (c: Cerda) => {
-    if (!confirm(`¿Dar de baja a la cerda ${c.arete}? (no se elimina, solo se desactiva)`)) return
     const { error } = await supabase
       .from('granja_cerdas')
-      .update({ activa: false, estado: 'BAJA', updated_at: new Date().toISOString() })
+      .update({ activa: !c.activa, updated_at: new Date().toISOString() })
       .eq('id', c.id)
 
     if (error) {
-      console.error('Error dando de baja', error)
-      alert('No se pudo dar de baja.')
+      console.error('Error cambiando activa', error)
+      alert('No se pudo actualizar.')
       return
     }
-    await cargarCerdas()
+    await cargarDatos()
+  }
+
+  const actualizarCampo = async (c: Cerda, patch: Partial<Cerda>) => {
+    const { error } = await supabase
+      .from('granja_cerdas')
+      .update({ ...patch, updated_at: new Date().toISOString() })
+      .eq('id', c.id)
+
+    if (error) {
+      console.error('Error actualizando cerda', error)
+      alert('No se pudo actualizar.')
+      return false
+    }
+    return true
   }
 
   return (
     <div className="p-6 max-w-6xl mx-auto">
-      {/* Logo */}
-      <div className="flex justify-center mb-6">
-        <img src="/logo.png" alt="Logo Empresa" className="h-16" />
-      </div>
-
-      <div className="flex items-center justify-between gap-3 mb-2">
-        <h1 className="text-2xl font-bold">🐷 Cerdas — Registro y control</h1>
+      <div className="mb-6 flex items-center gap-3">
+        <img src="/logo.png" alt="Logo" className="h-10" />
+        <div>
+          <h1 className="text-2xl font-bold">Granja — Hembras (Cerdas)</h1>
+          <p className="text-xs text-gray-600">
+            Registro maestro de cerdas por arete y estado. Peso en libras (lb).
+          </p>
+        </div>
 
         <Link
           href="/granja"
-          className="text-sm px-3 py-2 rounded bg-slate-700 hover:bg-slate-800 text-white"
+          className="ml-auto inline-block bg-slate-700 hover:bg-slate-800 text-white px-3 py-2 rounded text-sm"
         >
           ⬅ Menú de Granja
         </Link>
       </div>
 
-      <p className="text-sm text-gray-600 mb-6">
-        Catálogo de cerdas (arete único), ubicación/lote actual y estado productivo.
-      </p>
+      <div className="grid gap-6 md:grid-cols-2">
+        {/* FORM */}
+        <div className="border rounded-lg p-4 bg-white shadow-sm">
+          <h2 className="font-semibold mb-3">Nueva cerda</h2>
 
-      {/* Alta */}
-      <div className="border rounded-lg p-4 bg-white shadow-sm mb-6">
-        <h2 className="font-semibold mb-3">➕ Registrar cerda</h2>
+          <div className="grid gap-3">
+            <div className="grid gap-3 md:grid-cols-2">
+              <div>
+                <label className="text-xs text-gray-600">Areté (único)</label>
+                <input
+                  name="arete"
+                  value={form.arete}
+                  onChange={handleFormChange}
+                  className="w-full border rounded px-3 py-2"
+                  placeholder="Ej: AR1077"
+                />
+              </div>
 
-        <div className="grid gap-3 md:grid-cols-3">
-          <div>
-            <label className="text-xs text-gray-600">Arete (único)</label>
-            <input
-              className="border p-2 w-full"
-              value={form.arete}
-              onChange={(e) => setForm((p) => ({ ...p, arete: e.target.value }))}
-              placeholder="Ej: AR1077"
-            />
+              <div>
+                <label className="text-xs text-gray-600">Nombre</label>
+                <input
+                  name="nombre"
+                  value={form.nombre}
+                  onChange={handleFormChange}
+                  className="w-full border rounded px-3 py-2"
+                  placeholder="Ej: Hembra 1077"
+                />
+              </div>
+            </div>
+
+            <div className="grid gap-3 md:grid-cols-2">
+              <div>
+                <label className="text-xs text-gray-600">Estado</label>
+                <select
+                  name="estado"
+                  value={form.estado}
+                  onChange={handleFormChange}
+                  className="w-full border rounded px-3 py-2"
+                >
+                  {ESTADOS.map((e) => (
+                    <option key={e} value={e}>
+                      {e}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="flex items-end gap-2">
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    name="activa"
+                    checked={form.activa}
+                    onChange={handleFormChange}
+                  />
+                  Activa
+                </label>
+              </div>
+            </div>
+
+            <div className="grid gap-3 md:grid-cols-2">
+              <div>
+                <label className="text-xs text-gray-600">Ubicación actual</label>
+                <select
+                  name="ubicacion_id"
+                  value={form.ubicacion_id}
+                  onChange={handleFormChange}
+                  className="w-full border rounded px-3 py-2"
+                >
+                  <option value="">— Selecciona —</option>
+                  {ubicaciones.map((u) => (
+                    <option key={u.id} value={u.id}>
+                      {u.codigo} — {u.nombre || ''}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="text-xs text-gray-600">Lote (opcional)</label>
+                <select
+                  name="lote_id"
+                  value={form.lote_id}
+                  onChange={handleFormChange}
+                  className="w-full border rounded px-3 py-2"
+                >
+                  <option value="">— Sin lote —</option>
+                  {lotes.map((l) => (
+                    <option key={l.id} value={l.id}>
+                      {l.codigo} ({l.tipo_origen}) · {l.fecha}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div className="grid gap-3 md:grid-cols-2">
+              <div>
+                <label className="text-xs text-gray-600">Fecha nacimiento (opcional)</label>
+                <input
+                  type="date"
+                  name="fecha_nacimiento"
+                  value={form.fecha_nacimiento || ''}
+                  onChange={handleFormChange}
+                  className="w-full border rounded px-3 py-2"
+                  max={hoyISO()}
+                />
+              </div>
+
+              <div>
+                <label className="text-xs text-gray-600">Peso (lb) (opcional)</label>
+                <input
+                  name="peso_lb"
+                  value={form.peso_lb}
+                  onChange={handleFormChange}
+                  className="w-full border rounded px-3 py-2"
+                  placeholder="Ej: 420"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="text-xs text-gray-600">Notas (opcional)</label>
+              <textarea
+                name="notas"
+                value={form.notas}
+                onChange={handleFormChange}
+                className="w-full border rounded px-3 py-2"
+                rows={3}
+                placeholder="Observaciones generales de la cerda"
+              />
+            </div>
+
+            <div className="flex gap-2">
+              <button
+                onClick={guardarCerda}
+                disabled={guardando}
+                className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded"
+              >
+                {guardando ? 'Guardando…' : 'Guardar cerda'}
+              </button>
+
+              <button
+                onClick={resetForm}
+                className="bg-gray-200 hover:bg-gray-300 text-black px-4 py-2 rounded"
+              >
+                Limpiar
+              </button>
+            </div>
           </div>
+        </div>
 
-          <div>
-            <label className="text-xs text-gray-600">Nombre</label>
+        {/* LISTA */}
+        <div className="border rounded-lg p-4 bg-white shadow-sm">
+          <h2 className="font-semibold mb-3">Cerdas registradas</h2>
+
+          <div className="grid gap-3 md:grid-cols-4 mb-3">
             <input
-              className="border p-2 w-full"
-              value={form.nombre}
-              onChange={(e) => setForm((p) => ({ ...p, nombre: e.target.value }))}
-              placeholder="Ej: Cerda 12"
+              name="q"
+              value={filtros.q}
+              onChange={handleFiltroChange}
+              className="border rounded px-3 py-2 md:col-span-2"
+              placeholder="Buscar por arete o nombre…"
             />
-          </div>
 
-          <div>
-            <label className="text-xs text-gray-600">Estado</label>
             <select
-              className="border p-2 w-full"
-              value={form.estado}
-              onChange={(e) => setForm((p) => ({ ...p, estado: e.target.value as CerdaEstado }))}
+              name="estado"
+              value={filtros.estado}
+              onChange={handleFiltroChange}
+              className="border rounded px-3 py-2"
             >
-              {estados.map((s) => (
-                <option key={s} value={s}>
-                  {s}
+              <option value="TODAS">Todos estados</option>
+              {ESTADOS.map((e) => (
+                <option key={e} value={e}>
+                  {e}
                 </option>
               ))}
             </select>
-          </div>
 
-          <div>
-            <label className="text-xs text-gray-600">Ubicación</label>
             <select
-              className="border p-2 w-full"
-              value={form.ubicacion_id}
-              onChange={(e) => setForm((p) => ({ ...p, ubicacion_id: e.target.value }))}
+              name="ubicacion_id"
+              value={filtros.ubicacion_id}
+              onChange={handleFiltroChange}
+              className="border rounded px-3 py-2"
             >
-              <option value="">— Sin ubicación —</option>
+              <option value="TODAS">Todas ubicaciones</option>
               {ubicaciones.map((u) => (
                 <option key={u.id} value={u.id}>
-                  {u.codigo} {u.nombre ? `— ${u.nombre}` : ''}
+                  {u.codigo}
                 </option>
               ))}
             </select>
+
+            <label className="flex items-center gap-2 text-sm md:col-span-4">
+              <input
+                type="checkbox"
+                name="incluir_inactivas"
+                checked={filtros.incluir_inactivas}
+                onChange={handleFiltroChange}
+              />
+              Incluir inactivas
+            </label>
+
+            <div className="md:col-span-4 flex gap-2">
+              <button
+                onClick={cargarDatos}
+                className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded"
+              >
+                🔎 Recargar
+              </button>
+              {loading && <span className="text-sm text-gray-500 self-center">Cargando…</span>}
+            </div>
           </div>
 
-          <div>
-            <label className="text-xs text-gray-600">Lote (opcional)</label>
-            <select
-              className="border p-2 w-full"
-              value={form.lote_id}
-              onChange={(e) => setForm((p) => ({ ...p, lote_id: e.target.value }))}
-            >
-              <option value="">— Sin lote —</option>
-              {lotes.map((l) => (
-                <option key={l.id} value={l.id}>
-                  {l.codigo}
-                </option>
-              ))}
-            </select>
+          <div className="text-xs text-gray-600 mb-2">
+            Mostrando: <span className="font-semibold">{cerdasFiltradas.length}</span>
           </div>
 
-          <div>
-            <label className="text-xs text-gray-600">Fecha nacimiento (opcional)</label>
-            <input
-              type="date"
-              className="border p-2 w-full"
-              value={form.fecha_nacimiento}
-              onChange={(e) => setForm((p) => ({ ...p, fecha_nacimiento: e.target.value }))}
-              max={hoyISO()}
-            />
-          </div>
-
-          <div>
-            <label className="text-xs text-gray-600">Peso libras (opcional)</label>
-            <input
-              type="number"
-              className="border p-2 w-full"
-              value={form.peso_kg}
-              onChange={(e) => setForm((p) => ({ ...p, peso_kg: e.target.value }))}
-              placeholder="Ej: 180.5"
-              step="0.01"
-            />
-          </div>
-
-          <div className="md:col-span-2">
-            <label className="text-xs text-gray-600">Notas</label>
-            <input
-              className="border p-2 w-full"
-              value={form.notas}
-              onChange={(e) => setForm((p) => ({ ...p, notas: e.target.value }))}
-              placeholder="Observaciones generales…"
-            />
-          </div>
-
-          <label className="flex items-center gap-2 text-sm md:col-span-3">
-            <input
-              type="checkbox"
-              checked={form.activa}
-              onChange={(e) => setForm((p) => ({ ...p, activa: e.target.checked }))}
-            />
-            Activa
-          </label>
-        </div>
-
-        <div className="mt-4 flex gap-2">
-          <button
-            onClick={crearCerda}
-            disabled={guardando}
-            className="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white px-4 py-2 rounded"
-          >
-            {guardando ? 'Guardando…' : 'Guardar'}
-          </button>
-          <button
-            onClick={resetForm}
-            className="bg-gray-200 hover:bg-gray-300 px-4 py-2 rounded"
-          >
-            Limpiar
-          </button>
-        </div>
-      </div>
-
-      {/* Filtros */}
-      <div className="border rounded-lg p-4 bg-white shadow-sm mb-4">
-        <h2 className="font-semibold mb-3">🔎 Buscar</h2>
-
-        <div className="grid gap-3 md:grid-cols-5">
-          <input
-            className="border p-2"
-            placeholder="Arete"
-            value={fArete}
-            onChange={(e) => setFArete(e.target.value)}
-          />
-          <input
-            className="border p-2"
-            placeholder="Nombre"
-            value={fNombre}
-            onChange={(e) => setFNombre(e.target.value)}
-          />
-          <select className="border p-2" value={fEstado} onChange={(e) => setFEstado(e.target.value)}>
-            <option value="">Todos los estados</option>
-            {estados.map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
-          </select>
-
-          <select
-            className="border p-2"
-            value={fUbicacion}
-            onChange={(e) => setFUbicacion(e.target.value)}
-          >
-            <option value="">Todas las ubicaciones</option>
-            {ubicaciones.map((u) => (
-              <option key={u.id} value={u.id}>
-                {u.codigo} {u.nombre ? `— ${u.nombre}` : ''}
-              </option>
-            ))}
-          </select>
-
-          <label className="flex items-center gap-2 text-sm">
-            <input type="checkbox" checked={fActivas} onChange={(e) => setFActivas(e.target.checked)} />
-            Solo activas
-          </label>
-        </div>
-
-        <div className="mt-3 flex gap-2">
-          <button
-            onClick={cargarCerdas}
-            className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded"
-          >
-            Buscar
-          </button>
-          <button onClick={limpiarFiltros} className="bg-gray-200 hover:bg-gray-300 px-4 py-2 rounded">
-            Limpiar
-          </button>
-        </div>
-      </div>
-
-      {/* Tabla */}
-      <div className="border rounded-lg bg-white shadow-sm overflow-x-auto">
-        <div className="p-3 border-b flex items-center justify-between">
-          <div className="font-semibold">📋 Cerdas</div>
-          <div className="text-sm text-gray-600">
-            {loading ? 'Cargando…' : `${cerdas.length} registro(s)`}
-          </div>
-        </div>
-
-        <table className="w-full text-sm border-collapse">
-          <thead className="bg-gray-200">
-            <tr>
-              <th className="p-2 text-left">Arete</th>
-              <th className="p-2 text-left">Nombre</th>
-              <th className="p-2 text-left">Estado</th>
-              <th className="p-2 text-left">Ubicación</th>
-              <th className="p-2 text-left">Lote</th>
-              <th className="p-2 text-left">Activa</th>
-              <th className="p-2 text-left">Acciones</th>
-            </tr>
-          </thead>
-          <tbody>
-            {cerdas.map((c) => {
-              const enEdicion = editId === c.id && edit
-              return (
-                <tr key={c.id} className="border-t">
-                  <td className="p-2">
-                    {enEdicion ? (
-                      <input
-                        className="border p-1 w-32"
-                        value={edit.arete}
-                        onChange={(e) => setEdit((p) => (p ? { ...p, arete: e.target.value } : p))}
-                      />
-                    ) : (
-                      c.arete
-                    )}
-                  </td>
-
-                  <td className="p-2">
-                    {enEdicion ? (
-                      <input
-                        className="border p-1 w-48"
-                        value={edit.nombre}
-                        onChange={(e) => setEdit((p) => (p ? { ...p, nombre: e.target.value } : p))}
-                      />
-                    ) : (
-                      c.nombre
-                    )}
-                  </td>
-
-                  <td className="p-2">
-                    {enEdicion ? (
-                      <select
-                        className="border p-1"
-                        value={edit.estado}
-                        onChange={(e) =>
-                          setEdit((p) => (p ? { ...p, estado: e.target.value as CerdaEstado } : p))
-                        }
-                      >
-                        {estados.map((s) => (
-                          <option key={s} value={s}>
-                            {s}
-                          </option>
-                        ))}
-                      </select>
-                    ) : (
-                      c.estado
-                    )}
-                  </td>
-
-                  <td className="p-2">
-                    {enEdicion ? (
-                      <select
-                        className="border p-1"
-                        value={edit.ubicacion_id}
-                        onChange={(e) =>
-                          setEdit((p) => (p ? { ...p, ubicacion_id: e.target.value } : p))
-                        }
-                      >
-                        <option value="">—</option>
-                        {ubicaciones.map((u) => (
-                          <option key={u.id} value={u.id}>
-                            {u.codigo} {u.nombre ? `— ${u.nombre}` : ''}
-                          </option>
-                        ))}
-                      </select>
-                    ) : (
-                      c.granja_ubicaciones?.codigo ?? '—'
-                    )}
-                  </td>
-
-                  <td className="p-2">
-                    {enEdicion ? (
-                      <select
-                        className="border p-1"
-                        value={edit.lote_id}
-                        onChange={(e) => setEdit((p) => (p ? { ...p, lote_id: e.target.value } : p))}
-                      >
-                        <option value="">—</option>
-                        {lotes.map((l) => (
-                          <option key={l.id} value={l.id}>
-                            {l.codigo}
-                          </option>
-                        ))}
-                      </select>
-                    ) : (
-                      c.granja_lotes?.codigo ?? '—'
-                    )}
-                  </td>
-
-                  <td className="p-2">
-                    {enEdicion ? (
-                      <input
-                        type="checkbox"
-                        checked={edit.activa}
-                        onChange={(e) => setEdit((p) => (p ? { ...p, activa: e.target.checked } : p))}
-                      />
-                    ) : c.activa ? (
-                      'Sí'
-                    ) : (
-                      'No'
-                    )}
-                  </td>
-
-                  <td className="p-2">
-                    {enEdicion ? (
-                      <div className="flex gap-2">
-                        <button
-                          className="bg-green-600 hover:bg-green-700 text-white px-2 py-1 rounded text-xs disabled:opacity-60"
-                          onClick={() => guardarEdicion(c.id)}
-                          disabled={guardandoEditId === c.id}
-                        >
-                          {guardandoEditId === c.id ? 'Guardando…' : 'Guardar'}
-                        </button>
-                        <button
-                          className="bg-gray-200 hover:bg-gray-300 px-2 py-1 rounded text-xs"
-                          onClick={cancelarEdicion}
-                        >
-                          Cancelar
-                        </button>
-                      </div>
-                    ) : (
-                      <div className="flex gap-2">
-                        <button
-                          className="bg-slate-700 hover:bg-slate-800 text-white px-2 py-1 rounded text-xs"
-                          onClick={() => empezarEdicion(c)}
-                        >
-                          Editar
-                        </button>
-
-                        <button
-                          className="bg-red-600 hover:bg-red-700 text-white px-2 py-1 rounded text-xs"
-                          onClick={() => bajaLogica(c)}
-                        >
-                          Baja
-                        </button>
-
-                        {/* La ficha la hacemos en el siguiente paso (ruta /granja/cerdas/vista?id=...) */}
-                        <Link
-                          href={`/granja/cerdas/vista?id=${c.id}`}
-                          className="bg-indigo-600 hover:bg-indigo-700 text-white px-2 py-1 rounded text-xs"
-                        >
-                          Ficha
-                        </Link>
-                      </div>
-                    )}
-                  </td>
+          <div className="border rounded overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-gray-100">
+                <tr>
+                  <th className="text-left p-2 border">Areté</th>
+                  <th className="text-left p-2 border">Nombre</th>
+                  <th className="text-left p-2 border">Estado</th>
+                  <th className="text-left p-2 border">Ubicación</th>
+                  <th className="text-left p-2 border">Lote</th>
+                  <th className="text-right p-2 border">Peso (lb)</th>
+                  <th className="text-center p-2 border">Activa</th>
+                  <th className="text-center p-2 border">Acciones</th>
                 </tr>
-              )
-            })}
+              </thead>
 
-            {!loading && cerdas.length === 0 ? (
-              <tr>
-                <td className="p-3 text-gray-600" colSpan={7}>
-                  No hay registros con esos filtros.
-                </td>
-              </tr>
-            ) : null}
-          </tbody>
-        </table>
-      </div>
+              <tbody>
+                {cerdasFiltradas.length === 0 ? (
+                  <tr>
+                    <td className="p-3 text-center text-gray-500" colSpan={8}>
+                      No hay cerdas con esos filtros.
+                    </td>
+                  </tr>
+                ) : (
+                  cerdasFiltradas.map((c) => {
+                    const u = c.ubicacion_id ? ubicMap.get(c.ubicacion_id) : null
+                    const l = c.lote_id ? loteMap.get(c.lote_id) : null
 
-      <div className="mt-6 text-xs text-gray-600">
-        Siguiente paso recomendado: <b>Ficha individual</b> (historial y próximos eventos) en{' '}
-        <code>/granja/cerdas/vista</code> y luego el formulario de <b>Monta/Inseminación</b>.
+                    return (
+                      <tr key={c.id} className="border-t">
+                        <td className="p-2 border font-semibold">{c.arete}</td>
+                        <td className="p-2 border">{c.nombre}</td>
+
+                        <td className="p-2 border">
+                          <select
+                            className="border rounded px-2 py-1 w-full"
+                            value={c.estado}
+                            onChange={async (e) => {
+                              const ok = await actualizarCampo(c, { estado: e.target.value })
+                              if (ok) await cargarDatos()
+                            }}
+                          >
+                            {ESTADOS.map((e) => (
+                              <option key={e} value={e}>
+                                {e}
+                              </option>
+                            ))}
+                          </select>
+                        </td>
+
+                        <td className="p-2 border">
+                          <select
+                            className="border rounded px-2 py-1 w-full"
+                            value={c.ubicacion_id ?? ''}
+                            onChange={async (e) => {
+                              const v = e.target.value
+                              const ok = await actualizarCampo(c, {
+                                ubicacion_id: v ? Number(v) : null,
+                              })
+                              if (ok) await cargarDatos()
+                            }}
+                          >
+                            <option value="">—</option>
+                            {ubicaciones.map((u) => (
+                              <option key={u.id} value={u.id}>
+                                {u.codigo}
+                              </option>
+                            ))}
+                          </select>
+
+                          <div className="text-[11px] text-gray-500 mt-1">
+                            {u ? `${u.codigo} — ${u.nombre || ''}` : '—'}
+                          </div>
+                        </td>
+
+                        <td className="p-2 border">
+                          <select
+                            className="border rounded px-2 py-1 w-full"
+                            value={c.lote_id ?? ''}
+                            onChange={async (e) => {
+                              const v = e.target.value
+                              const ok = await actualizarCampo(c, {
+                                lote_id: v ? Number(v) : null,
+                              })
+                              if (ok) await cargarDatos()
+                            }}
+                          >
+                            <option value="">—</option>
+                            {lotes.map((l) => (
+                              <option key={l.id} value={l.id}>
+                                {l.codigo}
+                              </option>
+                            ))}
+                          </select>
+
+                          <div className="text-[11px] text-gray-500 mt-1">
+                            {l ? `${l.codigo} (${l.tipo_origen})` : '—'}
+                          </div>
+                        </td>
+
+                        <td className="p-2 border text-right">
+                          <input
+                            className="border rounded px-2 py-1 w-24 text-right"
+                            defaultValue={c.peso_lb ?? ''}
+                            placeholder="—"
+                            onBlur={async (e) => {
+                              const raw = e.target.value.trim()
+                              const val = raw ? Number(raw) : null
+                              if (val !== null && (Number.isNaN(val) || val < 0)) {
+                                alert('Peso (lb) inválido.')
+                                e.target.value = String(c.peso_lb ?? '')
+                                return
+                              }
+                              if ((c.peso_lb ?? null) === val) return
+                              const ok = await actualizarCampo(c, { peso_lb: val })
+                              if (ok) await cargarDatos()
+                            }}
+                          />
+                        </td>
+
+                        <td className="p-2 border text-center">
+                          {c.activa ? 'Sí' : 'No'}
+                        </td>
+
+                        <td className="p-2 border text-center">
+                          <div className="flex gap-2 justify-center">
+                            <Link
+                              href={`/granja/hembras/ficha?arete=${encodeURIComponent(c.arete)}`}
+                              className="bg-slate-700 hover:bg-slate-800 text-white px-3 py-1 rounded text-xs"
+                              title="Ficha (próximo paso)"
+                            >
+                              Ficha
+                            </Link>
+                            <button
+                              onClick={() => toggleActiva(c)}
+                              className={`px-3 py-1 rounded text-xs text-white ${
+                                c.activa
+                                  ? 'bg-orange-600 hover:bg-orange-700'
+                                  : 'bg-emerald-600 hover:bg-emerald-700'
+                              }`}
+                            >
+                              {c.activa ? 'Desactivar' : 'Activar'}
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    )
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="text-[11px] text-gray-500 mt-3">
+            La “Ficha” todavía no existe: será la próxima pantalla (historial + eventos próximos).
+          </div>
+        </div>
       </div>
     </div>
   )
