@@ -2,30 +2,16 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
-import { createClient } from '@supabase/supabase-js'
-
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-const supabase = createClient(supabaseUrl, supabaseAnonKey)
-
-type EstadoCerda =
-  | 'VACIA'
-  | 'SERVIDA'
-  | 'PRENADA'
-  | 'LACTANDO'
-  | 'DESTETADA'
-  | 'ABORTO'
-  | 'MUERTA'
-  | 'BAJA'
+import { supabase } from '@/lib/supabaseClient'
 
 type Ubicacion = { id: number; codigo: string; nombre: string | null }
-type Lote = { id: number; codigo: string; activo: boolean | null }
+type Lote = { id: number; codigo: string }
 
 type Cerda = {
   id: number
   arete: string
   nombre: string
-  estado: EstadoCerda
+  estado: string
   ubicacion_id: number | null
   lote_id: number | null
   fecha_nacimiento: string | null
@@ -34,496 +20,579 @@ type Cerda = {
   activa: boolean
   created_at: string
   updated_at: string
-  granja_ubicaciones?: { codigo: string; nombre: string | null } | null
-  granja_lotes?: { codigo: string; activo: boolean | null } | null
 }
 
-function todayISO() {
-  const d = new Date()
-  const yyyy = d.getFullYear()
-  const mm = String(d.getMonth() + 1).padStart(2, '0')
-  const dd = String(d.getDate()).padStart(2, '0')
-  return `${yyyy}-${mm}-${dd}`
-}
-
-function normRel<T>(v: any): T | null {
-  if (!v) return null
-  if (Array.isArray(v)) return (v[0] as T) ?? null
-  return v as T
-}
+const ESTADOS = ['VACIA', 'SERVIDA', 'PRENADA', 'LACTANDO', 'DESTETADA', 'ABORTO', 'MUERTA', 'BAJA']
 
 export default function GranjaCerdasPage() {
-  // catálogos
-  const [ubicaciones, setUbicaciones] = useState<Ubicacion[]>([])
-  const [lotes, setLotes] = useState<Lote[]>([])
-
-  // lista
   const [loading, setLoading] = useState(false)
-  const [cerdas, setCerdas] = useState<Cerda[]>([])
+  const [guardando, setGuardando] = useState(false)
 
-  // filtros
-  const [q, setQ] = useState('')
-  const [fEstado, setFEstado] = useState<string>('TODOS')
-  const [fUbicacion, setFUbicacion] = useState<string>('TODAS')
-  const [incluirInactivas, setIncluirInactivas] = useState(false)
+  // El inventario general de granja se calcula desde `granja_movimientos`.
+  // Si quieres que una acción afecte inventario, debes insertar un movimiento.
+  const registrarMovimiento = useCallback(
+    async (opts: {
+      fecha: string
+      ubicacion_id: number
+      lote_id?: number | null
+      tipo: string
+      cantidad: number
+      referencia_tabla: string
+      referencia_id: number
+      observaciones?: string | null
+    }) => {
+      const { data: u } = await supabase.auth.getUser()
 
-  // form nueva cerda
-  const [arete, setArete] = useState('')
-  const [nombre, setNombre] = useState('')
-  const [estado, setEstado] = useState<EstadoCerda>('VACIA')
-  const [activa, setActiva] = useState(true)
-  const [ubicacionId, setUbicacionId] = useState<string>('')
-  const [loteId, setLoteId] = useState<string>('')
-  const [fechaNac, setFechaNac] = useState<string>('')
-  const [pesoLb, setPesoLb] = useState<string>('') // <- LB
-  const [notas, setNotas] = useState<string>('')
+      const payload = {
+        fecha: opts.fecha,
+        ubicacion_id: opts.ubicacion_id,
+        lote_id: opts.lote_id ?? null,
+        tipo: opts.tipo,
+        cantidad: opts.cantidad,
+        peso_total_kg: null,
+        referencia_tabla: opts.referencia_tabla,
+        referencia_id: opts.referencia_id,
+        user_id: u?.user?.id ?? null,
+        observaciones: opts.observaciones ?? null,
+      }
 
-  // IMPORTANTE: para que sí afecte inventario cuando se crea una cerda
-  const [afectarInventarioAlta, setAfectarInventarioAlta] = useState(true)
-
-  const estados: EstadoCerda[] = useMemo(
-    () => ['VACIA', 'SERVIDA', 'PRENADA', 'LACTANDO', 'DESTETADA', 'ABORTO', 'MUERTA', 'BAJA'],
+      const r = await supabase.from('granja_movimientos').insert([payload])
+      if (r.error) throw r.error
+    },
     []
   )
 
+  const [msg, setMsg] = useState<string | null>(null)
+
+  const [ubicaciones, setUbicaciones] = useState<Ubicacion[]>([])
+  const [lotes, setLotes] = useState<Lote[]>([])
+  const [cerdas, setCerdas] = useState<Cerda[]>([])
+
+  const [form, setForm] = useState({
+    arete: '',
+    nombre: '',
+    estado: 'VACIA',
+    ubicacion_id: '',
+    lote_id: '',
+    fecha_nacimiento: '',
+    peso_lb: '',
+    notas: '',
+    activa: true,
+  })
+
+  const [filtros, setFiltros] = useState({
+    q: '',
+    estado: 'TODAS',
+    ubicacion_id: 'TODAS',
+    incluir_inactivas: false,
+  })
+
+  const estadosSelect = useMemo(() => {
+    return (
+      <select
+        className="w-full border rounded px-2 py-2"
+        value={form.estado}
+        onChange={(e) => setForm((f) => ({ ...f, estado: e.target.value }))}
+      >
+        {ESTADOS.map((s) => (
+          <option key={s} value={s}>
+            {s}
+          </option>
+        ))}
+      </select>
+    )
+  }, [form.estado])
+
   const cargarCatalogos = useCallback(async () => {
-    const uRes = await supabase
-      .from('granja_ubicaciones')
-      .select('id,codigo,nombre')
-      .eq('activa', true)
-      .order('codigo', { ascending: true })
+    const uRes = await supabase.from('granja_ubicaciones').select('id,codigo,nombre').order('codigo')
+    if (!uRes.error) setUbicaciones((uRes.data as Ubicacion[]) || [])
 
-    const lRes = await supabase
-      .from('granja_lotes')
-      .select('id,codigo,activo')
-      .order('codigo', { ascending: true })
-
-    if (!uRes.error) setUbicaciones((uRes.data as any[])?.map((x) => ({ ...x })) ?? [])
-    if (!lRes.error) setLotes((lRes.data as any[])?.map((x) => ({ ...x })) ?? [])
+    const lRes = await supabase.from('granja_lotes').select('id,codigo').order('codigo')
+    if (!lRes.error) setLotes(((lRes.data as any[]) || []).map((x) => ({ id: x.id, codigo: x.codigo })))
   }, [])
 
   const cargarCerdas = useCallback(async () => {
     setLoading(true)
+    setMsg(null)
     try {
-      let query = supabase
+      let q = supabase
         .from('granja_cerdas')
-        .select(
-          `
-          id,arete,nombre,estado,ubicacion_id,lote_id,fecha_nacimiento,peso_lb,notas,activa,created_at,updated_at,
-          granja_ubicaciones ( codigo, nombre ),
-          granja_lotes ( codigo, activo )
-        `
-        )
-        .order('id', { ascending: false })
+        .select('id,arete,nombre,estado,ubicacion_id,lote_id,fecha_nacimiento,peso_lb,notas,activa,created_at,updated_at')
+        .order('arete', { ascending: true })
 
-      if (!incluirInactivas) query = query.eq('activa', true)
-      if (fEstado !== 'TODOS') query = query.eq('estado', fEstado)
-      if (fUbicacion !== 'TODAS') query = query.eq('ubicacion_id', Number(fUbicacion))
-      if (q.trim()) {
-        const qq = q.trim()
-        // busca por arete o nombre
-        query = query.or(`arete.ilike.%${qq}%,nombre.ilike.%${qq}%`)
-      }
+      if (filtros.estado !== 'TODAS') q = q.eq('estado', filtros.estado)
+      if (filtros.ubicacion_id !== 'TODAS') q = q.eq('ubicacion_id', Number(filtros.ubicacion_id))
+      if (!filtros.incluir_inactivas) q = q.eq('activa', true)
 
-      const res = await query
-      if (res.error) {
-        console.error('Error cargando cerdas', res.error)
-        alert('Error cargando cerdas.')
-        return
-      }
+      const s = filtros.q.trim()
+      if (s) q = q.or(`arete.ilike.%${s}%,nombre.ilike.%${s}%`)
 
-      const mapped: Cerda[] =
-        (res.data as any[])?.map((row) => ({
-          id: row.id,
-          arete: row.arete,
-          nombre: row.nombre,
-          estado: row.estado,
-          ubicacion_id: row.ubicacion_id ?? null,
-          lote_id: row.lote_id ?? null,
-          fecha_nacimiento: row.fecha_nacimiento ?? null,
-          peso_lb: row.peso_lb ?? null,
-          notas: row.notas ?? null,
-          activa: !!row.activa,
-          created_at: row.created_at,
-          updated_at: row.updated_at,
-          granja_ubicaciones: normRel(row.granja_ubicaciones),
-          granja_lotes: normRel(row.granja_lotes),
-        })) ?? []
+      const res = await q
+      if (res.error) throw res.error
 
-      setCerdas(mapped)
+      setCerdas((res.data ?? []) as Cerda[])
+    } catch (e: any) {
+      console.error('Error cargando cerdas', e)
+      setMsg(e?.message ?? 'Error cargando cerdas.')
     } finally {
       setLoading(false)
     }
-  }, [fEstado, fUbicacion, incluirInactivas, q])
+  }, [filtros.estado, filtros.incluir_inactivas, filtros.q, filtros.ubicacion_id])
 
   useEffect(() => {
     cargarCatalogos()
     cargarCerdas()
   }, [cargarCatalogos, cargarCerdas])
 
-  const limpiarForm = () => {
-    setArete('')
-    setNombre('')
-    setEstado('VACIA')
-    setActiva(true)
-    setUbicacionId('')
-    setLoteId('')
-    setFechaNac('')
-    setPesoLb('')
-    setNotas('')
-    setAfectarInventarioAlta(true)
+  const resetForm = () => {
+    setForm({
+      arete: '',
+      nombre: '',
+      estado: 'VACIA',
+      ubicacion_id: '',
+      lote_id: '',
+      fecha_nacimiento: '',
+      peso_lb: '',
+      notas: '',
+      activa: true,
+    })
   }
 
-  const guardarCerda = async () => {
-    if (!arete.trim() || !nombre.trim()) {
-      alert('Arete y nombre son obligatorios.')
-      return
-    }
+  const crearCerda = async () => {
+    setMsg(null)
+    try {
+      setGuardando(true)
 
-    const payload: any = {
-      arete: arete.trim(),
-      nombre: nombre.trim(),
-      estado,
-      ubicacion_id: ubicacionId ? Number(ubicacionId) : null,
-      lote_id: loteId ? Number(loteId) : null,
-      fecha_nacimiento: fechaNac ? fechaNac : null,
-      peso_lb: pesoLb.trim() ? Number(pesoLb) : null, // <- LB
-      notas: notas.trim() ? notas.trim() : null,
-      activa,
-      updated_at: new Date().toISOString(),
-    }
+      const arete = form.arete.trim()
+      const nombre = form.nombre.trim()
+      if (!arete) throw new Error('Arete es requerido.')
+      if (!nombre) throw new Error('Nombre es requerido.')
+      if (!form.ubicacion_id) throw new Error('Ubicación es requerida.')
 
-    const ins = await supabase.from('granja_cerdas').insert(payload).select('id').single()
-    if (ins.error) {
-      console.error('Error creando cerda', ins.error)
-      alert('No se pudo crear la cerda (revisa si el arete ya existe).')
-      return
-    }
+      const ubicacionId = Number(form.ubicacion_id)
+      if (!Number.isFinite(ubicacionId)) throw new Error('Ubicación inválida.')
 
-    // +1 inventario si el usuario lo quiere y hay ubicación
-    if (afectarInventarioAlta && ubicacionId) {
-      const { data: u } = await supabase.auth.getUser()
-      const userId = u?.user?.id ?? null
+      const loteId = form.lote_id ? Number(form.lote_id) : null
+      if (form.lote_id && !Number.isFinite(loteId as number)) throw new Error('Lote inválido.')
 
-      const mov = await supabase.from('granja_movimientos').insert({
-        fecha: todayISO(),
-        tipo: 'AJUSTE',
-        ubicacion_id: Number(ubicacionId),
-        lote_id: loteId ? Number(loteId) : null,
-        cantidad: 1,
-        motivo: `ALTA_CERDA arete=${arete.trim()}`,
-        observaciones: `Alta de cerda (cerdas) +1`,
-        referencia_tabla: 'granja_cerdas',
-        referencia_id: ins.data.id,
-        user_id: userId,
-      })
+      const pesoLb = form.peso_lb === '' ? null : Number(String(form.peso_lb).replace(',', '.'))
+      if (pesoLb != null && Number.isNaN(pesoLb)) throw new Error('Peso (lb) inválido.')
 
-      if (mov.error) {
-        console.warn('Cerda creada, pero no se pudo registrar movimiento de inventario:', mov.error)
-        alert('Cerda creada, pero NO se pudo afectar inventario (revisa RLS/policies de granja_movimientos).')
+      const payload = [
+        {
+          arete,
+          nombre,
+          estado: form.estado,
+          ubicacion_id: ubicacionId,
+          lote_id: loteId,
+          fecha_nacimiento: form.fecha_nacimiento || null,
+          peso_lb: pesoLb,
+          notas: form.notas.trim() || null,
+          activa: form.activa,
+        },
+      ]
+
+      const res = await supabase
+        .from('granja_cerdas')
+        .insert(payload)
+        .select('id, ubicacion_id, lote_id')
+        .single()
+
+      if (res.error) throw res.error
+
+      // Afectar inventario (+1) para que se refleje en Inventario por ubicación.
+      if (res.data?.id && res.data?.ubicacion_id) {
+        await registrarMovimiento({
+          fecha: new Date().toISOString().slice(0, 10),
+          ubicacion_id: res.data.ubicacion_id,
+          lote_id: res.data.lote_id ?? null,
+          tipo: 'AJUSTE',
+          cantidad: 1,
+          referencia_tabla: 'granja_cerdas',
+          referencia_id: res.data.id,
+          observaciones: `ALTA CERDA ${arete}`,
+        })
       }
-    }
 
-    alert('Cerda guardada.')
-    limpiarForm()
-    cargarCerdas()
+      setMsg('Cerda guardada.')
+      resetForm()
+      await cargarCerdas()
+    } catch (e: any) {
+      console.error('Error creando cerda', e)
+      setMsg(e?.message ?? 'Error creando cerda.')
+    } finally {
+      setGuardando(false)
+    }
   }
 
-  const actualizarCerda = async (id: number, patch: Partial<Cerda>) => {
-    const upd = await supabase
-      .from('granja_cerdas')
-      .update({ ...patch, updated_at: new Date().toISOString() })
-      .eq('id', id)
-
-    if (upd.error) {
-      console.error('Error actualizando cerda', upd.error)
-      alert('No se pudo actualizar.')
-      return
+  const actualizarCerdaCampo = async (id: number, patch: Partial<Cerda>) => {
+    try {
+      const r = await supabase.from('granja_cerdas').update(patch).eq('id', id)
+      if (r.error) throw r.error
+      setCerdas((prev) => prev.map((c) => (c.id === id ? { ...c, ...patch } : c)))
+    } catch (e) {
+      console.error('Error actualizando cerda', e)
+      setMsg('No se pudo guardar el cambio.')
     }
-    cargarCerdas()
   }
+
+  const ubicMap = useMemo(() => new Map(ubicaciones.map((u) => [u.id, u])), [ubicaciones])
+  const loteMap = useMemo(() => new Map(lotes.map((l) => [l.id, l])), [lotes])
 
   return (
     <div className="p-6 max-w-6xl mx-auto">
-      {/* Logo */}
-      <div className="flex justify-center mb-4">
-        <img src="/logo.png" alt="Logo Empresa" className="h-14" />
+      <div className="flex justify-center mb-6">
+        <img src="/logo.png" alt="Logo Empresa" className="h-16" />
       </div>
 
-      <div className="flex items-center justify-between mb-3">
+      <div className="flex items-start justify-between gap-4 mb-4">
         <div>
           <h1 className="text-2xl font-bold">Granja — Hembras (Cerdas)</h1>
           <p className="text-sm text-gray-600">Registro maestro de cerdas por arete y estado. Peso en libras (lb).</p>
         </div>
 
-        <Link href="/granja" className="text-sm px-3 py-2 rounded bg-slate-700 hover:bg-slate-800 text-white">
-          ⬅ Menú de Granja
+        <Link
+          href="/granja"
+          className="text-sm px-3 py-2 rounded bg-slate-700 hover:bg-slate-800 text-white"
+        >
+          ← Menú de Granja
         </Link>
       </div>
 
+      {msg ? (
+        <div className="mb-4 p-3 rounded border bg-white text-sm">{msg}</div>
+      ) : null}
+
       <div className="grid gap-6 md:grid-cols-2">
-        {/* Nueva cerda */}
+        {/* Formulario */}
         <section className="border rounded-lg p-4 shadow-sm bg-white">
           <h2 className="font-semibold mb-3">Nueva cerda</h2>
 
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="text-xs text-gray-600">Arete (único)</label>
-              <input
-                className="w-full border rounded px-2 py-2"
-                value={arete}
-                onChange={(e) => setArete(e.target.value)}
-                placeholder="Ej: AR1077"
-              />
+          <div className="grid gap-3">
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs text-gray-600">Arete (único)</label>
+                <input
+                  className="w-full border rounded px-2 py-2"
+                  placeholder="Ej: AR1077"
+                  value={form.arete}
+                  onChange={(e) => setForm((f) => ({ ...f, arete: e.target.value }))}
+                />
+              </div>
+
+              <div>
+                <label className="text-xs text-gray-600">Nombre</label>
+                <input
+                  className="w-full border rounded px-2 py-2"
+                  placeholder="Ej: Hembra 1077"
+                  value={form.nombre}
+                  onChange={(e) => setForm((f) => ({ ...f, nombre: e.target.value }))}
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 items-end">
+              <div>
+                <label className="text-xs text-gray-600">Estado</label>
+                {estadosSelect}
+              </div>
+
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={form.activa}
+                  onChange={(e) => setForm((f) => ({ ...f, activa: e.target.checked }))}
+                />
+                Activa
+              </label>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs text-gray-600">Ubicación actual</label>
+                <select
+                  className="w-full border rounded px-2 py-2"
+                  value={form.ubicacion_id}
+                  onChange={(e) => setForm((f) => ({ ...f, ubicacion_id: e.target.value }))}
+                >
+                  <option value="">— Selecciona —</option>
+                  {ubicaciones.map((u) => (
+                    <option key={u.id} value={String(u.id)}>
+                      {u.codigo} — {u.nombre ?? ''}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="text-xs text-gray-600">Lote (opcional)</label>
+                <select
+                  className="w-full border rounded px-2 py-2"
+                  value={form.lote_id}
+                  onChange={(e) => setForm((f) => ({ ...f, lote_id: e.target.value }))}
+                >
+                  <option value="">— Sin lote —</option>
+                  {lotes.map((l) => (
+                    <option key={l.id} value={String(l.id)}>
+                      {l.codigo}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs text-gray-600">Fecha nacimiento (opcional)</label>
+                <input
+                  type="date"
+                  className="w-full border rounded px-2 py-2"
+                  value={form.fecha_nacimiento}
+                  onChange={(e) => setForm((f) => ({ ...f, fecha_nacimiento: e.target.value }))}
+                />
+              </div>
+
+              <div>
+                <label className="text-xs text-gray-600">Peso (lb) (opcional)</label>
+                <input
+                  className="w-full border rounded px-2 py-2"
+                  placeholder="Ej: 420"
+                  value={form.peso_lb}
+                  onChange={(e) => setForm((f) => ({ ...f, peso_lb: e.target.value }))}
+                />
+              </div>
             </div>
 
             <div>
-              <label className="text-xs text-gray-600">Nombre</label>
-              <input
+              <label className="text-xs text-gray-600">Notas (opcional)</label>
+              <textarea
                 className="w-full border rounded px-2 py-2"
-                value={nombre}
-                onChange={(e) => setNombre(e.target.value)}
-                placeholder="Ej: Hembra 1077"
+                placeholder="Observaciones generales de la cerda"
+                rows={4}
+                value={form.notas}
+                onChange={(e) => setForm((f) => ({ ...f, notas: e.target.value }))}
               />
             </div>
 
-            <div>
-              <label className="text-xs text-gray-600">Estado</label>
-              <select className="w-full border rounded px-2 py-2" value={estado} onChange={(e) => setEstado(e.target.value as EstadoCerda)}>
-                {estados.map((s) => (
+            <div className="flex gap-2">
+              <button
+                onClick={crearCerda}
+                disabled={guardando}
+                className="px-4 py-2 rounded bg-emerald-600 hover:bg-emerald-700 text-white disabled:opacity-60"
+              >
+                Guardar cerda
+              </button>
+
+              <button
+                onClick={resetForm}
+                className="px-4 py-2 rounded bg-gray-200 hover:bg-gray-300"
+              >
+                Limpiar
+              </button>
+            </div>
+          </div>
+        </section>
+
+        {/* Lista */}
+        <section className="border rounded-lg p-4 shadow-sm bg-white">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="font-semibold">Cerdas registradas</h2>
+            <button
+              onClick={cargarCerdas}
+              className="px-3 py-2 rounded bg-blue-600 hover:bg-blue-700 text-white text-sm"
+            >
+              🔎 Recargar
+            </button>
+          </div>
+
+          <div className="grid gap-2 mb-3">
+            <div className="grid grid-cols-3 gap-2">
+              <input
+                className="border rounded px-2 py-2 col-span-1"
+                placeholder="Buscar arete o nombre..."
+                value={filtros.q}
+                onChange={(e) => setFiltros((f) => ({ ...f, q: e.target.value }))}
+              />
+
+              <select
+                className="border rounded px-2 py-2"
+                value={filtros.estado}
+                onChange={(e) => setFiltros((f) => ({ ...f, estado: e.target.value }))}
+              >
+                <option value="TODAS">Todos estados</option>
+                {ESTADOS.map((s) => (
                   <option key={s} value={s}>
                     {s}
                   </option>
                 ))}
               </select>
-            </div>
 
-            <div className="flex items-center gap-2 pt-5">
-              <input type="checkbox" checked={activa} onChange={(e) => setActiva(e.target.checked)} />
-              <span className="text-sm">Activa</span>
-            </div>
-
-            <div>
-              <label className="text-xs text-gray-600">Ubicación actual</label>
-              <select className="w-full border rounded px-2 py-2" value={ubicacionId} onChange={(e) => setUbicacionId(e.target.value)}>
-                <option value="">— Selecciona —</option>
+              <select
+                className="border rounded px-2 py-2"
+                value={filtros.ubicacion_id}
+                onChange={(e) => setFiltros((f) => ({ ...f, ubicacion_id: e.target.value }))}
+              >
+                <option value="TODAS">Todas ubicaciones</option>
                 {ubicaciones.map((u) => (
-                  <option key={u.id} value={u.id}>
-                    {u.codigo} {u.nombre ? `— ${u.nombre}` : ''}
+                  <option key={u.id} value={String(u.id)}>
+                    {u.codigo}
                   </option>
                 ))}
               </select>
             </div>
 
-            <div>
-              <label className="text-xs text-gray-600">Lote (opcional)</label>
-              <select className="w-full border rounded px-2 py-2" value={loteId} onChange={(e) => setLoteId(e.target.value)}>
-                <option value="">— Sin lote —</option>
-                {lotes.map((l) => (
-                  <option key={l.id} value={l.id}>
-                    {l.codigo}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div>
-              <label className="text-xs text-gray-600">Fecha nacimiento (opcional)</label>
-              <input className="w-full border rounded px-2 py-2" type="date" value={fechaNac} onChange={(e) => setFechaNac(e.target.value)} />
-            </div>
-
-            <div>
-              <label className="text-xs text-gray-600">Peso (lb) (opcional)</label>
+            <label className="flex items-center gap-2 text-sm">
               <input
-                className="w-full border rounded px-2 py-2"
-                value={pesoLb}
-                onChange={(e) => setPesoLb(e.target.value)}
-                placeholder="Ej: 420"
-                inputMode="decimal"
+                type="checkbox"
+                checked={filtros.incluir_inactivas}
+                onChange={(e) =>
+                  setFiltros((f) => ({ ...f, incluir_inactivas: e.target.checked }))
+                }
               />
-            </div>
-          </div>
+              Incluir inactivas
+            </label>
 
-          <div className="mt-3">
-            <label className="text-xs text-gray-600">Notas (opcional)</label>
-            <textarea className="w-full border rounded px-2 py-2 h-24" value={notas} onChange={(e) => setNotas(e.target.value)} placeholder="Observaciones generales de la cerda" />
-          </div>
-
-          <div className="mt-3 flex items-center gap-2">
-            <input
-              type="checkbox"
-              checked={afectarInventarioAlta}
-              onChange={(e) => setAfectarInventarioAlta(e.target.checked)}
-            />
-            <span className="text-sm">Afectar inventario al crear (+1 en ubicación)</span>
-          </div>
-
-          <div className="mt-4 flex gap-2">
-            <button className="px-4 py-2 rounded bg-emerald-600 hover:bg-emerald-700 text-white" onClick={guardarCerda}>
-              Guardar cerda
-            </button>
-            <button className="px-4 py-2 rounded bg-slate-200 hover:bg-slate-300" onClick={limpiarForm}>
-              Limpiar
-            </button>
-          </div>
-        </section>
-
-        {/* Listado */}
-        <section className="border rounded-lg p-4 shadow-sm bg-white">
-          <div className="flex items-center justify-between mb-3">
-            <h2 className="font-semibold">Cerdas registradas</h2>
-            <button className="text-sm px-3 py-2 rounded bg-blue-600 hover:bg-blue-700 text-white" onClick={cargarCerdas} disabled={loading}>
-              🔄 Recargar
-            </button>
-          </div>
-
-          <div className="grid gap-2 md:grid-cols-3">
-            <input className="border rounded px-2 py-2" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar por arete o nombre..." />
-            <select className="border rounded px-2 py-2" value={fEstado} onChange={(e) => setFEstado(e.target.value)}>
-              <option value="TODOS">Todos estados</option>
-              {estados.map((s) => (
-                <option key={s} value={s}>
-                  {s}
-                </option>
-              ))}
-            </select>
-            <select className="border rounded px-2 py-2" value={fUbicacion} onChange={(e) => setFUbicacion(e.target.value)}>
-              <option value="TODAS">Todas ubicaciones</option>
-              {ubicaciones.map((u) => (
-                <option key={u.id} value={u.id}>
-                  {u.codigo}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div className="flex items-center gap-2 mt-2">
-            <input type="checkbox" checked={incluirInactivas} onChange={(e) => setIncluirInactivas(e.target.checked)} />
-            <span className="text-sm">Incluir inactivas</span>
-
-            <button className="ml-auto text-sm px-3 py-2 rounded bg-slate-700 hover:bg-slate-800 text-white" onClick={cargarCerdas}>
+            <button
+              onClick={cargarCerdas}
+              className="px-3 py-2 rounded bg-slate-700 hover:bg-slate-800 text-white text-sm w-fit"
+            >
               Aplicar filtros
             </button>
           </div>
 
-          <div className="text-xs text-gray-600 mt-2">Mostrando: {cerdas.length}</div>
+          <div className="text-xs text-gray-600 mb-2">
+            {loading ? 'Cargando...' : `Mostrando: ${cerdas.length}`}
+          </div>
 
-          <div className="mt-2 overflow-x-auto border rounded">
-            <table className="min-w-[900px] w-full text-sm">
-              <thead className="bg-slate-100">
+          <div className="border rounded overflow-auto">
+            <table className="min-w-[780px] w-full text-sm">
+              <thead className="bg-gray-100">
                 <tr>
-                  <th className="border px-2 py-2">Arete</th>
-                  <th className="border px-2 py-2">Nombre</th>
-                  <th className="border px-2 py-2">Estado</th>
-                  <th className="border px-2 py-2">Ubicación</th>
-                  <th className="border px-2 py-2">Lote</th>
-                  <th className="border px-2 py-2">Peso (lb)</th>
-                  <th className="border px-2 py-2">Activa</th>
-                  <th className="border px-2 py-2">Acciones</th>
+                  <th className="border px-2 py-2 text-left">Arete</th>
+                  <th className="border px-2 py-2 text-left">Nombre</th>
+                  <th className="border px-2 py-2 text-left">Estado</th>
+                  <th className="border px-2 py-2 text-left">Ubicación</th>
+                  <th className="border px-2 py-2 text-left">Lote</th>
+                  <th className="border px-2 py-2 text-right">Peso (lb)</th>
+                  <th className="border px-2 py-2 text-center">Activa</th>
                 </tr>
               </thead>
               <tbody>
                 {cerdas.length === 0 ? (
                   <tr>
-                    <td className="border px-2 py-3 text-center text-gray-600" colSpan={8}>
-                      {loading ? 'Cargando...' : 'No hay registros con esos filtros.'}
+                    <td className="border px-2 py-4 text-center text-gray-600" colSpan={7}>
+                      No hay registros con esos filtros.
                     </td>
                   </tr>
                 ) : (
-                  cerdas.map((c) => (
-                    <tr key={c.id}>
-                      <td className="border px-2 py-2">{c.arete}</td>
-                      <td className="border px-2 py-2">
-                        <input
-                          className="border rounded px-2 py-1 w-full"
-                          defaultValue={c.nombre}
-                          onBlur={(e) => {
-                            const v = e.target.value.trim()
-                            if (v && v !== c.nombre) actualizarCerda(c.id, { nombre: v })
-                          }}
-                        />
-                      </td>
-                      <td className="border px-2 py-2">
-                        <select
-                          className="border rounded px-2 py-1"
-                          value={c.estado}
-                          onChange={(e) => actualizarCerda(c.id, { estado: e.target.value as EstadoCerda })}
-                        >
-                          {estados.map((s) => (
-                            <option key={s} value={s}>
-                              {s}
-                            </option>
-                          ))}
-                        </select>
-                      </td>
-                      <td className="border px-2 py-2">
-                        <select
-                          className="border rounded px-2 py-1"
-                          value={c.ubicacion_id ?? ''}
-                          onChange={(e) => actualizarCerda(c.id, { ubicacion_id: e.target.value ? Number(e.target.value) : null })}
-                        >
-                          <option value="">—</option>
-                          {ubicaciones.map((u) => (
-                            <option key={u.id} value={u.id}>
-                              {u.codigo}
-                            </option>
-                          ))}
-                        </select>
-                        <div className="text-[11px] text-gray-600">
-                          {c.granja_ubicaciones?.codigo ? `${c.granja_ubicaciones.codigo} — ${c.granja_ubicaciones.nombre ?? ''}` : ''}
-                        </div>
-                      </td>
-                      <td className="border px-2 py-2">
-                        <select
-                          className="border rounded px-2 py-1"
-                          value={c.lote_id ?? ''}
-                          onChange={(e) => actualizarCerda(c.id, { lote_id: e.target.value ? Number(e.target.value) : null })}
-                        >
-                          <option value="">—</option>
-                          {lotes.map((l) => (
-                            <option key={l.id} value={l.id}>
-                              {l.codigo}
-                            </option>
-                          ))}
-                        </select>
-                      </td>
-                      <td className="border px-2 py-2">
-                        <input
-                          className="border rounded px-2 py-1 w-24"
-                          defaultValue={c.peso_lb ?? ''}
-                          inputMode="decimal"
-                          onBlur={(e) => {
-                            const raw = e.target.value.trim()
-                            const n = raw ? Number(raw) : null
-                            if ((n ?? null) !== (c.peso_lb ?? null)) actualizarCerda(c.id, { peso_lb: n })
-                          }}
-                        />
-                      </td>
-                      <td className="border px-2 py-2 text-center">
-                        <input
-                          type="checkbox"
-                          checked={c.activa}
-                          onChange={(e) => actualizarCerda(c.id, { activa: e.target.checked })}
-                        />
-                      </td>
-                      <td className="border px-2 py-2">
-                        <Link
-                          className="text-xs px-3 py-2 rounded bg-slate-700 hover:bg-slate-800 text-white inline-block"
-                          href={`/granja/cerdas/evento?cerda_id=${c.id}`}
-                        >
-                          Eventos
-                        </Link>
-                      </td>
-                    </tr>
-                  ))
+                  cerdas.map((c) => {
+                    const u = c.ubicacion_id ? ubicMap.get(c.ubicacion_id) : null
+                    const l = c.lote_id ? loteMap.get(c.lote_id) : null
+
+                    return (
+                      <tr key={c.id} className="hover:bg-gray-50">
+                        <td className="border px-2 py-2">{c.arete}</td>
+                        <td className="border px-2 py-2">{c.nombre}</td>
+
+                        <td className="border px-2 py-2">
+                          <select
+                            className="border rounded px-2 py-1"
+                            value={c.estado}
+                            onChange={(e) => actualizarCerdaCampo(c.id, { estado: e.target.value })}
+                          >
+                            {ESTADOS.map((s) => (
+                              <option key={s} value={s}>
+                                {s}
+                              </option>
+                            ))}
+                          </select>
+                        </td>
+
+                        <td className="border px-2 py-2">
+                          <select
+                            className="border rounded px-2 py-1"
+                            value={c.ubicacion_id ?? ''}
+                            onChange={(e) =>
+                              actualizarCerdaCampo(c.id, {
+                                ubicacion_id: e.target.value ? Number(e.target.value) : null,
+                              })
+                            }
+                          >
+                            <option value="">—</option>
+                            {ubicaciones.map((uu) => (
+                              <option key={uu.id} value={String(uu.id)}>
+                                {uu.codigo}
+                              </option>
+                            ))}
+                          </select>
+                          {u ? (
+                            <div className="text-[11px] text-gray-500">
+                              {u.codigo} — {u.nombre ?? ''}
+                            </div>
+                          ) : null}
+                        </td>
+
+                        <td className="border px-2 py-2">
+                          <select
+                            className="border rounded px-2 py-1"
+                            value={c.lote_id ?? ''}
+                            onChange={(e) =>
+                              actualizarCerdaCampo(c.id, {
+                                lote_id: e.target.value ? Number(e.target.value) : null,
+                              })
+                            }
+                          >
+                            <option value="">—</option>
+                            {lotes.map((ll) => (
+                              <option key={ll.id} value={String(ll.id)}>
+                                {ll.codigo}
+                              </option>
+                            ))}
+                          </select>
+                          {l ? <div className="text-[11px] text-gray-500">{l.codigo}</div> : null}
+                        </td>
+
+                        <td className="border px-2 py-2 text-right">
+                          <input
+                            className="border rounded px-2 py-1 w-24 text-right"
+                            value={c.peso_lb ?? ''}
+                            onChange={(e) => {
+                              const v = e.target.value
+                              setCerdas((prev) =>
+                                prev.map((x) =>
+                                  x.id === c.id
+                                    ? { ...x, peso_lb: v === '' ? null : Number(v.replace(',', '.')) }
+                                    : x
+                                )
+                              )
+                            }}
+                            onBlur={(e) => {
+                              const v = e.target.value
+                              actualizarCerdaCampo(c.id, {
+                                peso_lb: v === '' ? null : Number(v.replace(',', '.')),
+                              })
+                            }}
+                          />
+                        </td>
+
+                        <td className="border px-2 py-2 text-center">
+                          <input
+                            type="checkbox"
+                            checked={!!c.activa}
+                            onChange={(e) => actualizarCerdaCampo(c.id, { activa: e.target.checked })}
+                          />
+                        </td>
+                      </tr>
+                    )
+                  })
                 )}
               </tbody>
             </table>
           </div>
 
-          <div className="text-xs text-gray-500 mt-2">
-            La “Ficha” será la próxima pantalla (historial + eventos próximos).
-          </div>
+          <p className="text-xs text-gray-500 mt-2">
+            La “Ficha” todavía no existe: será la próxima pantalla (historial + eventos próximos).
+          </p>
         </section>
       </div>
     </div>
