@@ -7,14 +7,23 @@ import { supabase } from '@/lib/supabaseClient'
 type Cerda = {
   id: number
   arete: string
-  nombre: string
+  nombre: string | null
   estado: string
   ubicacion_id: number | null
   lote_id: number | null
+  activa: boolean
 }
 
-type Ubicacion = { id: number; codigo: string; nombre: string | null }
-type Lote = { id: number; codigo: string }
+type Ubicacion = {
+  id: number
+  codigo: string
+  nombre: string | null
+}
+
+type Lote = {
+  id: number
+  codigo: string
+}
 
 type TipoEvento =
   | 'MONTA'
@@ -25,99 +34,148 @@ type TipoEvento =
   | 'ABORTO'
   | 'MEDICACION'
   | 'MUERTE'
+  | 'DESCARTE'
+
+type EventoHistorial = {
+  id: number
+  tipo: string
+  fecha: string
+  resultado: string | null
+}
+
+type EventoVista = {
+  id: number
+  fecha: string
+  tipo: string
+  resultado: string | null
+  arete: string | null
+  cerda_nombre: string | null
+}
 
 const TIPOS: { value: TipoEvento; label: string }[] = [
-  { value: 'MONTA', label: 'Monta (natural)' },
-  { value: 'INSEMINACION', label: 'Inseminación (artificial)' },
-  { value: 'REVISION_EMBARAZO', label: 'Revisión embarazo (día 21)' },
-  { value: 'PARTO', label: 'Parto (día 115)' },
-  { value: 'DESTETE', label: 'Destete (21–28 días)' },
+  { value: 'MONTA', label: 'Monta natural' },
+  { value: 'INSEMINACION', label: 'Inseminación artificial' },
+  { value: 'REVISION_EMBARAZO', label: 'Revisión de embarazo' },
+  { value: 'PARTO', label: 'Parto' },
+  { value: 'DESTETE', label: 'Destete' },
   { value: 'ABORTO', label: 'Aborto' },
   { value: 'MEDICACION', label: 'Medicación' },
   { value: 'MUERTE', label: 'Muerte' },
+  { value: 'DESCARTE', label: 'Descarte / baja' },
 ]
+
+const EVENTOS_QUE_CIERRAN_CICLO = ['PARTO', 'DESTETE', 'ABORTO', 'MUERTE', 'DESCARTE']
 
 export default function GranjaCerdasEventosPage() {
   const [loading, setLoading] = useState(false)
+  const [guardando, setGuardando] = useState(false)
   const [msg, setMsg] = useState<string | null>(null)
 
   const [cerdas, setCerdas] = useState<Cerda[]>([])
   const [ubicaciones, setUbicaciones] = useState<Ubicacion[]>([])
   const [lotes, setLotes] = useState<Lote[]>([])
 
-  const [cerdaId, setCerdaId] = useState<string>('')
-  const [fecha, setFecha] = useState<string>(() => new Date().toISOString().slice(0, 10))
+  const [cerdaId, setCerdaId] = useState('')
+  const [fecha, setFecha] = useState(() => new Date().toISOString().slice(0, 10))
   const [tipo, setTipo] = useState<TipoEvento>('MONTA')
-  const [resultado, setResultado] = useState<string>('') // REVISION_EMBARAZO
-  const [ubicacionId, setUbicacionId] = useState<string>('') // opcional
-  const [loteId, setLoteId] = useState<string>('') // opcional
-  const [macho, setMacho] = useState<string>('') // MONTA / INSEMINACION
-  const [obs, setObs] = useState<string>('')
+  const [resultado, setResultado] = useState('')
+  const [ubicacionId, setUbicacionId] = useState('')
+  const [loteId, setLoteId] = useState('')
+  const [macho, setMacho] = useState('')
+  const [obs, setObs] = useState('')
 
-  const [nacidosVivos, setNacidosVivos] = useState<string>('') // PARTO
-  const [nacidosMuertos, setNacidosMuertos] = useState<string>('') // PARTO
-  const [momias, setMomias] = useState<string>('') // PARTO
+  const [nacidosVivos, setNacidosVivos] = useState('')
+  const [nacidosMuertos, setNacidosMuertos] = useState('')
+  const [momias, setMomias] = useState('')
 
-  const [medNombre, setMedNombre] = useState<string>('') // MEDICACION
-  const [medDosis, setMedDosis] = useState<string>('') // MEDICACION
-  const [medProxFecha, setMedProxFecha] = useState<string>('') // MEDICACION
+  const [medNombre, setMedNombre] = useState('')
+  const [medDosis, setMedDosis] = useState('')
+  const [medProxFecha, setMedProxFecha] = useState('')
 
-  // Para afectar el inventario general, hay que registrar movimientos en granja_movimientos.
-  const registrarMovimiento = async (opts: {
-    fecha: string
-    ubicacion_id: number
-    lote_id?: number | null
-    tipo: string
-    cantidad: number
-    referencia_tabla: string
-    referencia_id: number
-    observaciones?: string | null
-  }) => {
-    const { data: u } = await supabase.auth.getUser()
-    const payload = {
-      fecha: opts.fecha,
-      ubicacion_id: opts.ubicacion_id,
-      lote_id: opts.lote_id ?? null,
-      tipo: opts.tipo,
-      cantidad: opts.cantidad,
-      peso_total_kg: null,
-      referencia_tabla: opts.referencia_tabla,
-      referencia_id: opts.referencia_id,
-      user_id: u?.user?.id ?? null,
-      observaciones: opts.observaciones ?? null,
-    }
-    const r = await supabase.from('granja_movimientos').insert([payload])
-    if (r.error) throw r.error
-  }
-
-  const [fDesde, setFDesde] = useState<string>(() => {
+  const [fDesde, setFDesde] = useState(() => {
     const d = new Date()
     d.setDate(d.getDate() - 14)
     return d.toISOString().slice(0, 10)
   })
-  const [fHasta, setFHasta] = useState<string>(() => new Date().toISOString().slice(0, 10))
-  const [fQ, setFQ] = useState<string>('')
-  const [fTipo, setFTipo] = useState<string>('TODOS')
+  const [fHasta, setFHasta] = useState(() => new Date().toISOString().slice(0, 10))
+  const [fQ, setFQ] = useState('')
+  const [fTipo, setFTipo] = useState('TODOS')
 
-  const [eventos, setEventos] = useState<any[]>([])
+  const [eventos, setEventos] = useState<EventoVista[]>([])
+
+  const cerdaSeleccionada = useMemo(() => {
+    const id = Number(cerdaId)
+    if (!id) return null
+    return cerdas.find((c) => c.id === id) ?? null
+  }, [cerdaId, cerdas])
+
+  const fechasSugeridas = useMemo(() => {
+    if (!fecha) return { revision: '', parto: '' }
+
+    const base = new Date(`${fecha}T00:00:00`)
+    const revision = new Date(base)
+    const parto = new Date(base)
+
+    revision.setDate(revision.getDate() + 21)
+    parto.setDate(parto.getDate() + 115)
+
+    return {
+      revision: revision.toISOString().slice(0, 10),
+      parto: parto.toISOString().slice(0, 10),
+    }
+  }, [fecha])
+
+  const estadoSugerido = useMemo(() => {
+    if (tipo === 'MONTA' || tipo === 'INSEMINACION') return 'SERVIDA'
+
+    if (tipo === 'REVISION_EMBARAZO') {
+      if (resultado === 'POSITIVO') return 'PRENADA'
+      if (resultado === 'NEGATIVO') return 'VACIA'
+      return ''
+    }
+
+    if (tipo === 'PARTO') return 'LACTANDO'
+    if (tipo === 'DESTETE') return 'DESTETADA'
+    if (tipo === 'ABORTO') return 'ABORTO'
+    if (tipo === 'MUERTE') return 'MUERTA'
+    if (tipo === 'DESCARTE') return 'BAJA'
+
+    return ''
+  }, [tipo, resultado])
 
   const cargarCatalogos = async () => {
     const cRes = await supabase
       .from('granja_cerdas')
-      .select('id,arete,nombre,estado,ubicacion_id,lote_id')
+      .select('id,arete,nombre,estado,ubicacion_id,lote_id,activa')
       .order('arete', { ascending: true })
-    if (!cRes.error) setCerdas((cRes.data as Cerda[]) || [])
 
-    const uRes = await supabase.from('granja_ubicaciones').select('id,codigo,nombre').order('codigo')
-    if (!uRes.error) setUbicaciones((uRes.data as Ubicacion[]) || [])
+    if (!cRes.error) {
+      setCerdas((cRes.data ?? []) as Cerda[])
+    }
 
-    const lRes = await supabase.from('granja_lotes').select('id,codigo').order('codigo')
-    if (!lRes.error) setLotes(((lRes.data as any[]) || []).map((x) => ({ id: x.id, codigo: x.codigo })))
+    const uRes = await supabase
+      .from('granja_ubicaciones')
+      .select('id,codigo,nombre')
+      .order('codigo', { ascending: true })
+
+    if (!uRes.error) {
+      setUbicaciones((uRes.data ?? []) as Ubicacion[])
+    }
+
+    const lRes = await supabase
+      .from('granja_lotes')
+      .select('id,codigo')
+      .order('codigo', { ascending: true })
+
+    if (!lRes.error) {
+      setLotes((lRes.data ?? []) as Lote[])
+    }
   }
 
   const cargarEventos = async () => {
     setLoading(true)
     setMsg(null)
+
     try {
       let q = supabase
         .from('v_granja_cerda_eventos')
@@ -127,18 +185,23 @@ export default function GranjaCerdasEventosPage() {
         .order('fecha', { ascending: false })
         .limit(500)
 
-      if (fTipo !== 'TODOS') q = q.eq('tipo', fTipo)
+      if (fTipo !== 'TODOS') {
+        q = q.eq('tipo', fTipo)
+      }
+
       if (fQ.trim()) {
         const s = fQ.trim()
         q = q.or(`arete.ilike.%${s}%,cerda_nombre.ilike.%${s}%`)
       }
 
-      const r = await q
-      if (r.error) throw r.error
-      setEventos(r.data || [])
-    } catch (e: any) {
-      console.error(e)
-      setMsg(e?.message ?? 'Error cargando eventos.')
+      const res = await q
+
+      if (res.error) throw res.error
+
+      setEventos((res.data ?? []) as EventoVista[])
+    } catch (error) {
+      console.error('Error cargando eventos', error)
+      setMsg('Error cargando eventos.')
     } finally {
       setLoading(false)
     }
@@ -149,42 +212,6 @@ export default function GranjaCerdasEventosPage() {
     cargarEventos()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
-
-  const cerdaSel = useMemo(() => {
-    const id = Number(cerdaId)
-    if (!id) return null
-    return cerdas.find((c) => c.id === id) ?? null
-  }, [cerdaId, cerdas])
-
-  const fechasSugeridas = useMemo(() => {
-    if (!fecha) return { rev: '', parto: '' }
-    const d = new Date(fecha + 'T00:00:00')
-    const rev = new Date(d)
-    rev.setDate(rev.getDate() + 21)
-
-    const parto = new Date(d)
-    parto.setDate(parto.getDate() + 115)
-
-    return {
-      rev: rev.toISOString().slice(0, 10),
-      parto: parto.toISOString().slice(0, 10),
-    }
-  }, [fecha])
-
-  const estadoSugerido = useMemo(() => {
-    if (!tipo) return ''
-    if (tipo === 'MONTA' || tipo === 'INSEMINACION') return 'SERVIDA'
-    if (tipo === 'REVISION_EMBARAZO') {
-      if (resultado === 'POSITIVO') return 'PRENADA'
-      if (resultado === 'NEGATIVO') return 'VACIA'
-      return ''
-    }
-    if (tipo === 'PARTO') return 'LACTANDO'
-    if (tipo === 'DESTETE') return 'DESTETADA'
-    if (tipo === 'ABORTO') return 'ABORTO'
-    if (tipo === 'MUERTE') return 'MUERTA'
-    return ''
-  }, [tipo, resultado])
 
   const limpiar = () => {
     setCerdaId('')
@@ -203,159 +230,281 @@ export default function GranjaCerdasEventosPage() {
     setMedProxFecha('')
   }
 
-  const guardarEvento = async () => {
-    setMsg(null)
-
-    if (!cerdaId) {
-      alert('Selecciona una cerda.')
-      return
-    }
-    if (!fecha) {
-      alert('Selecciona la fecha.')
-      return
-    }
-    if (!tipo) {
-      alert('Selecciona el tipo.')
-      return
-    }
-
-    const { data: userData } = await supabase.auth.getUser()
-    const userId = userData?.user?.id ?? null
-
-    // Validaciones de flujo (evitar eventos ilógicos)
-    const h = await supabase
+  const obtenerHistorial = async (idCerda: number) => {
+    const res = await supabase
       .from('granja_cerda_eventos')
       .select('id,tipo,fecha,resultado')
-      .eq('cerda_id', cerdaId)
+      .eq('cerda_id', idCerda)
       .order('fecha', { ascending: false })
       .order('id', { ascending: false })
-      .limit(200)
-    if (h.error) {
-      alert(h.error.message)
-      return
-    }
-    const hist = h.data || []
-    const tieneMonta = hist.some((e) => e.tipo === 'MONTA' || e.tipo === 'INSEMINACION')
-    const tieneParto = hist.some((e) => e.tipo === 'PARTO')
+      .limit(300)
 
-    if (tipo === 'REVISION_EMBARAZO' && !tieneMonta) {
-      alert('No puedes registrar revisión de embarazo sin una monta/inseminación previa.')
-      return
-    }
-    if (tipo === 'PARTO' && !tieneMonta) {
-      alert('No puedes registrar parto sin una monta/inseminación previa.')
-      return
-    }
-    if (tipo === 'DESTETE' && !tieneParto) {
-      alert('No puedes registrar destete sin un parto previo.')
-      return
-    }
-    if (tipo === 'REVISION_EMBARAZO' && resultado !== 'POSITIVO' && resultado !== 'NEGATIVO') {
-      alert('En revisión de embarazo el resultado debe ser POSITIVO o NEGATIVO.')
-      return
+    if (res.error) throw res.error
+
+    return (res.data ?? []) as EventoHistorial[]
+  }
+
+  const existeEventoDespuesDeCorte = (
+    historial: EventoHistorial[],
+    tiposBuscados: string[],
+    tiposCorte: string[]
+  ) => {
+    for (const evento of historial) {
+      if (tiposBuscados.includes(evento.tipo)) return true
+      if (tiposCorte.includes(evento.tipo)) return false
     }
 
-    const datos: any = {}
+    return false
+  }
 
-    if (tipo === 'MONTA' || tipo === 'INSEMINACION') {
-      datos.macho = macho.trim() || null
+  const ultimaRevisionDespuesDeServicio = (historial: EventoHistorial[]) => {
+    for (const evento of historial) {
+      if (evento.tipo === 'REVISION_EMBARAZO') return evento.resultado
+      if (evento.tipo === 'MONTA' || evento.tipo === 'INSEMINACION') return null
+      if (EVENTOS_QUE_CIERRAN_CICLO.includes(evento.tipo)) return null
+    }
+
+    return null
+  }
+
+  const validarFlujo = (historial: EventoHistorial[]) => {
+    const tieneServicioVigente = existeEventoDespuesDeCorte(
+      historial,
+      ['MONTA', 'INSEMINACION'],
+      EVENTOS_QUE_CIERRAN_CICLO
+    )
+
+    const tienePartoVigente = existeEventoDespuesDeCorte(
+      historial,
+      ['PARTO'],
+      ['DESTETE', 'MUERTE', 'DESCARTE']
+    )
+
+    if (tipo === 'REVISION_EMBARAZO' && !tieneServicioVigente) {
+      throw new Error('No puedes registrar revisión de embarazo sin una monta o inseminación previa.')
+    }
+
+    if (tipo === 'PARTO' && !tieneServicioVigente) {
+      throw new Error('No puedes registrar parto sin una monta o inseminación previa.')
     }
 
     if (tipo === 'PARTO') {
-      const v = nacidosVivos === '' ? 0 : Number(nacidosVivos)
-      const m = nacidosMuertos === '' ? 0 : Number(nacidosMuertos)
-      const mo = momias === '' ? 0 : Number(momias)
-      if (Number.isNaN(v) || Number.isNaN(m) || Number.isNaN(mo)) {
-        alert('Valores de parto inválidos.')
-        return
+      const revision = ultimaRevisionDespuesDeServicio(historial)
+
+      if (revision === 'NEGATIVO') {
+        throw new Error('No puedes registrar parto porque la última revisión de embarazo fue NEGATIVA.')
       }
-      datos.nacidos_vivos = v
-      datos.nacidos_muertos = m
-      datos.momias = mo
-      datos.total = v + m + mo
     }
 
-    if (tipo === 'MEDICACION') {
-      if (!medNombre.trim()) {
-        alert('Nombre del medicamento es requerido.')
-        return
-      }
-      datos.medicamento = medNombre.trim()
-      datos.dosis = medDosis.trim() || null
-      datos.proxima_fecha = medProxFecha || null
+    if (tipo === 'DESTETE' && !tienePartoVigente) {
+      throw new Error('No puedes registrar destete sin un parto previo.')
     }
 
-    const payload = {
-      cerda_id: Number(cerdaId),
-      fecha,
-      tipo,
-      resultado: resultado || null,
-      observaciones: obs.trim() || null,
-      datos,
-      user_id: userId,
+    if (tipo === 'REVISION_EMBARAZO' && resultado !== 'POSITIVO' && resultado !== 'NEGATIVO') {
+      throw new Error('Selecciona POSITIVO o NEGATIVO en la revisión de embarazo.')
     }
 
-    const ins = await supabase.from('granja_cerda_eventos').insert(payload).select('id').single()
-
-    if (ins.error) {
-      console.error('Error guardando evento', ins.error)
-      alert('No se pudo guardar el evento.')
-      return
+    if ((tipo === 'MUERTE' || tipo === 'DESCARTE') && cerdaSeleccionada?.activa === false) {
+      throw new Error('Esta cerda ya está inactiva.')
     }
+  }
 
-    // Inventario: solo algunos eventos afectan conteo general.
-    // - MUERTE: resta 1 en la ubicación
-    // - PARTO: suma nacidos vivos en la ubicación
+  const crearMovimientoInventario = async (opts: {
+    fecha: string
+    ubicacion_id: number
+    lote_id: number | null
+    tipo: 'ENTRADA_PARTO' | 'SALIDA_MUERTE' | 'AJUSTE'
+    cantidad: number
+    referencia_id: number
+    observaciones: string
+  }) => {
+    const { data: userData } = await supabase.auth.getUser()
+
+    const res = await supabase.from('granja_movimientos').insert([
+      {
+        fecha: opts.fecha,
+        ubicacion_id: opts.ubicacion_id,
+        lote_id: opts.lote_id,
+        tipo: opts.tipo,
+        cantidad: opts.cantidad,
+        hembras: null,
+        machos: null,
+        peso_total_kg: null,
+        referencia_tabla: 'granja_cerda_eventos',
+        referencia_id: opts.referencia_id,
+        user_id: userData?.user?.id ?? null,
+        observaciones: opts.observaciones,
+      },
+    ])
+
+    if (res.error) throw res.error
+  }
+
+  const guardarEvento = async () => {
+    setMsg(null)
+
     try {
-      const c = cerdas.find((x) => x.id === Number(cerdaId))
-      const ubicacionFinal = ubicacionId ? Number(ubicacionId) : c?.ubicacion_id
-      const loteFinal = loteId ? Number(loteId) : c?.lote_id
+      setGuardando(true)
 
-      if (tipo === 'MUERTE' && ubicacionFinal) {
-        await registrarMovimiento({
-          fecha,
-          ubicacion_id: ubicacionFinal,
-          lote_id: loteFinal ?? null,
-          tipo: 'SALIDA_MUERTE',
-          cantidad: -1,
-          referencia_tabla: 'granja_cerda_eventos',
-          referencia_id: ins.data.id,
-          observaciones: 'MUERTE (cerdas)',
-        })
+      if (!cerdaId) throw new Error('Selecciona una cerda.')
+      if (!fecha) throw new Error('Selecciona la fecha.')
+      if (!tipo) throw new Error('Selecciona el tipo de evento.')
+      if (!cerdaSeleccionada) throw new Error('La cerda seleccionada no existe o no cargó correctamente.')
+
+      const idCerda = Number(cerdaId)
+      const historial = await obtenerHistorial(idCerda)
+
+      validarFlujo(historial)
+
+      const datos: Record<string, string | number | null> = {}
+
+      if (tipo === 'MONTA' || tipo === 'INSEMINACION') {
+        datos.macho = macho.trim() || null
       }
 
-      if (tipo === 'PARTO' && ubicacionFinal) {
-        const vivos = Number(datos?.nacidos_vivos ?? 0)
-        if (vivos > 0) {
-          await registrarMovimiento({
+      if (tipo === 'PARTO') {
+        const vivos = nacidosVivos === '' ? 0 : Number(nacidosVivos)
+        const muertos = nacidosMuertos === '' ? 0 : Number(nacidosMuertos)
+        const momiasNum = momias === '' ? 0 : Number(momias)
+
+        if (!Number.isFinite(vivos) || vivos < 0) throw new Error('Nacidos vivos inválido.')
+        if (!Number.isFinite(muertos) || muertos < 0) throw new Error('Nacidos muertos inválido.')
+        if (!Number.isFinite(momiasNum) || momiasNum < 0) throw new Error('Momias inválido.')
+
+        datos.nacidos_vivos = vivos
+        datos.nacidos_muertos = muertos
+        datos.momias = momiasNum
+        datos.total = vivos + muertos + momiasNum
+      }
+
+      if (tipo === 'MEDICACION') {
+        if (!medNombre.trim()) throw new Error('El nombre del medicamento es requerido.')
+
+        datos.medicamento = medNombre.trim()
+        datos.dosis = medDosis.trim() || null
+        datos.proxima_fecha = medProxFecha || null
+      }
+
+      const ubicacionFinal = ubicacionId
+        ? Number(ubicacionId)
+        : cerdaSeleccionada.ubicacion_id
+
+      const loteFinal = loteId
+        ? Number(loteId)
+        : cerdaSeleccionada.lote_id
+
+      if ((tipo === 'PARTO' || tipo === 'MUERTE' || tipo === 'DESCARTE') && !ubicacionFinal) {
+        throw new Error('Este evento necesita una ubicación para afectar inventario.')
+      }
+
+      const { data: userData } = await supabase.auth.getUser()
+
+      const insertEvento = await supabase
+        .from('granja_cerda_eventos')
+        .insert([
+          {
+            cerda_id: idCerda,
+            fecha,
+            tipo,
+            resultado: resultado || null,
+            ubicacion_id: ubicacionFinal ?? null,
+            lote_id: loteFinal ?? null,
+            datos,
+            observaciones: obs.trim() || null,
+            user_id: userData?.user?.id ?? null,
+          },
+        ])
+        .select('id')
+        .single()
+
+      if (insertEvento.error) throw insertEvento.error
+
+      const eventoId = Number(insertEvento.data.id)
+
+      try {
+        if (tipo === 'PARTO') {
+          const vivos = Number(datos.nacidos_vivos ?? 0)
+
+          if (vivos > 0 && ubicacionFinal) {
+            await crearMovimientoInventario({
+              fecha,
+              ubicacion_id: ubicacionFinal,
+              lote_id: loteFinal ?? null,
+              tipo: 'ENTRADA_PARTO',
+              cantidad: vivos,
+              referencia_id: eventoId,
+              observaciones: `PARTO CERDA ${cerdaSeleccionada.arete}`,
+            })
+          }
+        }
+
+        if (tipo === 'MUERTE' && ubicacionFinal) {
+          await crearMovimientoInventario({
             fecha,
             ubicacion_id: ubicacionFinal,
             lote_id: loteFinal ?? null,
-            tipo: 'ENTRADA_PARTO',
-            cantidad: vivos,
-            referencia_tabla: 'granja_cerda_eventos',
-            referencia_id: ins.data.id,
-            observaciones: 'PARTO (cerdas)',
+            tipo: 'SALIDA_MUERTE',
+            cantidad: 1,
+            referencia_id: eventoId,
+            observaciones: `MUERTE CERDA ${cerdaSeleccionada.arete}`,
           })
         }
+
+        if (tipo === 'DESCARTE' && ubicacionFinal) {
+          await crearMovimientoInventario({
+            fecha,
+            ubicacion_id: ubicacionFinal,
+            lote_id: loteFinal ?? null,
+            tipo: 'AJUSTE',
+            cantidad: -1,
+            referencia_id: eventoId,
+            observaciones: `DESCARTE CERDA ${cerdaSeleccionada.arete}`,
+          })
+        }
+      } catch (movError) {
+        await supabase.from('granja_cerda_eventos').delete().eq('id', eventoId)
+        throw movError
       }
-    } catch (e) {
-      console.warn('Evento guardado, pero no se pudo afectar inventario:', e)
+
+      const patchCerda: Partial<Cerda> = {}
+
+      if (estadoSugerido) {
+        patchCerda.estado = estadoSugerido
+      }
+
+      if (ubicacionId) {
+        patchCerda.ubicacion_id = Number(ubicacionId)
+      }
+
+      if (loteId) {
+        patchCerda.lote_id = Number(loteId)
+      }
+
+      if (tipo === 'MUERTE' || tipo === 'DESCARTE') {
+        patchCerda.activa = false
+      }
+
+      if (Object.keys(patchCerda).length > 0) {
+        const updateCerda = await supabase
+          .from('granja_cerdas')
+          .update(patchCerda)
+          .eq('id', idCerda)
+
+        if (updateCerda.error) throw updateCerda.error
+      }
+
+      setMsg('Evento guardado correctamente.')
+      await cargarCatalogos()
+      await cargarEventos()
+      limpiar()
+    } catch (error) {
+      console.error('Error guardando evento', error)
+      const message = error instanceof Error ? error.message : 'No se pudo guardar el evento.'
+      setMsg(message)
+      alert(message)
+    } finally {
+      setGuardando(false)
     }
-
-    // actualizar estado sugerido
-    if (estadoSugerido) {
-      const payloadEstado: any = { estado: estadoSugerido }
-      if (estadoSugerido === 'MUERTA') payloadEstado.activa = false
-
-      const up = await supabase.from('granja_cerdas').update(payloadEstado).eq('id', cerdaId)
-      if (up.error) console.warn('No se pudo actualizar estado de cerda', up.error)
-    }
-
-    alert('Evento guardado.')
-    await cargarCatalogos()
-    await cargarEventos()
-    limpiar()
   }
 
   return (
@@ -368,7 +517,7 @@ export default function GranjaCerdasEventosPage() {
         <div>
           <h1 className="text-2xl font-bold">Granja — Eventos de cerdas</h1>
           <p className="text-sm text-gray-600">
-            Monta / inseminación, revisión (21 días), parto (115 días), destete, aborto, medicación, muerte.
+            Registro de monta, revisión, parto, destete, aborto, medicación, muerte y descarte.
           </p>
         </div>
 
@@ -380,7 +529,11 @@ export default function GranjaCerdasEventosPage() {
         </Link>
       </div>
 
-      {msg ? <div className="mb-4 p-3 rounded border bg-white text-sm">{msg}</div> : null}
+      {msg ? (
+        <div className="mb-4 p-3 rounded border bg-white text-sm">
+          {msg}
+        </div>
+      ) : null}
 
       <div className="grid gap-6 md:grid-cols-2">
         <section className="border rounded-lg p-4 shadow-sm bg-white">
@@ -398,7 +551,7 @@ export default function GranjaCerdasEventosPage() {
                   <option value="">— Selecciona —</option>
                   {cerdas.map((c) => (
                     <option key={c.id} value={String(c.id)}>
-                      {c.arete} — {c.nombre} ({c.estado})
+                      {c.arete} — {c.nombre ?? 'Sin nombre'} ({c.estado})
                     </option>
                   ))}
                 </select>
@@ -422,9 +575,24 @@ export default function GranjaCerdasEventosPage() {
                   className="w-full border rounded px-2 py-2"
                   value={tipo}
                   onChange={(e) => {
-                    const v = e.target.value as TipoEvento
-                    setTipo(v)
-                    if (v !== 'REVISION_EMBARAZO') setResultado('')
+                    const nuevoTipo = e.target.value as TipoEvento
+                    setTipo(nuevoTipo)
+
+                    if (nuevoTipo !== 'REVISION_EMBARAZO') {
+                      setResultado('')
+                    }
+
+                    if (nuevoTipo !== 'PARTO') {
+                      setNacidosVivos('')
+                      setNacidosMuertos('')
+                      setMomias('')
+                    }
+
+                    if (nuevoTipo !== 'MEDICACION') {
+                      setMedNombre('')
+                      setMedDosis('')
+                      setMedProxFecha('')
+                    }
                   }}
                 >
                   {TIPOS.map((t) => (
@@ -436,7 +604,7 @@ export default function GranjaCerdasEventosPage() {
               </div>
 
               <div>
-                <label className="text-sm font-medium">Resultado (si aplica)</label>
+                <label className="text-sm font-medium">Resultado</label>
                 {tipo === 'REVISION_EMBARAZO' ? (
                   <select
                     className="w-full border rounded px-2 py-2"
@@ -450,7 +618,7 @@ export default function GranjaCerdasEventosPage() {
                 ) : (
                   <input
                     className="w-full border rounded px-2 py-2"
-                    placeholder={tipo === 'ABORTO' ? 'Causa / tipo' : 'Opcional'}
+                    placeholder="Opcional"
                     value={resultado}
                     onChange={(e) => setResultado(e.target.value)}
                   />
@@ -460,13 +628,13 @@ export default function GranjaCerdasEventosPage() {
 
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="text-sm font-medium">Ubicación (opcional)</label>
+                <label className="text-sm font-medium">Ubicación</label>
                 <select
                   className="w-full border rounded px-2 py-2"
                   value={ubicacionId}
                   onChange={(e) => setUbicacionId(e.target.value)}
                 >
-                  <option value="">— Sin cambio —</option>
+                  <option value="">— Usar ubicación actual —</option>
                   {ubicaciones.map((u) => (
                     <option key={u.id} value={String(u.id)}>
                       {u.codigo} — {u.nombre ?? ''}
@@ -476,13 +644,13 @@ export default function GranjaCerdasEventosPage() {
               </div>
 
               <div>
-                <label className="text-sm font-medium">Lote (opcional)</label>
+                <label className="text-sm font-medium">Lote</label>
                 <select
                   className="w-full border rounded px-2 py-2"
                   value={loteId}
                   onChange={(e) => setLoteId(e.target.value)}
                 >
-                  <option value="">— Sin cambio —</option>
+                  <option value="">— Usar lote actual —</option>
                   {lotes.map((l) => (
                     <option key={l.id} value={String(l.id)}>
                       {l.codigo}
@@ -492,12 +660,19 @@ export default function GranjaCerdasEventosPage() {
               </div>
             </div>
 
-            {(tipo === 'MONTA' || tipo === 'INSEMINACION') ? (
+            {cerdaSeleccionada ? (
+              <div className="text-xs border rounded p-2 bg-gray-50">
+                Ubicación actual: {cerdaSeleccionada.ubicacion_id ?? '—'} | Lote actual:{' '}
+                {cerdaSeleccionada.lote_id ?? '—'} | Estado actual: {cerdaSeleccionada.estado}
+              </div>
+            ) : null}
+
+            {tipo === 'MONTA' || tipo === 'INSEMINACION' ? (
               <div>
-                <label className="text-sm font-medium">Macho (opcional)</label>
+                <label className="text-sm font-medium">Macho</label>
                 <input
                   className="w-full border rounded px-2 py-2"
-                  placeholder="Ej: M-330 o nombre del macho"
+                  placeholder="Ej: M-330"
                   value={macho}
                   onChange={(e) => setMacho(e.target.value)}
                 />
@@ -509,22 +684,30 @@ export default function GranjaCerdasEventosPage() {
                 <div>
                   <label className="text-sm font-medium">Nacidos vivos</label>
                   <input
+                    type="number"
+                    min="0"
                     className="w-full border rounded px-2 py-2"
                     value={nacidosVivos}
                     onChange={(e) => setNacidosVivos(e.target.value)}
                   />
                 </div>
+
                 <div>
                   <label className="text-sm font-medium">Nacidos muertos</label>
                   <input
+                    type="number"
+                    min="0"
                     className="w-full border rounded px-2 py-2"
                     value={nacidosMuertos}
                     onChange={(e) => setNacidosMuertos(e.target.value)}
                   />
                 </div>
+
                 <div>
                   <label className="text-sm font-medium">Momias</label>
                   <input
+                    type="number"
+                    min="0"
                     className="w-full border rounded px-2 py-2"
                     value={momias}
                     onChange={(e) => setMomias(e.target.value)}
@@ -546,15 +729,16 @@ export default function GranjaCerdasEventosPage() {
 
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="text-sm font-medium">Dosis (opcional)</label>
+                    <label className="text-sm font-medium">Dosis</label>
                     <input
                       className="w-full border rounded px-2 py-2"
                       value={medDosis}
                       onChange={(e) => setMedDosis(e.target.value)}
                     />
                   </div>
+
                   <div>
-                    <label className="text-sm font-medium">Próxima fecha (opcional)</label>
+                    <label className="text-sm font-medium">Próxima fecha</label>
                     <input
                       type="date"
                       className="w-full border rounded px-2 py-2"
@@ -579,24 +763,33 @@ export default function GranjaCerdasEventosPage() {
             {(tipo === 'MONTA' || tipo === 'INSEMINACION') && fecha ? (
               <div className="border rounded p-3 bg-gray-50 text-sm">
                 <div className="font-medium mb-1">Fechas sugeridas</div>
-                <div>• Revisión embarazo (día 21): <b>{fechasSugeridas.rev}</b></div>
-                <div>• Parto (día 115): <b>{fechasSugeridas.parto}</b></div>
+                <div>
+                  Revisión embarazo: <b>{fechasSugeridas.revision}</b>
+                </div>
+                <div>
+                  Parto: <b>{fechasSugeridas.parto}</b>
+                </div>
               </div>
             ) : null}
 
             <div className="text-sm">
-              Estado sugerido para la cerda: <b>{estadoSugerido || '—'}</b>
+              Estado sugerido: <b>{estadoSugerido || '—'}</b>
             </div>
 
             <div className="flex gap-2">
               <button
-                className="px-4 py-2 rounded bg-emerald-600 hover:bg-emerald-700 text-white"
+                className="px-4 py-2 rounded bg-emerald-600 hover:bg-emerald-700 text-white disabled:opacity-60"
                 onClick={guardarEvento}
+                disabled={guardando}
               >
-                Guardar evento
+                {guardando ? 'Guardando...' : 'Guardar evento'}
               </button>
 
-              <button className="px-4 py-2 rounded bg-gray-200 hover:bg-gray-300" onClick={limpiar}>
+              <button
+                className="px-4 py-2 rounded bg-gray-200 hover:bg-gray-300"
+                onClick={limpiar}
+                disabled={guardando}
+              >
                 Limpiar
               </button>
             </div>
@@ -605,7 +798,7 @@ export default function GranjaCerdasEventosPage() {
 
         <section className="border rounded-lg p-4 shadow-sm bg-white">
           <div className="flex items-center justify-between mb-3">
-            <h2 className="font-semibold">Eventos (historial)</h2>
+            <h2 className="font-semibold">Eventos registrados</h2>
             <button
               onClick={cargarEventos}
               className="px-3 py-2 rounded bg-blue-600 hover:bg-blue-700 text-white text-sm"
@@ -625,6 +818,7 @@ export default function GranjaCerdasEventosPage() {
                   onChange={(e) => setFDesde(e.target.value)}
                 />
               </div>
+
               <div>
                 <label className="text-xs text-gray-600">Hasta</label>
                 <input
@@ -680,6 +874,7 @@ export default function GranjaCerdasEventosPage() {
                   <th className="border px-2 py-2 text-left">Resultado</th>
                 </tr>
               </thead>
+
               <tbody>
                 {eventos.length === 0 ? (
                   <tr>
@@ -688,23 +883,20 @@ export default function GranjaCerdasEventosPage() {
                     </td>
                   </tr>
                 ) : (
-                  eventos.map((e: any) => (
-                    <tr key={e.id} className="hover:bg-gray-50">
-                      <td className="border px-2 py-2">{e.fecha}</td>
+                  eventos.map((evento) => (
+                    <tr key={evento.id} className="hover:bg-gray-50">
+                      <td className="border px-2 py-2">{evento.fecha}</td>
                       <td className="border px-2 py-2">
-                        {e.arete || ''} {e.cerda_nombre ? `— ${e.cerda_nombre}` : ''}
+                        {evento.arete || ''}{' '}
+                        {evento.cerda_nombre ? `— ${evento.cerda_nombre}` : ''}
                       </td>
-                      <td className="border px-2 py-2">{e.tipo}</td>
-                      <td className="border px-2 py-2">{e.resultado ?? '—'}</td>
+                      <td className="border px-2 py-2">{evento.tipo}</td>
+                      <td className="border px-2 py-2">{evento.resultado ?? '—'}</td>
                     </tr>
                   ))
                 )}
               </tbody>
             </table>
-          </div>
-
-          <div className="text-xs text-gray-500 mt-2">
-            Nota: esta pantalla registra historial por cerda (tabla granja_cerda_eventos) y puede actualizar el estado de granja_cerdas.
           </div>
         </section>
       </div>
