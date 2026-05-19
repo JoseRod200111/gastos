@@ -52,6 +52,18 @@ const ESTADOS = [
   'BAJA',
 ]
 
+const hoyISO = () => {
+  const d = new Date()
+  const yyyy = d.getFullYear()
+  const mm = String(d.getMonth() + 1).padStart(2, '0')
+  const dd = String(d.getDate()).padStart(2, '0')
+  return `${yyyy}-${mm}-${dd}`
+}
+
+const fechaISOaTimestampMediodia = (fechaISO: string) => {
+  return new Date(`${fechaISO}T12:00:00.000Z`).toISOString()
+}
+
 export default function GranjaCerdasPage() {
   const [loading, setLoading] = useState(false)
   const [guardando, setGuardando] = useState(false)
@@ -219,7 +231,6 @@ export default function GranjaCerdasPage() {
       }
 
       const estadoFinal = form.estado
-
       const activaFinal =
         form.activa && estadoFinal !== 'MUERTA' && estadoFinal !== 'BAJA'
 
@@ -254,7 +265,7 @@ export default function GranjaCerdasPage() {
       ) {
         try {
           await registrarMovimiento({
-            fecha: new Date().toISOString(),
+            fecha: fechaISOaTimestampMediodia(hoyISO()),
             ubicacion_id: Number(nuevaCerda.ubicacion_id),
             lote_id: nuevaCerda.lote_id ? Number(nuevaCerda.lote_id) : null,
             tipo: 'AJUSTE',
@@ -304,7 +315,7 @@ export default function GranjaCerdasPage() {
 
     try {
       const estadoAnterior = cerda.estado
-      const estabaActiva = cerda.activa
+      const activaAnterior = cerda.activa
       const pasaAMuerte = nuevoEstado === 'MUERTA'
       const pasaABaja = nuevoEstado === 'BAJA'
 
@@ -326,10 +337,10 @@ export default function GranjaCerdasPage() {
 
       if (updateRes.error) throw updateRes.error
 
-      if ((pasaAMuerte || pasaABaja) && estabaActiva && cerda.ubicacion_id) {
+      if ((pasaAMuerte || pasaABaja) && activaAnterior && cerda.ubicacion_id) {
         try {
           await registrarMovimiento({
-            fecha: new Date().toISOString(),
+            fecha: fechaISOaTimestampMediodia(hoyISO()),
             ubicacion_id: Number(cerda.ubicacion_id),
             lote_id: cerda.lote_id ? Number(cerda.lote_id) : null,
             tipo: pasaAMuerte ? 'SALIDA_MUERTE' : 'AJUSTE',
@@ -345,7 +356,7 @@ export default function GranjaCerdasPage() {
             .from('granja_cerdas')
             .update({
               estado: estadoAnterior,
-              activa: estabaActiva,
+              activa: activaAnterior,
             })
             .eq('id', cerda.id)
 
@@ -417,7 +428,7 @@ export default function GranjaCerdasPage() {
   const cambiarActivaCerda = async (cerda: Cerda, activa: boolean) => {
     if (!activa && cerda.estado !== 'MUERTA' && cerda.estado !== 'BAJA') {
       const confirmar = window.confirm(
-        'Esto solo marcará la cerda como inactiva, pero NO afectará inventario. Para muerte o descarte usa el estado MUERTA o BAJA, o registra el evento correspondiente. ¿Deseas continuar?'
+        'Esto marcará la cerda como inactiva, pero no afectará inventario. Para muerte o baja usa el estado MUERTA o BAJA. ¿Deseas continuar?'
       )
 
       if (!confirmar) return
@@ -641,11 +652,6 @@ export default function GranjaCerdasPage() {
                   }))
                 }
               />
-            </div>
-
-            <div className="text-xs text-gray-500 border rounded p-2 bg-gray-50">
-              Al guardar una cerda activa, se agregará automáticamente +1 al
-              inventario general de la ubicación seleccionada.
             </div>
 
             <div className="flex gap-2">
@@ -901,9 +907,7 @@ export default function GranjaCerdasPage() {
           </div>
 
           <p className="text-xs text-gray-500 mt-2">
-            Para muerte, descarte, parto, destete o revisión de embarazo es mejor
-            usar la pantalla de eventos. Cambiar a MUERTA o BAJA desde esta tabla
-            también afecta inventario.
+            Para muerte, baja, parto, destete o revisión de embarazo es mejor usar la pantalla de eventos.
           </p>
         </section>
       </div>
