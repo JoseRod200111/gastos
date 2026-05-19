@@ -49,8 +49,6 @@ const hoyISO = () => {
   return `${yyyy}-${mm}-${dd}`
 }
 
-// Igual que en /granja/inventario.
-// Esto hace que ambas pantallas calculen hasta el mismo corte.
 const finDeDiaUTC = (yyyyMMdd: string) => `${yyyyMMdd}T23:59:59.999Z`
 
 const parseTR = (codigo: string) => {
@@ -128,11 +126,7 @@ const GRUPOS: GrupoConfig[] = [
   {
     titulo: 'MATERNIDAD 2',
     match: (codigo) => codigo.toUpperCase().startsWith('M2'),
-    sortKey: (u) => {
-      const n = parseM2(u.codigo)
-      if (n !== null) return n
-      return 100000
-    },
+    sortKey: (u) => parseM2(u.codigo) ?? 999999,
   },
 ]
 
@@ -313,7 +307,7 @@ export default function InventarioDiarioPage() {
 
       if (errUbicaciones) {
         console.error('Error cargando ubicaciones', errUbicaciones)
-        alert('No se pudieron cargar las ubicaciones.')
+        alert(`No se pudieron cargar las ubicaciones: ${errUbicaciones.message}`)
         return
       }
 
@@ -328,7 +322,7 @@ export default function InventarioDiarioPage() {
 
       if (errMovimientos) {
         console.error('Error cargando movimientos', errMovimientos)
-        alert('Error cargando movimientos.')
+        alert(`Error cargando movimientos: ${errMovimientos.message}`)
         return
       }
 
@@ -344,6 +338,8 @@ export default function InventarioDiarioPage() {
 
       if (!errInventarioDiario) {
         inventarioDiario = (inv ?? []) as InventarioDiarioRow[]
+      } else {
+        console.error('Error cargando inventario diario', errInventarioDiario)
       }
 
       const mapInventarioDiario = new Map<number, InventarioDiarioRow>()
@@ -435,7 +431,7 @@ export default function InventarioDiarioPage() {
       return
     }
 
-    const registros = Object.entries(estado)
+    const registrosBase = Object.entries(estado)
       .filter(([, value]) => value.manual !== '')
       .map(([ubicacionId, value]) => {
         const manualNum = Number(value.manual) || 0
@@ -450,7 +446,7 @@ export default function InventarioDiarioPage() {
         }
       })
 
-    if (registros.length === 0) {
+    if (registrosBase.length === 0) {
       alert('No hay conteos para guardar.')
       return
     }
@@ -460,13 +456,35 @@ export default function InventarioDiarioPage() {
     setGuardando(true)
 
     try {
-      const { error } = await supabase
-        .from('granja_inventario_diario')
-        .upsert(registros, { onConflict: 'fecha,ubicacion_id' })
+      const { data: userData } = await supabase.auth.getUser()
+      const userId = userData?.user?.id ?? null
 
-      if (error) {
-        console.error('Error guardando inventario diario', error)
-        alert('Ocurrió un error al guardar el inventario diario.')
+      const ubicacionIds = registrosBase.map((r) => r.ubicacion_id)
+
+      const { error: deleteError } = await supabase
+        .from('granja_inventario_diario')
+        .delete()
+        .eq('fecha', fecha)
+        .in('ubicacion_id', ubicacionIds)
+
+      if (deleteError) {
+        console.error('Error eliminando inventario diario anterior', deleteError)
+        alert(`Ocurrió un error al reemplazar el inventario diario: ${deleteError.message}`)
+        return
+      }
+
+      const registros = registrosBase.map((row) => ({
+        ...row,
+        user_id: userId,
+      }))
+
+      const { error: insertError } = await supabase
+        .from('granja_inventario_diario')
+        .insert(registros)
+
+      if (insertError) {
+        console.error('Error guardando inventario diario', insertError)
+        alert(`Ocurrió un error al guardar el inventario diario: ${insertError.message}`)
         return
       }
 
