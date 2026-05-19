@@ -61,10 +61,22 @@ const TIPOS: { value: TipoEvento; label: string }[] = [
   { value: 'ABORTO', label: 'Aborto' },
   { value: 'MEDICACION', label: 'Medicación' },
   { value: 'MUERTE', label: 'Muerte' },
-  { value: 'DESCARTE', label: 'Descarte / baja' },
+  { value: 'DESCARTE', label: 'Dada de baja / descarte' },
 ]
 
 const EVENTOS_QUE_CIERRAN_CICLO = ['PARTO', 'DESTETE', 'ABORTO', 'MUERTE', 'DESCARTE']
+
+const hoyISO = () => {
+  const d = new Date()
+  const yyyy = d.getFullYear()
+  const mm = String(d.getMonth() + 1).padStart(2, '0')
+  const dd = String(d.getDate()).padStart(2, '0')
+  return `${yyyy}-${mm}-${dd}`
+}
+
+const fechaISOaTimestampMediodia = (fechaISO: string) => {
+  return new Date(`${fechaISO}T12:00:00.000Z`).toISOString()
+}
 
 export default function GranjaCerdasEventosPage() {
   const [loading, setLoading] = useState(false)
@@ -76,7 +88,7 @@ export default function GranjaCerdasEventosPage() {
   const [lotes, setLotes] = useState<Lote[]>([])
 
   const [cerdaId, setCerdaId] = useState('')
-  const [fecha, setFecha] = useState(() => new Date().toISOString().slice(0, 10))
+  const [fecha, setFecha] = useState(() => hoyISO())
   const [tipo, setTipo] = useState<TipoEvento>('MONTA')
   const [resultado, setResultado] = useState('')
   const [ubicacionId, setUbicacionId] = useState('')
@@ -95,9 +107,15 @@ export default function GranjaCerdasEventosPage() {
   const [fDesde, setFDesde] = useState(() => {
     const d = new Date()
     d.setDate(d.getDate() - 14)
-    return d.toISOString().slice(0, 10)
+
+    const yyyy = d.getFullYear()
+    const mm = String(d.getMonth() + 1).padStart(2, '0')
+    const dd = String(d.getDate()).padStart(2, '0')
+
+    return `${yyyy}-${mm}-${dd}`
   })
-  const [fHasta, setFHasta] = useState(() => new Date().toISOString().slice(0, 10))
+
+  const [fHasta, setFHasta] = useState(() => hoyISO())
   const [fQ, setFQ] = useState('')
   const [fTipo, setFTipo] = useState('TODOS')
 
@@ -106,7 +124,7 @@ export default function GranjaCerdasEventosPage() {
   const cerdaSeleccionada = useMemo(() => {
     const id = Number(cerdaId)
     if (!id) return null
-    return cerdas.find((c) => c.id === id) ?? null
+    return cerdas.find((cerda) => cerda.id === id) ?? null
   }, [cerdaId, cerdas])
 
   const fechasSugeridas = useMemo(() => {
@@ -177,7 +195,7 @@ export default function GranjaCerdasEventosPage() {
     setMsg(null)
 
     try {
-      let q = supabase
+      let query = supabase
         .from('v_granja_cerda_eventos')
         .select('*')
         .gte('fecha', fDesde)
@@ -186,22 +204,23 @@ export default function GranjaCerdasEventosPage() {
         .limit(500)
 
       if (fTipo !== 'TODOS') {
-        q = q.eq('tipo', fTipo)
+        query = query.eq('tipo', fTipo)
       }
 
       if (fQ.trim()) {
-        const s = fQ.trim()
-        q = q.or(`arete.ilike.%${s}%,cerda_nombre.ilike.%${s}%`)
+        const texto = fQ.trim()
+        query = query.or(`arete.ilike.%${texto}%,cerda_nombre.ilike.%${texto}%`)
       }
 
-      const res = await q
+      const res = await query
 
       if (res.error) throw res.error
 
       setEventos((res.data ?? []) as EventoVista[])
     } catch (error) {
       console.error('Error cargando eventos', error)
-      setMsg('Error cargando eventos.')
+      const message = error instanceof Error ? error.message : 'Error cargando eventos.'
+      setMsg(message)
     } finally {
       setLoading(false)
     }
@@ -215,7 +234,7 @@ export default function GranjaCerdasEventosPage() {
 
   const limpiar = () => {
     setCerdaId('')
-    setFecha(new Date().toISOString().slice(0, 10))
+    setFecha(hoyISO())
     setTipo('MONTA')
     setResultado('')
     setUbicacionId('')
@@ -310,32 +329,32 @@ export default function GranjaCerdasEventosPage() {
   }
 
   const crearMovimientoInventario = async (opts: {
-    fecha: string
+    fechaMovimiento: string
     ubicacion_id: number
     lote_id: number | null
-    tipo: 'ENTRADA_PARTO' | 'SALIDA_MUERTE' | 'AJUSTE'
+    tipoMovimiento: 'ENTRADA_PARTO' | 'SALIDA_MUERTE' | 'AJUSTE'
     cantidad: number
     referencia_id: number
     observaciones: string
   }) => {
     const { data: userData } = await supabase.auth.getUser()
 
-    const res = await supabase.from('granja_movimientos').insert([
-      {
-        fecha: opts.fecha,
-        ubicacion_id: opts.ubicacion_id,
-        lote_id: opts.lote_id,
-        tipo: opts.tipo,
-        cantidad: opts.cantidad,
-        hembras: null,
-        machos: null,
-        peso_total_kg: null,
-        referencia_tabla: 'granja_cerda_eventos',
-        referencia_id: opts.referencia_id,
-        user_id: userData?.user?.id ?? null,
-        observaciones: opts.observaciones,
-      },
-    ])
+    const payload = {
+      fecha: opts.fechaMovimiento,
+      ubicacion_id: opts.ubicacion_id,
+      lote_id: opts.lote_id,
+      tipo: opts.tipoMovimiento,
+      cantidad: opts.cantidad,
+      hembras: null,
+      machos: null,
+      peso_total_kg: null,
+      referencia_tabla: 'granja_cerda_eventos',
+      referencia_id: opts.referencia_id,
+      user_id: userData?.user?.id ?? null,
+      observaciones: opts.observaciones,
+    }
+
+    const res = await supabase.from('granja_movimientos').insert([payload])
 
     if (res.error) throw res.error
   }
@@ -352,6 +371,11 @@ export default function GranjaCerdasEventosPage() {
       if (!cerdaSeleccionada) throw new Error('La cerda seleccionada no existe o no cargó correctamente.')
 
       const idCerda = Number(cerdaId)
+
+      if (!Number.isFinite(idCerda)) {
+        throw new Error('Cerda inválida.')
+      }
+
       const historial = await obtenerHistorial(idCerda)
 
       validarFlujo(historial)
@@ -393,6 +417,14 @@ export default function GranjaCerdasEventosPage() {
         ? Number(loteId)
         : cerdaSeleccionada.lote_id
 
+      if (ubicacionId && !Number.isFinite(Number(ubicacionId))) {
+        throw new Error('Ubicación inválida.')
+      }
+
+      if (loteId && !Number.isFinite(Number(loteId))) {
+        throw new Error('Lote inválido.')
+      }
+
       if ((tipo === 'PARTO' || tipo === 'MUERTE' || tipo === 'DESCARTE') && !ubicacionFinal) {
         throw new Error('Este evento necesita una ubicación para afectar inventario.')
       }
@@ -420,6 +452,7 @@ export default function GranjaCerdasEventosPage() {
       if (insertEvento.error) throw insertEvento.error
 
       const eventoId = Number(insertEvento.data.id)
+      const fechaMovimiento = fechaISOaTimestampMediodia(fecha)
 
       try {
         if (tipo === 'PARTO') {
@@ -427,10 +460,10 @@ export default function GranjaCerdasEventosPage() {
 
           if (vivos > 0 && ubicacionFinal) {
             await crearMovimientoInventario({
-              fecha,
-              ubicacion_id: ubicacionFinal,
-              lote_id: loteFinal ?? null,
-              tipo: 'ENTRADA_PARTO',
+              fechaMovimiento,
+              ubicacion_id: Number(ubicacionFinal),
+              lote_id: loteFinal ? Number(loteFinal) : null,
+              tipoMovimiento: 'ENTRADA_PARTO',
               cantidad: vivos,
               referencia_id: eventoId,
               observaciones: `PARTO CERDA ${cerdaSeleccionada.arete}`,
@@ -440,10 +473,10 @@ export default function GranjaCerdasEventosPage() {
 
         if (tipo === 'MUERTE' && ubicacionFinal) {
           await crearMovimientoInventario({
-            fecha,
-            ubicacion_id: ubicacionFinal,
-            lote_id: loteFinal ?? null,
-            tipo: 'SALIDA_MUERTE',
+            fechaMovimiento,
+            ubicacion_id: Number(ubicacionFinal),
+            lote_id: loteFinal ? Number(loteFinal) : null,
+            tipoMovimiento: 'SALIDA_MUERTE',
             cantidad: 1,
             referencia_id: eventoId,
             observaciones: `MUERTE CERDA ${cerdaSeleccionada.arete}`,
@@ -452,13 +485,13 @@ export default function GranjaCerdasEventosPage() {
 
         if (tipo === 'DESCARTE' && ubicacionFinal) {
           await crearMovimientoInventario({
-            fecha,
-            ubicacion_id: ubicacionFinal,
-            lote_id: loteFinal ?? null,
-            tipo: 'AJUSTE',
+            fechaMovimiento,
+            ubicacion_id: Number(ubicacionFinal),
+            lote_id: loteFinal ? Number(loteFinal) : null,
+            tipoMovimiento: 'AJUSTE',
             cantidad: -1,
             referencia_id: eventoId,
-            observaciones: `DESCARTE CERDA ${cerdaSeleccionada.arete}`,
+            observaciones: `BAJA CERDA ${cerdaSeleccionada.arete}`,
           })
         }
       } catch (movError) {
@@ -549,9 +582,9 @@ export default function GranjaCerdasEventosPage() {
                   onChange={(e) => setCerdaId(e.target.value)}
                 >
                   <option value="">— Selecciona —</option>
-                  {cerdas.map((c) => (
-                    <option key={c.id} value={String(c.id)}>
-                      {c.arete} — {c.nombre ?? 'Sin nombre'} ({c.estado})
+                  {cerdas.map((cerda) => (
+                    <option key={cerda.id} value={String(cerda.id)}>
+                      {cerda.arete} — {cerda.nombre ?? 'Sin nombre'} ({cerda.estado})
                     </option>
                   ))}
                 </select>
@@ -595,9 +628,9 @@ export default function GranjaCerdasEventosPage() {
                     }
                   }}
                 >
-                  {TIPOS.map((t) => (
-                    <option key={t.value} value={t.value}>
-                      {t.label}
+                  {TIPOS.map((opcion) => (
+                    <option key={opcion.value} value={opcion.value}>
+                      {opcion.label}
                     </option>
                   ))}
                 </select>
@@ -635,9 +668,9 @@ export default function GranjaCerdasEventosPage() {
                   onChange={(e) => setUbicacionId(e.target.value)}
                 >
                   <option value="">— Usar ubicación actual —</option>
-                  {ubicaciones.map((u) => (
-                    <option key={u.id} value={String(u.id)}>
-                      {u.codigo} — {u.nombre ?? ''}
+                  {ubicaciones.map((ubicacion) => (
+                    <option key={ubicacion.id} value={String(ubicacion.id)}>
+                      {ubicacion.codigo} — {ubicacion.nombre ?? ''}
                     </option>
                   ))}
                 </select>
@@ -651,9 +684,9 @@ export default function GranjaCerdasEventosPage() {
                   onChange={(e) => setLoteId(e.target.value)}
                 >
                   <option value="">— Usar lote actual —</option>
-                  {lotes.map((l) => (
-                    <option key={l.id} value={String(l.id)}>
-                      {l.codigo}
+                  {lotes.map((lote) => (
+                    <option key={lote.id} value={String(lote.id)}>
+                      {lote.codigo}
                     </option>
                   ))}
                 </select>
@@ -776,6 +809,11 @@ export default function GranjaCerdasEventosPage() {
               Estado sugerido: <b>{estadoSugerido || '—'}</b>
             </div>
 
+            <div className="text-xs text-gray-500 border rounded p-2 bg-gray-50">
+              MUERTE registra una salida de inventario con tipo SALIDA_MUERTE y cantidad 1.
+              Dada de baja registra un AJUSTE con cantidad -1.
+            </div>
+
             <div className="flex gap-2">
               <button
                 className="px-4 py-2 rounded bg-emerald-600 hover:bg-emerald-700 text-white disabled:opacity-60"
@@ -786,7 +824,7 @@ export default function GranjaCerdasEventosPage() {
               </button>
 
               <button
-                className="px-4 py-2 rounded bg-gray-200 hover:bg-gray-300"
+                className="px-4 py-2 rounded bg-gray-200 hover:bg-gray-300 disabled:opacity-60"
                 onClick={limpiar}
                 disabled={guardando}
               >
@@ -844,9 +882,9 @@ export default function GranjaCerdasEventosPage() {
                 onChange={(e) => setFTipo(e.target.value)}
               >
                 <option value="TODOS">Todos los tipos</option>
-                {TIPOS.map((t) => (
-                  <option key={t.value} value={t.value}>
-                    {t.label}
+                {TIPOS.map((opcion) => (
+                  <option key={opcion.value} value={opcion.value}>
+                    {opcion.label}
                   </option>
                 ))}
               </select>
