@@ -40,10 +40,13 @@ type MovItem = {
   ts: string
   seccion: 'GRANJA' | 'VEHICULOS' | 'VENTAS' | 'EROGACIONES' | 'INVENTARIO_PLANTA'
   accion: string
+  accion_label: string
   usuario: string
   usuario_label: string
   referencia: string
   detalle: string
+  descripcion_corta: string
+  observaciones: string
   ubicacion_id?: number | null
   ubicacion_codigo?: string | null
   ubicacion_nombre?: string | null
@@ -108,7 +111,7 @@ function num(n: unknown) {
   return String(x)
 }
 
-function safeJsonParse(v: unknown) {
+function safeJsonParse(v: unknown): any {
   try {
     if (v == null) return null
     if (typeof v === 'object') return v
@@ -117,6 +120,67 @@ function safeJsonParse(v: unknown) {
   } catch {
     return null
   }
+}
+
+function quitarAcentos(valor: string) {
+  return valor.normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+}
+
+function normalizarBusqueda(valor: string) {
+  return quitarAcentos(String(valor || ''))
+    .toLowerCase()
+    .replace(/\s+/g, '')
+    .replace(/-/g, '')
+    .replace(/_/g, '')
+    .replace(/tr0+(\d+)/g, 'tr$1')
+    .replace(/g0+(\d+)/g, 'g$1')
+    .replace(/m1j0+(\d+)/g, 'm1j$1')
+    .replace(/m2j0+(\d+)/g, 'm2j$1')
+}
+
+function codigoAlternoUbicacion(codigo: string) {
+  const limpio = String(codigo || '').toUpperCase()
+
+  const tr = limpio.match(/^TR0*(\d+)$/)
+  if (tr) {
+    return `TR${Number(tr[1])}`
+  }
+
+  const g = limpio.match(/^G0*(\d+)J0*(\d+)$/)
+  if (g) {
+    return `G${Number(g[1])}J${Number(g[2])}`
+  }
+
+  const m1 = limpio.match(/^M1J0*(\d+)$/)
+  if (m1) {
+    return `M1J${Number(m1[1])}`
+  }
+
+  const m2 = limpio.match(/^M2J0*(\d+)$/)
+  if (m2) {
+    return `M2J${Number(m2[1])}`
+  }
+
+  return limpio
+}
+
+function parseTR(codigo: string) {
+  const m = String(codigo || '').match(/^TR0*(\d+)$/i)
+  return m ? Number(m[1]) : null
+}
+
+function naturalUbicacionSort(a: Ubicacion, b: Ubicacion) {
+  const ta = parseTR(a.codigo)
+  const tb = parseTR(b.codigo)
+
+  if (ta !== null && tb !== null) {
+    return ta - tb
+  }
+
+  if (ta !== null) return -1
+  if (tb !== null) return 1
+
+  return a.codigo.localeCompare(b.codigo)
 }
 
 function impactoGranja(tipo: string | null | undefined, cantidad: number | null | undefined) {
@@ -134,6 +198,50 @@ function formatoImpacto(v: number | null | undefined) {
 
   if (n > 0) return `+${n}`
   return String(n)
+}
+
+function labelTipoGranja(tipo: string | null | undefined) {
+  if (tipo === 'ENTRADA_COMPRA') return 'Entrada por compra'
+  if (tipo === 'ENTRADA_PARTO') return 'Entrada por parto'
+  if (tipo === 'SALIDA_VENTA') return 'Salida por venta'
+  if (tipo === 'SALIDA_MUERTE') return 'Salida por muerte'
+  if (tipo === 'AJUSTE') return 'Ajuste manual'
+  return tipo || 'Movimiento'
+}
+
+function explicarMovimiento(tipo: string | null | undefined, impacto: number, cantidad: number) {
+  if (tipo === 'ENTRADA_COMPRA') {
+    return `Se agregaron ${cantidad} cerdo(s) por compra.`
+  }
+
+  if (tipo === 'ENTRADA_PARTO') {
+    return `Se agregaron ${cantidad} cerdo(s) por parto.`
+  }
+
+  if (tipo === 'SALIDA_VENTA') {
+    return `Se restaron ${cantidad} cerdo(s) por venta.`
+  }
+
+  if (tipo === 'SALIDA_MUERTE') {
+    return `Se restaron ${cantidad} cerdo(s) por muerte.`
+  }
+
+  if (tipo === 'AJUSTE') {
+    if (impacto > 0) return `Ajuste aumentó el inventario en ${impacto}.`
+    if (impacto < 0) return `Ajuste redujo el inventario en ${Math.abs(impacto)}.`
+    return 'Ajuste sin cambio neto.'
+  }
+
+  if (impacto > 0) return `El inventario aumentó en ${impacto}.`
+  if (impacto < 0) return `El inventario bajó en ${Math.abs(impacto)}.`
+
+  return 'Movimiento sin cambio neto.'
+}
+
+function extraerObservacion(texto: unknown) {
+  const s = String(texto || '').trim()
+  if (!s) return '—'
+  return s
 }
 
 function prettySnapshot(table: string, action: string, snapshotAny: unknown): string {
@@ -330,7 +438,8 @@ export default function MovimientosEmpleadosPage() {
         .order('codigo', { ascending: true })
 
       if (!ubicacionesRes.error) {
-        setUbicaciones((ubicacionesRes.data ?? []) as Ubicacion[])
+        const data = ((ubicacionesRes.data ?? []) as Ubicacion[]).sort(naturalUbicacionSort)
+        setUbicaciones(data)
       }
     })()
   }, [])
@@ -339,7 +448,7 @@ export default function MovimientosEmpleadosPage() {
     const map = new Map<number, Ubicacion>()
 
     ubicaciones.forEach((u) => {
-      map.set(u.id, u)
+      map.set(Number(u.id), u)
     })
 
     return map
@@ -371,36 +480,20 @@ export default function MovimientosEmpleadosPage() {
       const hastaISO = filtros.hasta ? finDia(filtros.hasta) : ''
       const seccion = filtros.seccion
       const usuarioId = clamp(filtros.usuario_id)
-      const texto = clamp(filtros.texto).toLowerCase()
+      const texto = clamp(filtros.texto)
+      const textoNormalizado = normalizarBusqueda(texto)
 
       const salida: MovItem[] = []
-
       const quiereTodo = seccion === 'TODOS'
 
       if (quiereTodo || seccion === 'GRANJA') {
         let query = supabase
           .from('granja_movimientos')
           .select(
-            `
-            id,
-            fecha,
-            tipo,
-            ubicacion_id,
-            cantidad,
-            lote_id,
-            referencia_tabla,
-            referencia_id,
-            user_id,
-            observaciones,
-            created_at,
-            granja_ubicaciones (
-              codigo,
-              nombre
-            )
-          `
+            'id, fecha, tipo, ubicacion_id, cantidad, lote_id, referencia_tabla, referencia_id, user_id, observaciones, created_at'
           )
           .order('fecha', { ascending: false })
-          .limit(2000)
+          .limit(3000)
 
         if (desdeISO) query = query.gte('fecha', desdeISO)
         if (hastaISO) query = query.lte('fecha', hastaISO)
@@ -415,32 +508,29 @@ export default function MovimientosEmpleadosPage() {
 
             if (usuarioId && usuario !== usuarioId) continue
 
-            const ubicacionRelacion = Array.isArray(row.granja_ubicaciones)
-              ? row.granja_ubicaciones[0]
-              : row.granja_ubicaciones
-
             const ubicacion = ubicacionById.get(Number(row.ubicacion_id))
 
-            const codigo =
-              ubicacionRelacion?.codigo ||
-              ubicacion?.codigo ||
-              `Ubicación ${row.ubicacion_id}`
-
-            const nombre = ubicacionRelacion?.nombre || ubicacion?.nombre || ''
+            const codigo = ubicacion?.codigo || `Ubicación ${row.ubicacion_id}`
+            const codigoAlterno = codigoAlternoUbicacion(codigo)
+            const nombre = ubicacion?.nombre || ''
 
             const cantidad = Number(row.cantidad || 0)
             const impacto = impactoGranja(String(row.tipo || ''), cantidad)
+            const tipo = String(row.tipo || '')
 
             const referenciaTabla = row.referencia_tabla || 'granja_movimientos'
             const referenciaId = row.referencia_id ? `#${row.referencia_id}` : `#${row.id}`
 
+            const descripcionCorta = explicarMovimiento(tipo, impacto, Math.abs(cantidad))
+            const observaciones = extraerObservacion(row.observaciones)
+
             const detalle = [
               `${codigo}${nombre ? ` — ${nombre}` : ''}`,
-              `Tipo ${row.tipo || '—'}`,
-              `Cantidad ${cantidad}`,
+              labelTipoGranja(tipo),
+              `Cantidad ${Math.abs(cantidad)}`,
               `Impacto ${formatoImpacto(impacto)}`,
               row.lote_id != null ? `LoteID ${row.lote_id}` : null,
-              row.observaciones ? `Obs: ${row.observaciones}` : null,
+              observaciones !== '—' ? `Obs: ${observaciones}` : null,
             ]
               .filter(Boolean)
               .join(' · ')
@@ -448,21 +538,44 @@ export default function MovimientosEmpleadosPage() {
             const item: MovItem = {
               ts: String(row.fecha || row.created_at || ''),
               seccion: 'GRANJA',
-              accion: String(row.tipo || 'MOVIMIENTO'),
+              accion: tipo || 'MOVIMIENTO',
+              accion_label: labelTipoGranja(tipo),
               usuario,
               usuario_label: userLabel(usuario),
               referencia: `${referenciaTabla}${referenciaId}`,
               detalle,
+              descripcion_corta: descripcionCorta,
+              observaciones,
               ubicacion_id: Number(row.ubicacion_id),
               ubicacion_codigo: codigo,
               ubicacion_nombre: nombre,
-              tipo_granja: String(row.tipo || ''),
-              cantidad,
+              tipo_granja: tipo,
+              cantidad: Math.abs(cantidad),
               impacto,
               origen: referenciaTabla,
             }
 
-            salida.push(item)
+            const textoItem = normalizarBusqueda(
+              [
+                item.seccion,
+                item.accion,
+                item.accion_label,
+                item.usuario_label,
+                item.referencia,
+                item.detalle,
+                item.descripcion_corta,
+                item.observaciones,
+                item.ubicacion_codigo,
+                codigoAlterno,
+                item.ubicacion_nombre,
+                item.tipo_granja,
+                item.origen,
+              ].join(' ')
+            )
+
+            if (!textoNormalizado || textoItem.includes(textoNormalizado)) {
+              salida.push(item)
+            }
           }
         } else {
           console.error('Error cargando granja_movimientos', error)
@@ -472,7 +585,9 @@ export default function MovimientosEmpleadosPage() {
       if (quiereTodo || seccion === 'VEHICULOS') {
         let query = supabase
           .from('viajes')
-          .select('id, vehiculo_id, fecha_inicio, fecha_fin, origen, destino, creado_en, editado_en, editado_por, conductor')
+          .select(
+            'id, vehiculo_id, fecha_inicio, fecha_fin, origen, destino, creado_en, editado_en, editado_por, conductor'
+          )
           .order('creado_en', { ascending: false })
           .limit(500)
 
@@ -486,15 +601,37 @@ export default function MovimientosEmpleadosPage() {
             const usuario = row.editado_por ? String(row.editado_por) : '—'
             const ts = String(row.editado_en || row.creado_en || '')
 
-            salida.push({
+            const item: MovItem = {
               ts,
               seccion: 'VEHICULOS',
               accion: row.editado_en ? 'UPDATE (viajes)' : 'INSERT (viajes)',
+              accion_label: row.editado_en ? 'Edición de viaje' : 'Nuevo viaje',
               usuario,
               usuario_label: usuario,
               referencia: `viajes#${row.id}`,
-              detalle: `Vehículo ${row.vehiculo_id ?? '—'} · ${row.origen || '—'} → ${row.destino || '—'} · ${row.fecha_inicio || '—'} / ${row.fecha_fin || '—'} · Conductor ${row.conductor || '—'}`,
-            })
+              detalle: `Vehículo ${row.vehiculo_id ?? '—'} · ${row.origen || '—'} → ${
+                row.destino || '—'
+              } · ${row.fecha_inicio || '—'} / ${row.fecha_fin || '—'} · Conductor ${
+                row.conductor || '—'
+              }`,
+              descripcion_corta: row.editado_en ? 'Se editó un viaje.' : 'Se creó un viaje.',
+              observaciones: '—',
+            }
+
+            const textoItem = normalizarBusqueda(
+              [
+                item.seccion,
+                item.accion,
+                item.accion_label,
+                item.usuario_label,
+                item.referencia,
+                item.detalle,
+              ].join(' ')
+            )
+
+            if (!textoNormalizado || textoItem.includes(textoNormalizado)) {
+              salida.push(item)
+            }
           }
         }
       }
@@ -516,15 +653,35 @@ export default function MovimientosEmpleadosPage() {
             const usuario = row.user_id ? String(row.user_id) : '—'
             if (usuarioId && usuario !== usuarioId) continue
 
-            salida.push({
+            const item: MovItem = {
               ts: String(row.created_at || ''),
               seccion: seccion === 'INVENTARIO_PLANTA' ? 'INVENTARIO_PLANTA' : 'VENTAS',
               accion: 'INSERT (ventas)',
+              accion_label: 'Nueva venta',
               usuario,
               usuario_label: userLabel(usuario),
               referencia: `ventas#${row.id}`,
-              detalle: `${row.fecha || '—'} · Total ${moneyQ(row.cantidad)}${row.observaciones ? ` · Obs: ${row.observaciones}` : ''}`,
-            })
+              detalle: `${row.fecha || '—'} · Total ${moneyQ(row.cantidad)}${
+                row.observaciones ? ` · Obs: ${row.observaciones}` : ''
+              }`,
+              descripcion_corta: `Se registró una venta por ${moneyQ(row.cantidad)}.`,
+              observaciones: row.observaciones || '—',
+            }
+
+            const textoItem = normalizarBusqueda(
+              [
+                item.seccion,
+                item.accion,
+                item.accion_label,
+                item.usuario_label,
+                item.referencia,
+                item.detalle,
+              ].join(' ')
+            )
+
+            if (!textoNormalizado || textoItem.includes(textoNormalizado)) {
+              salida.push(item)
+            }
           }
         }
       }
@@ -543,33 +700,82 @@ export default function MovimientosEmpleadosPage() {
 
         if (!error) {
           for (const row of (data ?? []) as any[]) {
-            const usuarioCreacion = row.user_id ? String(row.user_id) : row.editado_por ? String(row.editado_por) : '—'
+            const usuarioCreacion = row.user_id
+              ? String(row.user_id)
+              : row.editado_por
+                ? String(row.editado_por)
+                : '—'
 
             if (!usuarioId || usuarioCreacion === usuarioId) {
-              salida.push({
+              const item: MovItem = {
                 ts: String(row.created_at || ''),
                 seccion: seccion === 'INVENTARIO_PLANTA' ? 'INVENTARIO_PLANTA' : 'EROGACIONES',
                 accion: 'INSERT (erogaciones)',
+                accion_label: 'Nueva erogación',
                 usuario: usuarioCreacion,
                 usuario_label: userLabel(usuarioCreacion),
                 referencia: `erogaciones#${row.id}`,
-                detalle: `${row.fecha || '—'} · Total ${moneyQ(row.cantidad)}${row.observaciones ? ` · Obs: ${row.observaciones}` : ''}`,
-              })
+                detalle: `${row.fecha || '—'} · Total ${moneyQ(row.cantidad)}${
+                  row.observaciones ? ` · Obs: ${row.observaciones}` : ''
+                }`,
+                descripcion_corta: `Se registró una erogación por ${moneyQ(row.cantidad)}.`,
+                observaciones: row.observaciones || '—',
+              }
+
+              const textoItem = normalizarBusqueda(
+                [
+                  item.seccion,
+                  item.accion,
+                  item.accion_label,
+                  item.usuario_label,
+                  item.referencia,
+                  item.detalle,
+                ].join(' ')
+              )
+
+              if (!textoNormalizado || textoItem.includes(textoNormalizado)) {
+                salida.push(item)
+              }
             }
 
             if (row.editado_en) {
-              const usuarioEdicion = row.editado_por ? String(row.editado_por) : row.user_id ? String(row.user_id) : '—'
+              const usuarioEdicion = row.editado_por
+                ? String(row.editado_por)
+                : row.user_id
+                  ? String(row.user_id)
+                  : '—'
+
               if (usuarioId && usuarioEdicion !== usuarioId) continue
 
-              salida.push({
+              const item: MovItem = {
                 ts: String(row.editado_en),
                 seccion: seccion === 'INVENTARIO_PLANTA' ? 'INVENTARIO_PLANTA' : 'EROGACIONES',
                 accion: 'UPDATE (erogaciones)',
+                accion_label: 'Edición de erogación',
                 usuario: usuarioEdicion,
                 usuario_label: userLabel(usuarioEdicion),
                 referencia: `erogaciones#${row.id}`,
-                detalle: `Editado · ${row.fecha || '—'} · Total ${moneyQ(row.cantidad)}${row.observaciones ? ` · Obs: ${row.observaciones}` : ''}`,
-              })
+                detalle: `Editado · ${row.fecha || '—'} · Total ${moneyQ(row.cantidad)}${
+                  row.observaciones ? ` · Obs: ${row.observaciones}` : ''
+                }`,
+                descripcion_corta: `Se editó una erogación por ${moneyQ(row.cantidad)}.`,
+                observaciones: row.observaciones || '—',
+              }
+
+              const textoItem = normalizarBusqueda(
+                [
+                  item.seccion,
+                  item.accion,
+                  item.accion_label,
+                  item.usuario_label,
+                  item.referencia,
+                  item.detalle,
+                ].join(' ')
+              )
+
+              if (!textoNormalizado || textoItem.includes(textoNormalizado)) {
+                salida.push(item)
+              }
             }
           }
         }
@@ -601,15 +807,34 @@ export default function MovimientosEmpleadosPage() {
               .filter(Boolean)
               .join(' · ')
 
-            salida.push({
+            const item: MovItem = {
               ts: String(row.created_at || ''),
               seccion: 'INVENTARIO_PLANTA',
               accion: 'MOVIMIENTO (inventario_movimientos)',
+              accion_label: 'Movimiento inventario planta',
               usuario: '—',
               usuario_label: '—',
               referencia: `inventario_movimientos#${row.id}`,
               detalle: detalle || '—',
-            })
+              descripcion_corta: `Movimiento de inventario planta: ${row.tipo || '—'} ${
+                row.cantidad ?? '—'
+              }.`,
+              observaciones: '—',
+            }
+
+            const textoItem = normalizarBusqueda(
+              [
+                item.seccion,
+                item.accion,
+                item.accion_label,
+                item.referencia,
+                item.detalle,
+              ].join(' ')
+            )
+
+            if (!textoNormalizado || textoItem.includes(textoNormalizado)) {
+              salida.push(item)
+            }
           }
         }
       }
@@ -634,7 +859,8 @@ export default function MovimientosEmpleadosPage() {
 
         if (!error) {
           for (const row of (data ?? []) as any[]) {
-            const tableName = String(row.table_name || '').split('.').pop() || String(row.table_name || '')
+            const tableName =
+              String(row.table_name || '').split('.').pop() || String(row.table_name || '')
             const action = String(row.action || '').toUpperCase()
             const seccionRaw = String(row.section || 'GRANJA').toUpperCase()
 
@@ -649,17 +875,41 @@ export default function MovimientosEmpleadosPage() {
                       ? 'INVENTARIO_PLANTA'
                       : 'GRANJA'
 
-            const usuario = row.actor ? String(row.actor) : row.actor_text ? String(row.actor_text) : '—'
+            const usuario = row.actor
+              ? String(row.actor)
+              : row.actor_text
+                ? String(row.actor_text)
+                : '—'
 
-            salida.push({
+            const detalle = prettySnapshot(tableName, action, row.snapshot)
+
+            const item: MovItem = {
               ts: String(row.at),
               seccion: seccionFinal,
               accion: `${action} (${tableName})`,
+              accion_label: `${action} en ${tableName}`,
               usuario,
               usuario_label: userLabel(usuario),
               referencia: `${tableName}#${row.record_id || '—'}`,
-              detalle: prettySnapshot(tableName, action, row.snapshot),
-            })
+              detalle,
+              descripcion_corta: `${action} en ${tableName}.`,
+              observaciones: '—',
+            }
+
+            const textoItem = normalizarBusqueda(
+              [
+                item.seccion,
+                item.accion,
+                item.accion_label,
+                item.usuario_label,
+                item.referencia,
+                item.detalle,
+              ].join(' ')
+            )
+
+            if (!textoNormalizado || textoItem.includes(textoNormalizado)) {
+              salida.push(item)
+            }
           }
         }
       }
@@ -674,29 +924,7 @@ export default function MovimientosEmpleadosPage() {
         }
       })
 
-      let lista = Array.from(sinDuplicados.values())
-
-      if (texto) {
-        lista = lista.filter((item) => {
-          const cadena = [
-            item.seccion,
-            item.accion,
-            item.usuario_label,
-            item.referencia,
-            item.detalle,
-            item.ubicacion_codigo,
-            item.ubicacion_nombre,
-            item.tipo_granja,
-            item.origen,
-          ]
-            .join(' ')
-            .toLowerCase()
-
-          return cadena.includes(texto)
-        })
-      }
-
-      lista.sort((a, b) => {
+      const lista = Array.from(sinDuplicados.values()).sort((a, b) => {
         if (a.ts < b.ts) return 1
         if (a.ts > b.ts) return -1
         return 0
@@ -758,7 +986,11 @@ export default function MovimientosEmpleadosPage() {
         map.set(codigo, actual)
       })
 
-    return Array.from(map.values()).sort((a, b) => a.ubicacion.localeCompare(b.ubicacion))
+    return Array.from(map.values()).sort((a, b) => {
+      const ua = { id: 0, codigo: a.ubicacion, nombre: null }
+      const ub = { id: 0, codigo: b.ubicacion, nombre: null }
+      return naturalUbicacionSort(ua, ub)
+    })
   }, [items])
 
   const totalEntradas = useMemo(() => {
@@ -799,34 +1031,55 @@ export default function MovimientosEmpleadosPage() {
         : 'Todas'
 
       doc.text(
-        `Desde: ${filtros.desde || '—'}   Hasta: ${filtros.hasta || '—'}   Sección: ${filtros.seccion}   Usuario: ${usuarioTxt}   Ubicación: ${ubicacionTxt}   Tipo: ${filtros.tipo_granja}`,
+        `Desde: ${filtros.desde || '—'}   Hasta: ${filtros.hasta || '—'}   Sección: ${
+          filtros.seccion
+        }   Usuario: ${usuarioTxt}   Ubicación: ${ubicacionTxt}   Tipo: ${
+          filtros.tipo_granja
+        }`,
         10,
         25
       )
 
       autoTable(doc, {
         startY: 30,
-        head: [['Fecha/Hora', 'Sección', 'Ubicación', 'Acción', 'Impacto', 'Usuario', 'Referencia', 'Detalle']],
+        head: [
+          [
+            'Fecha/Hora',
+            'Sección',
+            'Ubicación',
+            'Movimiento',
+            'Cantidad',
+            'Impacto',
+            'Usuario',
+            'Referencia',
+            'Qué pasó',
+            'Observación',
+          ],
+        ],
         body: items.slice(0, 1400).map((item) => [
           fmtFecha(item.ts),
           item.seccion,
           item.ubicacion_codigo || '—',
-          item.accion,
+          item.accion_label,
+          item.cantidad != null ? String(item.cantidad) : '—',
           item.seccion === 'GRANJA' ? formatoImpacto(item.impacto) : '—',
           item.usuario_label,
           item.referencia,
-          item.detalle,
+          item.descripcion_corta,
+          item.observaciones,
         ]),
-        styles: { fontSize: 7, cellPadding: 1.5, valign: 'top' },
+        styles: { fontSize: 7, cellPadding: 1.3, valign: 'top' },
         columnStyles: {
-          0: { cellWidth: 28 },
-          1: { cellWidth: 25 },
+          0: { cellWidth: 26 },
+          1: { cellWidth: 20 },
           2: { cellWidth: 22 },
-          3: { cellWidth: 35 },
+          3: { cellWidth: 32 },
           4: { cellWidth: 18 },
-          5: { cellWidth: 45 },
-          6: { cellWidth: 45 },
-          7: { cellWidth: 75 },
+          5: { cellWidth: 18 },
+          6: { cellWidth: 40 },
+          7: { cellWidth: 35 },
+          8: { cellWidth: 55 },
+          9: { cellWidth: 35 },
         },
       })
 
@@ -977,11 +1230,11 @@ export default function MovimientosEmpleadosPage() {
 
           <div className="xl:col-span-2">
             <label className="block text-xs text-gray-600 mb-1">
-              Buscar texto, referencia, documento u observación
+              Buscar texto, referencia, tramo u observación
             </label>
             <input
               className="border p-2 w-full rounded"
-              placeholder="Ej: TR08, venta, muerte, baja..."
+              placeholder="Ej: TR8, TR08, venta, muerte, baja..."
               value={filtros.texto}
               onChange={(e) =>
                 setFiltros((prev) => ({
@@ -990,6 +1243,9 @@ export default function MovimientosEmpleadosPage() {
                 }))
               }
             />
+            <p className="text-[11px] text-gray-500 mt-1">
+              TR8 y TR08 se buscan como el mismo tramo.
+            </p>
           </div>
         </div>
 
@@ -1090,18 +1346,18 @@ export default function MovimientosEmpleadosPage() {
           </div>
         </div>
 
-        <table className="w-full text-sm min-w-[1100px]">
+        <table className="w-full text-sm min-w-[1200px]">
           <thead className="bg-gray-200">
             <tr>
               <th className="p-2 text-left">Fecha/Hora</th>
-              <th className="p-2 text-left">Sección</th>
-              <th className="p-2 text-left">Tramo / ubicación</th>
+              <th className="p-2 text-left">Ubicación</th>
               <th className="p-2 text-left">Movimiento</th>
               <th className="p-2 text-right">Cantidad</th>
               <th className="p-2 text-right">Impacto</th>
+              <th className="p-2 text-left">Qué pasó</th>
               <th className="p-2 text-left">Usuario</th>
               <th className="p-2 text-left">Referencia</th>
-              <th className="p-2 text-left">Detalle</th>
+              <th className="p-2 text-left">Observación</th>
             </tr>
           </thead>
 
@@ -1117,9 +1373,9 @@ export default function MovimientosEmpleadosPage() {
                 const impacto = Number(item.impacto || 0)
 
                 return (
-                  <tr key={`${item.seccion}-${item.referencia}-${index}`} className="border-t">
+                  <tr key={`${item.seccion}-${item.referencia}-${index}`} className="border-t align-top">
                     <td className="p-2 whitespace-nowrap">{fmtFecha(item.ts)}</td>
-                    <td className="p-2">{item.seccion}</td>
+
                     <td className="p-2 font-medium">
                       {item.ubicacion_codigo || '—'}
                       {item.ubicacion_nombre ? (
@@ -1128,10 +1384,16 @@ export default function MovimientosEmpleadosPage() {
                         </div>
                       ) : null}
                     </td>
-                    <td className="p-2">{item.accion}</td>
+
+                    <td className="p-2">
+                      <div className="font-medium">{item.accion_label}</div>
+                      <div className="text-[11px] text-gray-500">{item.accion}</div>
+                    </td>
+
                     <td className="p-2 text-right">
                       {item.cantidad != null ? item.cantidad : '—'}
                     </td>
+
                     <td
                       className={`p-2 text-right font-semibold ${
                         impacto > 0 ? 'text-emerald-700' : impacto < 0 ? 'text-red-700' : ''
@@ -1139,9 +1401,14 @@ export default function MovimientosEmpleadosPage() {
                     >
                       {item.seccion === 'GRANJA' ? formatoImpacto(item.impacto) : '—'}
                     </td>
+
+                    <td className="p-2">{item.descripcion_corta}</td>
+
                     <td className="p-2 break-all">{item.usuario_label}</td>
+
                     <td className="p-2 break-all">{item.referencia}</td>
-                    <td className="p-2">{item.detalle}</td>
+
+                    <td className="p-2">{item.observaciones}</td>
                   </tr>
                 )
               })
@@ -1151,8 +1418,9 @@ export default function MovimientosEmpleadosPage() {
       </section>
 
       <p className="text-xs text-gray-500 mt-3">
-        Para investigar diferencias entre inventario e inventario diario, usa sección “Granja”, selecciona el tramo
-        específico y el rango de fechas. La columna “Impacto” indica cuánto subió o bajó el inventario teórico.
+        Para investigar diferencias entre inventario e inventario diario, usa sección “Granja”,
+        selecciona el tramo específico y el rango de fechas. La columna “Impacto” indica cuánto
+        subió o bajó el inventario teórico.
       </p>
     </div>
   )
