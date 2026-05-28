@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabaseClient'
 import jsPDF from 'jspdf'
@@ -34,6 +34,8 @@ type EstadoUbicacion = {
   diferencia: number
 }
 
+type GrupoUbicaciones = Record<string, Ubicacion[]>
+
 const toNum = (v: unknown) => {
   const n = Number(v)
   return Number.isFinite(n) ? n : 0
@@ -51,107 +53,72 @@ const hoyISO = () => {
 
 const finDeDiaUTC = (yyyyMMdd: string) => `${yyyyMMdd}T23:59:59.999Z`
 
-const parseTR = (codigo: string) => {
-  const m = codigo.match(/^TR0*(\d+)$/i)
-  return m ? Number(m[1]) : null
+const groupNameFor = (ubicacion: Ubicacion) => {
+  const codigo = ubicacion.codigo || ''
+  const nombre = ubicacion.nombre || ''
+
+  if (nombre.includes(' - ')) {
+    return nombre.split(' - ')[0] || 'Otros'
+  }
+
+  if (nombre) return nombre
+
+  if (codigo.startsWith('G1')) return 'Gestación 1'
+  if (codigo.startsWith('G2')) return 'Gestación 2'
+  if (codigo.startsWith('G3')) return 'Gestación 3'
+  if (codigo.startsWith('TR')) return 'Galera'
+  if (codigo.startsWith('M1')) return 'Maternidad 1'
+  if (codigo.startsWith('M2')) return 'Maternidad 2'
+  if (codigo.startsWith('L1')) return 'Lechonera 1'
+  if (codigo.startsWith('L2')) return 'Lechonera 2'
+  if (codigo.startsWith('L3')) return 'Lechonera 3'
+  if (codigo.startsWith('S2')) return 'Sitio 2'
+
+  return 'Otros'
 }
 
-const parseM1 = (codigo: string) => {
-  const m = codigo.match(/^M1J(\d+)$/i)
-  return m ? Number(m[1]) : null
+const ordenarUbicaciones = (a: Ubicacion, b: Ubicacion) => {
+  return a.codigo.localeCompare(b.codigo, 'es', {
+    numeric: true,
+    sensitivity: 'base',
+  })
 }
 
-const parseM2 = (codigo: string) => {
-  const m = codigo.match(/^M2J(\d+)$/i)
-  return m ? Number(m[1]) : null
-}
+const ordenarGrupos = (a: string, b: string) => {
+  const ordenPreferido = [
+    'Gestación 1',
+    'Gestación 2',
+    'Gestación 3',
+    'Galera 1',
+    'Galera 2',
+    'Galera 3',
+    'Galera 4',
+    'Galera',
+    'Lechonera 1',
+    'Lechonera 2',
+    'Lechonera 3',
+    'Maternidad 1',
+    'Maternidad 2',
+    'Sitio 2',
+    'Otros',
+  ]
 
-const isTRBetween = (codigo: string, a: number, b: number) => {
-  const n = parseTR(codigo)
-  return n !== null && n >= a && n <= b
-}
+  const ia = ordenPreferido.indexOf(a)
+  const ib = ordenPreferido.indexOf(b)
 
-type GrupoConfig = {
-  titulo: string
-  match: (codigo: string) => boolean
-  sortKey: (u: Ubicacion) => number | string
-}
+  if (ia !== -1 && ib !== -1) return ia - ib
+  if (ia !== -1) return -1
+  if (ib !== -1) return 1
 
-const GRUPOS: GrupoConfig[] = [
-  {
-    titulo: 'GALERA 1',
-    match: (codigo) => isTRBetween(codigo, 1, 8),
-    sortKey: (u) => parseTR(u.codigo) ?? 999999,
-  },
-  {
-    titulo: 'GALERA 2',
-    match: (codigo) => isTRBetween(codigo, 9, 24),
-    sortKey: (u) => parseTR(u.codigo) ?? 999999,
-  },
-  {
-    titulo: 'GALERA 3',
-    match: (codigo) => isTRBetween(codigo, 25, 44),
-    sortKey: (u) => parseTR(u.codigo) ?? 999999,
-  },
-  {
-    titulo: 'GALERA 4',
-    match: (codigo) => isTRBetween(codigo, 45, 49),
-    sortKey: (u) => parseTR(u.codigo) ?? 999999,
-  },
-  {
-    titulo: 'LECHONERA 1',
-    match: (codigo) => ['L1T1', 'L1T2', 'L1T3', 'L1T4', 'L1T5'].includes(codigo),
-    sortKey: (u) => ['L1T1', 'L1T2', 'L1T3', 'L1T4', 'L1T5'].indexOf(u.codigo),
-  },
-  {
-    titulo: 'LECHONERA 2',
-    match: (codigo) => ['L2T1', 'L2T2', 'L2T3', 'L2T4', 'L2T5'].includes(codigo),
-    sortKey: (u) => ['L2T1', 'L2T2', 'L2T3', 'L2T4', 'L2T5'].indexOf(u.codigo),
-  },
-  {
-    titulo: 'LECHONERA 3',
-    match: (codigo) => ['L3T1', 'L3T2', 'L3T3', 'L3T4', 'L3T5'].includes(codigo),
-    sortKey: (u) => ['L3T1', 'L3T2', 'L3T3', 'L3T4', 'L3T5'].indexOf(u.codigo),
-  },
-  {
-    titulo: 'SITIO 2',
-    match: (codigo) => ['S2TR1', 'S2TR2', 'S2TR3', 'S2TR4'].includes(codigo),
-    sortKey: (u) => ['S2TR1', 'S2TR2', 'S2TR3', 'S2TR4'].indexOf(u.codigo),
-  },
-  {
-    titulo: 'MATERNIDAD 1',
-    match: (codigo) => parseM1(codigo) !== null,
-    sortKey: (u) => parseM1(u.codigo) ?? 999999,
-  },
-  {
-    titulo: 'MATERNIDAD 2',
-    match: (codigo) => codigo.toUpperCase().startsWith('M2'),
-    sortKey: (u) => parseM2(u.codigo) ?? 999999,
-  },
-]
-
-const perteneceAUnGrupo = (codigo: string) => GRUPOS.some((g) => g.match(codigo))
-
-const ordenarPorGrupo = (grupo: GrupoConfig, arr: Ubicacion[]) => {
-  const isM2 = grupo.titulo === 'MATERNIDAD 2'
-
-  return [...arr].sort((a, b) => {
-    const ka = grupo.sortKey(a)
-    const kb = grupo.sortKey(b)
-
-    if (typeof ka === 'number' && typeof kb === 'number' && ka !== kb) {
-      return ka - kb
-    }
-
-    if (isM2) return a.codigo.localeCompare(b.codigo)
-
-    return a.codigo.localeCompare(b.codigo)
+  return a.localeCompare(b, 'es', {
+    numeric: true,
+    sensitivity: 'base',
   })
 }
 
 function generarPdfInventarioDiario(
   fecha: string,
-  ubicaciones: Ubicacion[],
+  grupos: GrupoUbicaciones,
   estado: Record<number, EstadoUbicacion>
 ) {
   const doc = new jsPDF()
@@ -167,8 +134,6 @@ function generarPdfInventarioDiario(
   doc.setFontSize(9)
   doc.text(`Generado: ${ahora.toLocaleDateString()} ${ahora.toLocaleTimeString()}`, 14, 32)
 
-  const otras = ubicaciones.filter((u) => !perteneceAUnGrupo(u.codigo))
-
   const resumen: Array<{
     area: string
     teorico: number
@@ -180,55 +145,44 @@ function generarPdfInventarioDiario(
   let totalManual = 0
   let totalDiferencia = 0
 
-  const acumular = (area: string, ubis: Ubicacion[]) => {
-    let teorico = 0
-    let manual = 0
-    let diferencia = 0
+  Object.entries(grupos)
+    .sort(([a], [b]) => ordenarGrupos(a, b))
+    .forEach(([area, ubicaciones]) => {
+      let teorico = 0
+      let manual = 0
+      let diferencia = 0
 
-    ubis.forEach((u) => {
-      const e = estado[u.id]
-      if (!e || e.manual === '') return
+      ubicaciones.forEach((ubicacion) => {
+        const item = estado[ubicacion.id]
+        if (!item || item.manual === '') return
 
-      const teo = e.teorico || 0
-      const man = Number(e.manual) || 0
+        const teoricoItem = item.teorico || 0
+        const manualItem = Number(item.manual) || 0
 
-      teorico += teo
-      manual += man
-      diferencia += man - teo
+        teorico += teoricoItem
+        manual += manualItem
+        diferencia += manualItem - teoricoItem
+      })
+
+      if (teorico === 0 && manual === 0 && diferencia === 0) return
+
+      resumen.push({
+        area,
+        teorico,
+        manual,
+        diferencia,
+      })
+
+      totalTeorico += teorico
+      totalManual += manual
+      totalDiferencia += diferencia
     })
 
-    if (teorico === 0 && manual === 0 && diferencia === 0) return
-
-    resumen.push({
-      area,
-      teorico,
-      manual,
-      diferencia,
-    })
-
-    totalTeorico += teorico
-    totalManual += manual
-    totalDiferencia += diferencia
-  }
-
-  GRUPOS.forEach((grupo) => {
-    const ubis = ordenarPorGrupo(
-      grupo,
-      ubicaciones.filter((u) => grupo.match(u.codigo))
-    )
-
-    if (ubis.length) acumular(grupo.titulo, ubis)
-  })
-
-  if (otras.length) {
-    acumular('OTRAS UBICACIONES', otras)
-  }
-
-  const body = resumen.map((r) => [
-    r.area,
-    String(r.teorico),
-    String(r.manual),
-    String(r.diferencia),
+  const body = resumen.map((row) => [
+    row.area,
+    String(row.teorico),
+    String(row.manual),
+    String(row.diferencia),
   ])
 
   body.push([
@@ -243,6 +197,12 @@ function generarPdfInventarioDiario(
     head: [['Área', 'Teórico', 'Manual', 'Diferencia']],
     body,
     styles: { fontSize: 9 },
+    headStyles: { fillColor: [220, 220, 220] },
+    columnStyles: {
+      1: { halign: 'right' },
+      2: { halign: 'right' },
+      3: { halign: 'right' },
+    },
   })
 
   const pad = (n: number) => (n < 10 ? `0${n}` : `${n}`)
@@ -264,15 +224,50 @@ export default function InventarioDiarioPage() {
   const [guardando, setGuardando] = useState(false)
   const [imprimiendo, setImprimiendo] = useState(false)
 
+  const grupos = useMemo(() => {
+    const agrupado: GrupoUbicaciones = {}
+
+    ubicaciones.forEach((ubicacion) => {
+      const nombreGrupo = groupNameFor(ubicacion)
+
+      if (!agrupado[nombreGrupo]) {
+        agrupado[nombreGrupo] = []
+      }
+
+      agrupado[nombreGrupo].push(ubicacion)
+    })
+
+    Object.keys(agrupado).forEach((grupo) => {
+      agrupado[grupo].sort(ordenarUbicaciones)
+    })
+
+    return agrupado
+  }, [ubicaciones])
+
+  const totalTeoricoGeneral = useMemo(() => {
+    return Object.values(estado).reduce((sum, item) => sum + toNum(item.teorico), 0)
+  }, [estado])
+
+  const totalManualGeneral = useMemo(() => {
+    return Object.values(estado).reduce((sum, item) => {
+      if (item.manual === '') return sum
+      return sum + toNum(item.manual)
+    }, 0)
+  }, [estado])
+
+  const totalDiferenciaGeneral = useMemo(() => {
+    return Object.values(estado).reduce((sum, item) => sum + toNum(item.diferencia), 0)
+  }, [estado])
+
   const calcularTeorico = useCallback((ubis: Ubicacion[], movs: GranjaMovimiento[]) => {
     const teoricos: Record<number, number> = {}
 
-    ubis.forEach((u) => {
-      teoricos[u.id] = 0
+    ubis.forEach((ubicacion) => {
+      teoricos[ubicacion.id] = 0
     })
 
     movs.forEach((movimiento) => {
-      const ubicacionId = movimiento.ubicacion_id
+      const ubicacionId = Number(movimiento.ubicacion_id)
 
       if (teoricos[ubicacionId] === undefined) {
         teoricos[ubicacionId] = 0
@@ -299,7 +294,7 @@ export default function InventarioDiarioPage() {
     setLoading(true)
 
     try {
-      const { data: ubis, error: errUbicaciones } = await supabase
+      const { data: ubicacionesDataRaw, error: errUbicaciones } = await supabase
         .from('granja_ubicaciones')
         .select('id, codigo, nombre, tipo, activo')
         .eq('activo', true)
@@ -311,10 +306,13 @@ export default function InventarioDiarioPage() {
         return
       }
 
-      const ubicacionesData = (ubis ?? []) as Ubicacion[]
+      const ubicacionesData = ((ubicacionesDataRaw ?? []) as Ubicacion[]).sort(
+        ordenarUbicaciones
+      )
+
       setUbicaciones(ubicacionesData)
 
-      const { data: movs, error: errMovimientos } = await supabase
+      const { data: movimientosDataRaw, error: errMovimientos } = await supabase
         .from('granja_movimientos')
         .select('ubicacion_id, tipo, cantidad, fecha')
         .lte('fecha', finDeDiaUTC(fecha))
@@ -326,40 +324,40 @@ export default function InventarioDiarioPage() {
         return
       }
 
-      const movimientos = (movs ?? []) as GranjaMovimiento[]
+      const movimientos = (movimientosDataRaw ?? []) as GranjaMovimiento[]
       const teoricos = calcularTeorico(ubicacionesData, movimientos)
 
       let inventarioDiario: InventarioDiarioRow[] = []
 
-      const { data: inv, error: errInventarioDiario } = await supabase
+      const { data: inventarioDataRaw, error: errInventarioDiario } = await supabase
         .from('granja_inventario_diario')
         .select('ubicacion_id, conteo_manual, teorico_al_momento, diferencia')
         .eq('fecha', fecha)
 
       if (!errInventarioDiario) {
-        inventarioDiario = (inv ?? []) as InventarioDiarioRow[]
+        inventarioDiario = (inventarioDataRaw ?? []) as InventarioDiarioRow[]
       } else {
-        console.error('Error cargando inventario diario', errInventarioDiario)
+        console.error('Error cargando inventario diario guardado', errInventarioDiario)
       }
 
       const mapInventarioDiario = new Map<number, InventarioDiarioRow>()
 
       inventarioDiario.forEach((row) => {
-        mapInventarioDiario.set(row.ubicacion_id, row)
+        mapInventarioDiario.set(Number(row.ubicacion_id), row)
       })
 
       const nuevoEstado: Record<number, EstadoUbicacion> = {}
 
       ubicacionesData.forEach((ubicacion) => {
-        const teorico = teoricos[ubicacion.id] ?? 0
+        const teoricoActual = teoricos[ubicacion.id] ?? 0
         const rowGuardado = mapInventarioDiario.get(ubicacion.id)
 
         const manualStr = rowGuardado ? String(rowGuardado.conteo_manual) : ''
         const manualNum = manualStr === '' ? 0 : Number(manualStr) || 0
-        const diferencia = manualStr === '' ? 0 : manualNum - teorico
+        const diferencia = manualStr === '' ? 0 : manualNum - teoricoActual
 
         nuevoEstado[ubicacion.id] = {
-          teorico,
+          teorico: teoricoActual,
           manual: manualStr,
           diferencia,
         }
@@ -398,6 +396,43 @@ export default function InventarioDiarioPage() {
     })
   }
 
+  const copiarTeoricoComoConteo = () => {
+    setEstado((prev) => {
+      const copy: Record<number, EstadoUbicacion> = {}
+
+      Object.entries(prev).forEach(([ubicacionId, item]) => {
+        const teorico = item.teorico || 0
+
+        copy[Number(ubicacionId)] = {
+          teorico,
+          manual: String(teorico),
+          diferencia: 0,
+        }
+      })
+
+      return copy
+    })
+  }
+
+  const limpiarConteos = () => {
+    const confirmar = confirm('¿Limpiar todos los conteos manuales en pantalla?')
+    if (!confirmar) return
+
+    setEstado((prev) => {
+      const copy: Record<number, EstadoUbicacion> = {}
+
+      Object.entries(prev).forEach(([ubicacionId, item]) => {
+        copy[Number(ubicacionId)] = {
+          teorico: item.teorico,
+          manual: '',
+          diferencia: 0,
+        }
+      })
+
+      return copy
+    })
+  }
+
   const imprimirPdf = async () => {
     if (!fecha) {
       alert('Selecciona una fecha.')
@@ -409,7 +444,7 @@ export default function InventarioDiarioPage() {
       return
     }
 
-    const hayConteos = Object.values(estado).some((v) => v.manual !== '')
+    const hayConteos = Object.values(estado).some((item) => item.manual !== '')
 
     if (!hayConteos) {
       const ok = confirm('No hay conteos manuales ingresados. ¿Generar PDF de todos modos?')
@@ -419,7 +454,7 @@ export default function InventarioDiarioPage() {
     setImprimiendo(true)
 
     try {
-      generarPdfInventarioDiario(fecha, ubicaciones, { ...estado })
+      generarPdfInventarioDiario(fecha, grupos, { ...estado })
     } finally {
       setImprimiendo(false)
     }
@@ -459,7 +494,7 @@ export default function InventarioDiarioPage() {
       const { data: userData } = await supabase.auth.getUser()
       const userId = userData?.user?.id ?? null
 
-      const ubicacionIds = registrosBase.map((r) => r.ubicacion_id)
+      const ubicacionIds = registrosBase.map((row) => row.ubicacion_id)
 
       const { error: deleteError } = await supabase
         .from('granja_inventario_diario')
@@ -488,7 +523,7 @@ export default function InventarioDiarioPage() {
         return
       }
 
-      generarPdfInventarioDiario(fecha, ubicaciones, estadoParaPdf)
+      generarPdfInventarioDiario(fecha, grupos, estadoParaPdf)
 
       alert('Inventario diario guardado correctamente.')
       await cargarDatos()
@@ -496,8 +531,6 @@ export default function InventarioDiarioPage() {
       setGuardando(false)
     }
   }
-
-  const otrasUbicaciones = ubicaciones.filter((u) => !perteneceAUnGrupo(u.codigo))
 
   const renderCampoUbicacion = (ubicacion: Ubicacion) => {
     const data = estado[ubicacion.id] || {
@@ -516,8 +549,8 @@ export default function InventarioDiarioPage() {
           : 'text-red-700'
 
     return (
-      <div key={ubicacion.id} className="flex items-center gap-2 mb-2">
-        <div className="flex-1">
+      <div key={ubicacion.id} className="grid grid-cols-[1fr_70px_90px_70px] items-center gap-2 mb-2">
+        <div>
           <div className="text-[11px] font-semibold text-right">
             {ubicacion.codigo}
           </div>
@@ -526,18 +559,18 @@ export default function InventarioDiarioPage() {
           </div>
         </div>
 
-        <div className="w-20 text-right text-[11px] text-gray-700">
+        <div className="text-right text-[11px] text-gray-700">
           {data.teorico}
         </div>
 
         <input
           type="number"
-          className="w-20 border rounded px-1 py-1 text-right text-[11px]"
+          className="border rounded px-1 py-1 text-right text-[11px]"
           value={data.manual}
           onChange={(e) => handleManualChange(ubicacion.id, e.target.value)}
         />
 
-        <div className={`w-16 text-right text-[11px] ${diffColor}`}>
+        <div className={`text-right text-[11px] ${diffColor}`}>
           {diferencia}
         </div>
       </div>
@@ -560,11 +593,11 @@ export default function InventarioDiarioPage() {
           href="/granja"
           className="ml-auto inline-block bg-slate-700 hover:bg-slate-800 text-white px-3 py-2 rounded text-sm"
         >
-          ⬅ Menú de Granja
+          ← Menú de Granja
         </Link>
       </div>
 
-      <div className="mb-4 flex items-center gap-4">
+      <div className="mb-4 flex flex-wrap items-center gap-3">
         <div>
           <label className="block text-xs font-semibold mb-1">Fecha</label>
           <input
@@ -575,15 +608,31 @@ export default function InventarioDiarioPage() {
           />
         </div>
 
-        {loading ? <span className="text-xs text-gray-600">Cargando…</span> : null}
-
         <button
           type="button"
           onClick={cargarDatos}
           disabled={loading || !fecha}
           className="bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white px-4 py-2 rounded text-sm"
         >
-          Buscar
+          {loading ? 'Cargando…' : 'Buscar'}
+        </button>
+
+        <button
+          type="button"
+          onClick={copiarTeoricoComoConteo}
+          disabled={loading || ubicaciones.length === 0}
+          className="bg-gray-200 hover:bg-gray-300 disabled:opacity-60 text-gray-900 px-4 py-2 rounded text-sm"
+        >
+          Copiar teórico a conteo
+        </button>
+
+        <button
+          type="button"
+          onClick={limpiarConteos}
+          disabled={loading || ubicaciones.length === 0}
+          className="bg-gray-200 hover:bg-gray-300 disabled:opacity-60 text-gray-900 px-4 py-2 rounded text-sm"
+        >
+          Limpiar conteos
         </button>
 
         <button
@@ -605,38 +654,62 @@ export default function InventarioDiarioPage() {
         </button>
       </div>
 
-      <div className="mb-2 text-[11px] text-gray-600 flex justify-end gap-6 pr-6">
-        <span className="w-20 text-right">Teórico</span>
-        <span className="w-20 text-right">Conteo</span>
-        <span className="w-16 text-right">Diferencia</span>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
+        <div className="border rounded bg-white p-3">
+          <div className="text-xs text-gray-600">Total teórico</div>
+          <div className="text-xl font-bold">{totalTeoricoGeneral}</div>
+        </div>
+
+        <div className="border rounded bg-white p-3">
+          <div className="text-xs text-gray-600">Total conteo manual</div>
+          <div className="text-xl font-bold">{totalManualGeneral}</div>
+        </div>
+
+        <div className="border rounded bg-white p-3">
+          <div className="text-xs text-gray-600">Diferencia total</div>
+          <div
+            className={`text-xl font-bold ${
+              totalDiferenciaGeneral > 0
+                ? 'text-emerald-700'
+                : totalDiferenciaGeneral < 0
+                  ? 'text-red-700'
+                  : ''
+            }`}
+          >
+            {totalDiferenciaGeneral}
+          </div>
+        </div>
+      </div>
+
+      <div className="mb-2 text-[11px] text-gray-600 grid grid-cols-[1fr_70px_90px_70px] gap-2 pr-4">
+        <span></span>
+        <span className="text-right">Teórico</span>
+        <span className="text-right">Conteo</span>
+        <span className="text-right">Diferencia</span>
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2 xl:grid-cols-3">
-        {GRUPOS.map((grupo) => {
-          const ubicGrupo = ordenarPorGrupo(
-            grupo,
-            ubicaciones.filter((ubicacion) => grupo.match(ubicacion.codigo))
-          )
+        {Object.entries(grupos)
+          .sort(([a], [b]) => ordenarGrupos(a, b))
+          .map(([nombreGrupo, ubicacionesGrupo]) => {
+            const totalGrupoTeorico = ubicacionesGrupo.reduce(
+              (sum, ubicacion) => sum + toNum(estado[ubicacion.id]?.teorico),
+              0
+            )
 
-          if (ubicGrupo.length === 0) return null
+            return (
+              <div key={nombreGrupo} className="border rounded-lg p-3 bg-white shadow-sm">
+                <div className="flex items-center justify-between mb-2">
+                  <h2 className="font-semibold text-sm">{nombreGrupo.toUpperCase()}</h2>
+                  <span className="text-[11px] text-gray-600">
+                    Total: {totalGrupoTeorico}
+                  </span>
+                </div>
 
-          return (
-            <div key={grupo.titulo} className="border rounded-lg p-3 bg-white shadow-sm">
-              <h2 className="font-semibold text-sm mb-2">{grupo.titulo}</h2>
-              {ubicGrupo.map((ubicacion) => renderCampoUbicacion(ubicacion))}
-            </div>
-          )
-        })}
-
-        {otrasUbicaciones.length > 0 ? (
-          <div className="border rounded-lg p-3 bg-white shadow-sm">
-            <h2 className="font-semibold text-sm mb-2">Otras ubicaciones</h2>
-
-            {[...otrasUbicaciones]
-              .sort((a, b) => a.codigo.localeCompare(b.codigo))
-              .map((ubicacion) => renderCampoUbicacion(ubicacion))}
-          </div>
-        ) : null}
+                {ubicacionesGrupo.map((ubicacion) => renderCampoUbicacion(ubicacion))}
+              </div>
+            )
+          })}
       </div>
     </div>
   )
