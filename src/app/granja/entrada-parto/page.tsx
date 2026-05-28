@@ -359,8 +359,14 @@ export default function EntradaPartoPage() {
       EVENTOS_QUE_CIERRAN_CICLO
     )
 
-    if (!tieneServicioVigente) {
-      throw new Error('No puedes registrar parto sin una monta o inseminación previa.')
+    const estadoPermiteParto =
+      cerda.estado === 'PRENADA' ||
+      cerda.estado === 'LACTANDO'
+
+    if (!tieneServicioVigente && !estadoPermiteParto) {
+      throw new Error(
+        'No puedes registrar parto sin una monta o inseminación previa, excepto si la cerda está marcada como PRENADA.'
+      )
     }
 
     const revision = ultimaRevisionDespuesDeServicio(historial)
@@ -862,7 +868,7 @@ export default function EntradaPartoPage() {
         <div>
           <h1 className="text-2xl font-bold">Granja — Entrada por parto</h1>
           <p className="text-xs text-gray-600">
-            Registra partos usando cerdas del maestro, valida monta previa y actualiza inventario.
+            Registra partos usando cerdas del maestro, valida monta previa o estado PRENADA y actualiza inventario.
           </p>
         </div>
 
@@ -979,7 +985,7 @@ export default function EntradaPartoPage() {
                 </div>
               ) : (
                 <p className="text-[11px] text-gray-500 mt-1">
-                  Solo se permite registrar parto a cerdas existentes y activas.
+                  Se permite parto si la cerda tiene evento de monta/inseminación previa o estado PRENADA.
                 </p>
               )}
             </div>
@@ -1073,8 +1079,7 @@ export default function EntradaPartoPage() {
           </div>
 
           <div className="mt-1 text-xs text-gray-500">
-            Al guardar, se valida que exista monta/inseminación previa, se registra el evento
-            PARTO, la cerda pasa a LACTANDO y los nacidos vivos entran al inventario general.
+            Al guardar, se registra el evento PARTO, la cerda pasa a LACTANDO y los nacidos vivos entran al inventario general.
           </div>
 
           <div className="mt-4 flex gap-2">
