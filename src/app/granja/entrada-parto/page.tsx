@@ -51,8 +51,13 @@ type PartoRow = {
   observaciones: string | null
   user_id: string | null
   created_at: string | null
-  granja_ubicaciones?: { codigo: string; nombre: string | null } | null
-  granja_lotes?: { codigo: string } | null
+  granja_ubicaciones?: {
+    codigo: string
+    nombre: string | null
+  } | null
+  granja_lotes?: {
+    codigo: string
+  } | null
 }
 
 type FormState = {
@@ -70,6 +75,8 @@ type FormState = {
   observaciones: string
 }
 
+const EVENTOS_QUE_CIERRAN_CICLO = ['PARTO', 'DESTETE', 'ABORTO', 'MUERTE', 'DESCARTE']
+
 const hoyISO = () => {
   const d = new Date()
   const yyyy = d.getFullYear()
@@ -85,6 +92,7 @@ const fechaISOaTimestampMediodia = (fechaISO: string) => {
 const toInt = (v: string) => {
   const t = String(v || '').trim()
   if (t === '') return 0
+
   const n = Number(t)
   return Number.isFinite(n) ? Math.trunc(n) : NaN
 }
@@ -92,11 +100,45 @@ const toInt = (v: string) => {
 const toNumOrNull = (v: string) => {
   const t = String(v || '').trim()
   if (!t) return null
+
   const n = Number(t)
   return Number.isFinite(n) ? n : NaN
 }
 
-const EVENTOS_QUE_CIERRAN_CICLO = ['PARTO', 'DESTETE', 'ABORTO', 'MUERTE', 'DESCARTE']
+const normalizarPartos = (data: unknown): PartoRow[] => {
+  const rows = (data ?? []) as Array<
+    Omit<PartoRow, 'granja_ubicaciones' | 'granja_lotes'> & {
+      granja_ubicaciones?:
+        | {
+            codigo: string
+            nombre: string | null
+          }
+        | {
+            codigo: string
+            nombre: string | null
+          }[]
+        | null
+      granja_lotes?:
+        | {
+            codigo: string
+          }
+        | {
+            codigo: string
+          }[]
+        | null
+    }
+  >
+
+  return rows.map((parto) => ({
+    ...parto,
+    granja_ubicaciones: Array.isArray(parto.granja_ubicaciones)
+      ? parto.granja_ubicaciones[0] ?? null
+      : parto.granja_ubicaciones ?? null,
+    granja_lotes: Array.isArray(parto.granja_lotes)
+      ? parto.granja_lotes[0] ?? null
+      : parto.granja_lotes ?? null,
+  }))
+}
 
 export default function EntradaPartoPage() {
   const [loading, setLoading] = useState(false)
@@ -186,11 +228,27 @@ export default function EntradaPartoPage() {
         .from('granja_partos')
         .select(
           `
-          id, fecha, ubicacion_id, lote_id, cerda_id,
-          nacidos_vivos, nacidos_muertos, momias, peso_camda_kg,
-          hembras, machos, observaciones, user_id, created_at,
-          granja_ubicaciones ( codigo, nombre ),
-          granja_lotes ( codigo )
+          id,
+          fecha,
+          ubicacion_id,
+          lote_id,
+          cerda_id,
+          nacidos_vivos,
+          nacidos_muertos,
+          momias,
+          peso_camda_kg,
+          hembras,
+          machos,
+          observaciones,
+          user_id,
+          created_at,
+          granja_ubicaciones (
+            codigo,
+            nombre
+          ),
+          granja_lotes (
+            codigo
+          )
         `
         )
         .order('fecha', { ascending: false })
@@ -206,7 +264,7 @@ export default function EntradaPartoPage() {
       const ubicacionesData = (ubicacionesRes.data ?? []) as Ubicacion[]
       const lotesData = (lotesRes.data ?? []) as Lote[]
       const cerdasData = (cerdasRes.data ?? []) as Cerda[]
-      const partosData = (partosRes.data ?? []) as PartoRow[]
+      const partosData = normalizarPartos(partosRes.data)
 
       setUbicaciones(ubicacionesData)
       setLotes(lotesData)
@@ -793,11 +851,7 @@ export default function EntradaPartoPage() {
   }
 
   const cerdaInfo = (arete: string) => {
-    const cerda = buscarCerdaPorArete(arete)
-
-    if (!cerda) return null
-
-    return cerda
+    return buscarCerdaPorArete(arete)
   }
 
   return (
