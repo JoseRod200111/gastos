@@ -860,18 +860,18 @@ export default function GranjaInventarioPage() {
         {Object.entries(grupos)
           .sort(([a], [b]) => ordenarGrupos(a, b))
           .map(([grupo, lista]) => (
-            <div key={grupo} className="border rounded-lg bg-white shadow-sm p-3">
+            <div key={grupo} className="border rounded-lg bg-white shadow-sm p-3 overflow-hidden">
               <div className="flex items-start justify-between gap-3 mb-3">
-                <div>
+                <div className="min-w-0">
                   <h2 className="text-xs font-semibold uppercase tracking-wide">{grupo}</h2>
                   {renderResumenGrupo(grupo)}
                 </div>
               </div>
 
-              <div className="grid grid-cols-[auto_50px_75px_55px_minmax(75px,1fr)_50px] gap-x-2 gap-y-1 text-xs items-center">
+              <div className="grid grid-cols-[72px_42px_72px_42px_minmax(70px,1fr)_42px] gap-x-2 gap-y-2 text-xs items-start">
                 <div className="text-gray-500 text-right font-semibold">Ubic.</div>
                 <div className="text-gray-500 text-right font-semibold">Total</div>
-                <div className="text-gray-500 text-right font-semibold">Editable</div>
+                <div className="text-gray-500 text-center font-semibold">Editable</div>
                 <div className="text-gray-500 text-right font-semibold">Cerdas</div>
                 <div className="text-gray-500 text-left font-semibold">Aretes</div>
                 <div className="text-gray-500 text-right font-semibold">Lech.</div>
@@ -897,39 +897,43 @@ export default function GranjaInventarioPage() {
 
                   return (
                     <Fragment key={ubicacion.id}>
-                      <div className="py-1 pr-1 text-right font-medium">
-                        {ubicacion.codigo}
+                      <div className="py-1 text-right font-medium leading-tight">
+                        <div>{ubicacion.codigo}</div>
                         {ubicacion.nombre ? (
-                          <div className="text-[10px] text-gray-500 font-normal">
+                          <div className="text-[10px] text-gray-500 font-normal leading-tight break-words">
                             {ubicacion.nombre}
                           </div>
                         ) : null}
                       </div>
 
-                      <div className="text-right font-semibold">{totalVisual}</div>
+                      <div className="py-1 text-right font-semibold">
+                        {totalVisual}
+                      </div>
 
-                      <input
-                        type="number"
-                        min="0"
-                        className="border rounded w-full px-2 py-1 text-right"
-                        value={valorEditable}
-                        onChange={(e) => actualizarValor(ubicacion.id, e.target.value)}
-                        title={
-                          desglose.esZonaProtegida
-                            ? 'Este campo solo ajusta lechones.'
-                            : 'Este campo ajusta cerdos normales.'
-                        }
-                      />
+                      <div className="py-1 flex justify-center">
+                        <input
+                          type="number"
+                          min="0"
+                          className="border rounded w-[70px] px-2 py-1 text-right"
+                          value={valorEditable}
+                          onChange={(e) => actualizarValor(ubicacion.id, e.target.value)}
+                          title={
+                            desglose.esZonaProtegida
+                              ? 'Este campo solo ajusta lechones.'
+                              : 'Este campo ajusta cerdos normales.'
+                          }
+                        />
+                      </div>
 
-                      <div className="text-right font-semibold">
+                      <div className="py-1 text-right font-semibold">
                         {desglose.cerdasProtegidas}
                       </div>
 
-                      <div className="text-left text-[10px] text-gray-700 leading-tight break-words">
+                      <div className="py-1 text-left text-[10px] text-gray-700 leading-tight break-words min-w-0">
                         {desglose.cerdasProtegidas > 0 ? aretes.join(', ') : '—'}
                       </div>
 
-                      <div className="text-right font-semibold">
+                      <div className="py-1 text-right font-semibold">
                         {desglose.lechonesEditables}
                       </div>
                     </Fragment>
