@@ -25,24 +25,144 @@ type StockRow = {
   fecha?: string
 }
 
-type StockMap = Record<number, number>
+type CerdaRow = {
+  id: number
+  ubicacion_id: number | null
+  estado: string | null
+  activa: boolean | null
+}
 
-const toNum = (v: any) => {
+type StockMap = Record<number, number>
+type CerdasMap = Record<number, number>
+
+type DesgloseUbicacion = {
+  total: number
+  cerdas: number
+  lechones: number
+  cerdos: number
+}
+
+const toNum = (v: unknown) => {
   const n = Number(v)
   return Number.isFinite(n) ? n : 0
 }
 
-const absNum = (v: any) => Math.abs(toNum(v))
+const absNum = (v: unknown) => Math.abs(toNum(v))
 
-// Fin del día en UTC (para filtrar e insertar dentro del corte)
 const finDeDiaUTC = (yyyyMMdd: string) => `${yyyyMMdd}T23:59:59.999Z`
+
+const esMaternidadOGestacion = (u: Ubicacion) => {
+  const codigo = String(u.codigo || '').toUpperCase()
+  const nombre = String(u.nombre || '').toUpperCase()
+
+  return (
+    nombre.includes('MATERNIDAD') ||
+    nombre.includes('GESTACIÓN') ||
+    nombre.includes('GESTACION') ||
+    codigo.startsWith('M1') ||
+    codigo.startsWith('M2') ||
+    codigo.startsWith('G1') ||
+    codigo.startsWith('G2') ||
+    codigo.startsWith('G3')
+  )
+}
+
+const groupNameFor = (u: Ubicacion): string => {
+  if (u.nombre && u.nombre.includes(' - ')) {
+    return u.nombre.split(' - ')[0] || 'Otros'
+  }
+
+  if (u.nombre) return u.nombre
+
+  if (u.codigo.startsWith('G1')) return 'Gestación 1'
+  if (u.codigo.startsWith('G2')) return 'Gestación 2'
+  if (u.codigo.startsWith('G3')) return 'Gestación 3'
+  if (u.codigo.startsWith('TR')) return 'Galera'
+  if (u.codigo.startsWith('M1')) return 'Maternidad 1'
+  if (u.codigo.startsWith('M2')) return 'Maternidad 2'
+  if (u.codigo.startsWith('L1')) return 'Lechonera 1'
+  if (u.codigo.startsWith('L2')) return 'Lechonera 2'
+  if (u.codigo.startsWith('L3')) return 'Lechonera 3'
+  if (u.codigo.startsWith('S2')) return 'Sitio 2'
+
+  return 'Otros'
+}
+
+const ordenarUbicaciones = (a: Ubicacion, b: Ubicacion) => {
+  return a.codigo.localeCompare(b.codigo, 'es', {
+    numeric: true,
+    sensitivity: 'base',
+  })
+}
+
+const ordenarGrupos = (a: string, b: string) => {
+  const orden = [
+    'Gestación 1',
+    'Gestación 2',
+    'Gestación 3',
+    'Galera 1',
+    'Galera 2',
+    'Galera 3',
+    'Galera 4',
+    'Galera',
+    'Lechonera 1',
+    'Lechonera 2',
+    'Lechonera 3',
+    'Maternidad 1',
+    'Maternidad 2',
+    'Sitio 2',
+    'Otros',
+  ]
+
+  const ia = orden.indexOf(a)
+  const ib = orden.indexOf(b)
+
+  if (ia !== -1 && ib !== -1) return ia - ib
+  if (ia !== -1) return -1
+  if (ib !== -1) return 1
+
+  return a.localeCompare(b, 'es', {
+    numeric: true,
+    sensitivity: 'base',
+  })
+}
+
+const calcularDesglose = (
+  ubicacion: Ubicacion,
+  stockTeorico: StockMap,
+  cerdasPorUbicacion: CerdasMap
+): DesgloseUbicacion => {
+  const total = toNum(stockTeorico[ubicacion.id] ?? 0)
+  const cerdasRegistradas = toNum(cerdasPorUbicacion[ubicacion.id] ?? 0)
+
+  if (esMaternidadOGestacion(ubicacion)) {
+    const cerdas = Math.min(cerdasRegistradas, Math.max(total, 0))
+    const lechones = Math.max(total - cerdas, 0)
+
+    return {
+      total,
+      cerdas,
+      lechones,
+      cerdos: 0,
+    }
+  }
+
+  return {
+    total,
+    cerdas: 0,
+    lechones: 0,
+    cerdos: total,
+  }
+}
 
 async function fetchLogoDataUrl(): Promise<string | null> {
   try {
     const res = await fetch('/logo.png')
     const blob = await res.blob()
+
     return await new Promise((resolve) => {
       const reader = new FileReader()
+
       reader.onload = () => resolve(String(reader.result))
       reader.onerror = () => resolve(null)
       reader.readAsDataURL(blob)
@@ -56,77 +176,146 @@ function generarPdfInventarioPorCuadros(params: {
   fechaCorte: string
   grupos: Record<string, Ubicacion[]>
   stockTeorico: StockMap
+  cerdasPorUbicacion: CerdasMap
 }) {
-  const { fechaCorte, grupos, stockTeorico } = params
+  const { fechaCorte, grupos, stockTeorico, cerdasPorUbicacion } = params
 
   const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
 
   doc.setFontSize(14)
-  doc.text('REPORTE DE INVENTARIO (TEÓRICO)', 14, 16)
+  doc.text('REPORTE DE INVENTARIO DE GRANJA', 14, 16)
 
   doc.setFontSize(10)
   doc.text(`Fecha: ${fechaCorte}`, 14, 23)
 
-  const totalGeneral = Object.values(stockTeorico).reduce((a, n) => a + toNum(n), 0)
-  doc.text(`Total general: ${totalGeneral}`, 14, 28)
+  let totalGeneral = 0
+  let totalCerdas = 0
+  let totalLechones = 0
+  let totalCerdos = 0
 
-  // Resumen por grupo
-  const resumenBody: any[] = []
-  for (const [g, lista] of Object.entries(grupos)) {
-    const subtotal = lista.reduce((acc, u) => acc + toNum(stockTeorico[u.id] ?? 0), 0)
-    resumenBody.push([g, String(subtotal)])
-  }
-  resumenBody.push(['TOTAL', String(totalGeneral)])
+  Object.values(grupos).forEach((lista) => {
+    lista.forEach((ubicacion) => {
+      const d = calcularDesglose(ubicacion, stockTeorico, cerdasPorUbicacion)
+
+      totalGeneral += d.total
+      totalCerdas += d.cerdas
+      totalLechones += d.lechones
+      totalCerdos += d.cerdos
+    })
+  })
+
+  doc.text(`Total general: ${totalGeneral}`, 14, 29)
+  doc.text(`Cerdas: ${totalCerdas}   Lechones: ${totalLechones}   Cerdos normales: ${totalCerdos}`, 14, 35)
+
+  const resumenBody: string[][] = []
+
+  Object.entries(grupos)
+    .sort(([a], [b]) => ordenarGrupos(a, b))
+    .forEach(([grupo, lista]) => {
+      let total = 0
+      let cerdas = 0
+      let lechones = 0
+      let cerdos = 0
+
+      lista.forEach((ubicacion) => {
+        const d = calcularDesglose(ubicacion, stockTeorico, cerdasPorUbicacion)
+
+        total += d.total
+        cerdas += d.cerdas
+        lechones += d.lechones
+        cerdos += d.cerdos
+      })
+
+      resumenBody.push([
+        grupo,
+        String(total),
+        String(cerdas),
+        String(lechones),
+        String(cerdos),
+      ])
+    })
+
+  resumenBody.push([
+    'TOTAL',
+    String(totalGeneral),
+    String(totalCerdas),
+    String(totalLechones),
+    String(totalCerdos),
+  ])
 
   autoTable(doc, {
-    startY: 34,
-    head: [['Grupo', 'Total']],
+    startY: 42,
+    head: [['Grupo', 'Total', 'Cerdas', 'Lechones', 'Cerdos']],
     body: resumenBody,
-    styles: { fontSize: 9 },
+    styles: { fontSize: 8 },
     headStyles: { fillColor: [220, 220, 220] },
     margin: { left: 14, right: 14 },
-    columnStyles: { 1: { halign: 'right' } },
+    columnStyles: {
+      1: { halign: 'right' },
+      2: { halign: 'right' },
+      3: { halign: 'right' },
+      4: { halign: 'right' },
+    },
   })
 
   let y = (doc as any).lastAutoTable.finalY + 6
 
-  // Secciones por grupo (tipo “cuadros”)
-  for (const [g, lista] of Object.entries(grupos)) {
-    if (y > 260) {
-      doc.addPage()
-      y = 16
-    }
+  Object.entries(grupos)
+    .sort(([a], [b]) => ordenarGrupos(a, b))
+    .forEach(([grupo, lista]) => {
+      if (y > 260) {
+        doc.addPage()
+        y = 16
+      }
 
-    doc.setFontSize(11)
-    doc.text(g.toUpperCase(), 14, y)
-    y += 2
+      doc.setFontSize(11)
+      doc.text(grupo.toUpperCase(), 14, y)
+      y += 2
 
-    autoTable(doc, {
-      startY: y + 2,
-      head: [['Ubicación', 'Cantidad']],
-      body: lista.map((u) => [u.codigo, String(toNum(stockTeorico[u.id] ?? 0))]),
-      styles: { fontSize: 9 },
-      headStyles: { fillColor: [210, 210, 210] },
-      margin: { left: 14, right: 14 },
-      columnStyles: { 1: { halign: 'right' } },
+      autoTable(doc, {
+        startY: y + 2,
+        head: [['Ubicación', 'Total', 'Cerdas', 'Lechones', 'Cerdos']],
+        body: lista.map((ubicacion) => {
+          const d = calcularDesglose(ubicacion, stockTeorico, cerdasPorUbicacion)
+
+          return [
+            ubicacion.codigo,
+            String(d.total),
+            String(d.cerdas),
+            String(d.lechones),
+            String(d.cerdos),
+          ]
+        }),
+        styles: { fontSize: 8 },
+        headStyles: { fillColor: [210, 210, 210] },
+        margin: { left: 14, right: 14 },
+        columnStyles: {
+          1: { halign: 'right' },
+          2: { halign: 'right' },
+          3: { halign: 'right' },
+          4: { halign: 'right' },
+        },
+      })
+
+      y = (doc as any).lastAutoTable.finalY + 8
     })
-
-    y = (doc as any).lastAutoTable.finalY + 8
-  }
 
   const now = new Date()
   const pad = (n: number) => (n < 10 ? `0${n}` : `${n}`)
+
   const name = `reporte_inventario_${fechaCorte}_${now.getFullYear()}${pad(
     now.getMonth() + 1
   )}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(
     now.getSeconds()
   )}.pdf`
+
   doc.save(name)
 }
 
 export default function GranjaInventarioPage() {
   const [ubicaciones, setUbicaciones] = useState<Ubicacion[]>([])
   const [stockTeorico, setStockTeorico] = useState<StockMap>({})
+  const [cerdasPorUbicacion, setCerdasPorUbicacion] = useState<CerdasMap>({})
   const [valoresEditados, setValoresEditados] = useState<Record<number, string>>({})
   const [loading, setLoading] = useState(false)
   const [guardando, setGuardando] = useState(false)
@@ -141,52 +330,89 @@ export default function GranjaInventarioPage() {
     setFechaCorte(f)
   }, [])
 
-  // ----------- helpers de agrupacion -----------
-
-  const groupNameFor = (u: Ubicacion): string => {
-    if (u.nombre && u.nombre.includes(' - ')) {
-      return u.nombre.split(' - ')[0] || 'Otros'
-    }
-    if (u.nombre) return u.nombre
-    if (u.codigo.startsWith('TR')) return 'Galera'
-    if (u.codigo.startsWith('M1')) return 'Maternidad 1'
-    if (u.codigo.startsWith('M2')) return 'Maternidad 2'
-    if (u.codigo.startsWith('L1')) return 'Lechonera 1'
-    if (u.codigo.startsWith('L2')) return 'Lechonera 2'
-    if (u.codigo.startsWith('L3')) return 'Lechonera 3'
-    if (u.codigo.startsWith('S2')) return 'Sitio 2'
-    return 'Otros'
-  }
-
   const grupos = useMemo(() => {
     const g: Record<string, Ubicacion[]> = {}
-    for (const u of ubicaciones) {
-      const nombreGrupo = groupNameFor(u)
-      if (!g[nombreGrupo]) g[nombreGrupo] = []
-      g[nombreGrupo].push(u)
-    }
-    for (const key of Object.keys(g)) {
-      g[key].sort((a, b) => a.codigo.localeCompare(b.codigo, 'es'))
-    }
+
+    ubicaciones.forEach((ubicacion) => {
+      const nombreGrupo = groupNameFor(ubicacion)
+
+      if (!g[nombreGrupo]) {
+        g[nombreGrupo] = []
+      }
+
+      g[nombreGrupo].push(ubicacion)
+    })
+
+    Object.keys(g).forEach((key) => {
+      g[key].sort(ordenarUbicaciones)
+    })
+
     return g
   }, [ubicaciones])
 
-  const totalGeneral = useMemo(() => {
-    return Object.values(stockTeorico).reduce((a, n) => a + toNum(n), 0)
-  }, [stockTeorico])
+  const resumenGeneral = useMemo(() => {
+    let total = 0
+    let cerdas = 0
+    let lechones = 0
+    let cerdos = 0
+
+    ubicaciones.forEach((ubicacion) => {
+      const d = calcularDesglose(ubicacion, stockTeorico, cerdasPorUbicacion)
+
+      total += d.total
+      cerdas += d.cerdas
+      lechones += d.lechones
+      cerdos += d.cerdos
+    })
+
+    return {
+      total,
+      cerdas,
+      lechones,
+      cerdos,
+    }
+  }, [ubicaciones, stockTeorico, cerdasPorUbicacion])
 
   const totalesPorGrupo = useMemo(() => {
-    const t: Record<string, number> = {}
-    for (const [g, lista] of Object.entries(grupos)) {
-      t[g] = lista.reduce((acc, u) => acc + toNum(stockTeorico[u.id] ?? 0), 0)
-    }
-    return t
-  }, [grupos, stockTeorico])
+    const t: Record<
+      string,
+      {
+        total: number
+        cerdas: number
+        lechones: number
+        cerdos: number
+      }
+    > = {}
 
-  // ----------- cargar datos (con fecha) -----------
+    Object.entries(grupos).forEach(([grupo, lista]) => {
+      let total = 0
+      let cerdas = 0
+      let lechones = 0
+      let cerdos = 0
+
+      lista.forEach((ubicacion) => {
+        const d = calcularDesglose(ubicacion, stockTeorico, cerdasPorUbicacion)
+
+        total += d.total
+        cerdas += d.cerdas
+        lechones += d.lechones
+        cerdos += d.cerdos
+      })
+
+      t[grupo] = {
+        total,
+        cerdas,
+        lechones,
+        cerdos,
+      }
+    })
+
+    return t
+  }, [grupos, stockTeorico, cerdasPorUbicacion])
 
   const cargarDatos = useCallback(async () => {
     setLoading(true)
+
     try {
       const { data: ubicData, error: ubicError } = await supabase
         .from('granja_ubicaciones')
@@ -196,14 +422,16 @@ export default function GranjaInventarioPage() {
 
       if (ubicError) {
         console.error('Error cargando ubicaciones', ubicError)
+        alert(`Error cargando ubicaciones: ${ubicError.message}`)
         return
       }
 
-      const ubicList = (ubicData as Ubicacion[]) || []
+      const ubicList = ((ubicData ?? []) as Ubicacion[]).sort(ordenarUbicaciones)
       setUbicaciones(ubicList)
 
       if (ubicList.length === 0) {
         setStockTeorico({})
+        setCerdasPorUbicacion({})
         setValoresEditados({})
         return
       }
@@ -220,35 +448,64 @@ export default function GranjaInventarioPage() {
 
       if (movError) {
         console.error('Error cargando movimientos', movError)
+        alert(`Error cargando movimientos: ${movError.message}`)
         return
       }
 
       const mapa: StockMap = {}
-      ;(movData as StockRow[]).forEach((row) => {
-        const id = row.ubicacion_id
-        if (mapa[id] === undefined) mapa[id] = 0
 
-        // Reglas:
-        // - ENTRADAS: suman ABS(cantidad)
-        // - SALIDAS: restan ABS(cantidad)
-        // - AJUSTE: se aplica tal cual (puede ser + o -)
+      ;((movData ?? []) as StockRow[]).forEach((row) => {
+        const id = Number(row.ubicacion_id)
+
+        if (mapa[id] === undefined) {
+          mapa[id] = 0
+        }
+
         if (row.tipo === 'AJUSTE') {
           mapa[id] += toNum(row.cantidad)
         } else if (row.tipo === 'SALIDA_VENTA' || row.tipo === 'SALIDA_MUERTE') {
           mapa[id] -= absNum(row.cantidad)
         } else {
-          // ENTRADA_COMPRA / ENTRADA_PARTO
           mapa[id] += absNum(row.cantidad)
         }
       })
 
+      const { data: cerdasData, error: cerdasError } = await supabase
+        .from('granja_cerdas')
+        .select('id, ubicacion_id, estado, activa')
+        .eq('activa', true)
+
+      if (cerdasError) {
+        console.error('Error cargando cerdas', cerdasError)
+        alert(`Error cargando cerdas: ${cerdasError.message}`)
+        return
+      }
+
+      const mapaCerdas: CerdasMap = {}
+
+      ;((cerdasData ?? []) as CerdaRow[]).forEach((cerda) => {
+        if (!cerda.ubicacion_id) return
+        if (cerda.estado === 'MUERTA' || cerda.estado === 'BAJA') return
+
+        const id = Number(cerda.ubicacion_id)
+
+        if (mapaCerdas[id] === undefined) {
+          mapaCerdas[id] = 0
+        }
+
+        mapaCerdas[id] += 1
+      })
+
       setStockTeorico(mapa)
+      setCerdasPorUbicacion(mapaCerdas)
 
       const inicial: Record<number, string> = {}
-      for (const u of ubicList) {
-        const cant = mapa[u.id] ?? 0
-        inicial[u.id] = String(cant)
-      }
+
+      ubicList.forEach((ubicacion) => {
+        const cant = mapa[ubicacion.id] ?? 0
+        inicial[ubicacion.id] = String(cant)
+      })
+
       setValoresEditados(inicial)
     } finally {
       setLoading(false)
@@ -256,7 +513,9 @@ export default function GranjaInventarioPage() {
   }, [fechaCorte])
 
   useEffect(() => {
-    if (fechaCorte) cargarDatos()
+    if (fechaCorte) {
+      cargarDatos()
+    }
   }, [cargarDatos, fechaCorte])
 
   const actualizarValor = (idUbicacion: number, valor: string) => {
@@ -266,19 +525,19 @@ export default function GranjaInventarioPage() {
     }))
   }
 
-  // ----------- reporte pdf -----------
-
   const generarPDF = async () => {
     if (!fechaCorte) {
       alert('Selecciona una fecha de corte.')
       return
     }
+
     if (ubicaciones.length === 0) {
       alert('No hay ubicaciones para reportar.')
       return
     }
 
     setGenerandoPdf(true)
+
     try {
       const logo = await fetchLogoDataUrl()
       void logo
@@ -287,13 +546,12 @@ export default function GranjaInventarioPage() {
         fechaCorte,
         grupos,
         stockTeorico,
+        cerdasPorUbicacion,
       })
     } finally {
       setGenerandoPdf(false)
     }
   }
-
-  // ----------- guardar ajustes -----------
 
   const guardarInventario = async () => {
     if (guardando) return
@@ -304,6 +562,7 @@ export default function GranjaInventarioPage() {
     }
 
     setGuardando(true)
+
     try {
       const { data: userData } = await supabase.auth.getUser()
       const userId = userData?.user?.id ?? null
@@ -319,29 +578,30 @@ export default function GranjaInventarioPage() {
         fecha: string
       }[] = []
 
-      const fechaMovimiento = finDeDiaUTC(fechaCorte) // ✅ clave: que caiga dentro del corte
+      const fechaMovimiento = finDeDiaUTC(fechaCorte)
 
-      for (const u of ubicaciones) {
-        const original = stockTeorico[u.id] ?? 0
-        const texto = valoresEditados[u.id] ?? ''
+      for (const ubicacion of ubicaciones) {
+        const original = stockTeorico[ubicacion.id] ?? 0
+        const texto = valoresEditados[ubicacion.id] ?? ''
         const nuevoNumero = texto.trim() === '' ? 0 : Number(texto)
 
         if (Number.isNaN(nuevoNumero)) {
-          alert(`El valor para la ubicación ${u.codigo} no es un número válido.`)
+          alert(`El valor para la ubicación ${ubicacion.codigo} no es un número válido.`)
           return
         }
 
         const diff = nuevoNumero - original
+
         if (diff !== 0) {
           ajustes.push({
-            ubicacion_id: u.id,
+            ubicacion_id: ubicacion.id,
             tipo: 'AJUSTE',
-            cantidad: diff, // + sube, - baja
+            cantidad: diff,
             referencia_tabla: 'INVENTARIO_MANUAL',
             referencia_id: null,
             observaciones: `Ajuste manual desde pantalla de inventario (corte ${fechaCorte})`,
             user_id: userId,
-            fecha: fechaMovimiento, // ✅ para que el filtro lo incluya
+            fecha: fechaMovimiento,
           })
         }
       }
@@ -355,7 +615,7 @@ export default function GranjaInventarioPage() {
 
       if (insertError) {
         console.error('Error registrando ajustes', insertError)
-        alert('Ocurrió un error al guardar los ajustes de inventario.')
+        alert(`Ocurrió un error al guardar los ajustes de inventario: ${insertError.message}`)
         return
       }
 
@@ -366,23 +626,49 @@ export default function GranjaInventarioPage() {
     }
   }
 
-  // ----------- UI -----------
+  const renderResumenGrupo = (grupo: string) => {
+    const resumen = totalesPorGrupo[grupo] || {
+      total: 0,
+      cerdas: 0,
+      lechones: 0,
+      cerdos: 0,
+    }
+
+    return (
+      <div className="text-[11px] text-gray-600 flex flex-wrap gap-x-3 gap-y-1">
+        <span>
+          Total: <b>{resumen.total}</b>
+        </span>
+        <span>
+          Cerdas: <b>{resumen.cerdas}</b>
+        </span>
+        <span>
+          Lechones: <b>{resumen.lechones}</b>
+        </span>
+        <span>
+          Cerdos: <b>{resumen.cerdos}</b>
+        </span>
+      </div>
+    )
+  }
 
   return (
-    <div className="p-6 max-w-6xl mx-auto">
+    <div className="p-6 max-w-7xl mx-auto">
       <div className="mb-6 flex items-center gap-3">
         <img src="/logo.png" alt="Logo" className="h-10" />
+
         <div>
           <h1 className="text-2xl font-bold">Granja — Inventario</h1>
           <p className="text-xs text-gray-600">
-            Ajuste manual del inventario por tramo o jaula. Cada cambio se registra como movimiento de tipo ajuste.
+            Inventario por ubicación con desglose simple: cerdas, lechones y cerdos normales.
           </p>
         </div>
+
         <Link
           href="/granja"
           className="ml-auto inline-block bg-slate-700 hover:bg-slate-800 text-white px-3 py-2 rounded text-sm"
         >
-          ⬅ Menú de Granja
+          ← Menú de Granja
         </Link>
       </div>
 
@@ -403,7 +689,7 @@ export default function GranjaInventarioPage() {
             disabled={loading || !fechaCorte}
             className="bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white px-4 py-2 rounded text-sm"
           >
-            {loading ? 'Cargando…' : '🔍 Buscar'}
+            {loading ? 'Cargando…' : 'Buscar'}
           </button>
 
           <button
@@ -411,7 +697,7 @@ export default function GranjaInventarioPage() {
             disabled={generandoPdf || loading || ubicaciones.length === 0}
             className="bg-slate-800 hover:bg-slate-900 disabled:opacity-60 text-white px-4 py-2 rounded text-sm"
           >
-            {generandoPdf ? 'Generando…' : '📄 Reporte PDF'}
+            {generandoPdf ? 'Generando…' : 'Reporte PDF'}
           </button>
         </div>
 
@@ -432,7 +718,7 @@ export default function GranjaInventarioPage() {
         </div>
       </div>
 
-      <div className="grid md:grid-cols-4 gap-3 mb-5">
+      <div className="grid md:grid-cols-5 gap-3 mb-5">
         <div className="border rounded p-3 bg-white">
           <div className="text-xs text-gray-500">Fecha</div>
           <div className="text-lg font-bold">{fechaCorte || '—'}</div>
@@ -440,50 +726,114 @@ export default function GranjaInventarioPage() {
 
         <div className="border rounded p-3 bg-white">
           <div className="text-xs text-gray-500">Total general</div>
-          <div className="text-lg font-bold">{totalGeneral}</div>
+          <div className="text-lg font-bold">{resumenGeneral.total}</div>
         </div>
 
-        <div className="border rounded p-3 bg-white md:col-span-2">
-          <div className="text-xs text-gray-500">Totales por grupo</div>
-          <div className="text-xs text-gray-700 flex flex-wrap gap-x-4 gap-y-1 mt-1">
-            {Object.entries(totalesPorGrupo)
-              .slice(0, 6)
-              .map(([g, t]) => (
-                <span key={g}>
-                  <span className="font-semibold">{g}:</span> {t}
-                </span>
-              ))}
-            {Object.keys(totalesPorGrupo).length > 6 ? <span className="text-gray-500">…</span> : null}
-          </div>
+        <div className="border rounded p-3 bg-white">
+          <div className="text-xs text-gray-500">Cerdas registradas</div>
+          <div className="text-lg font-bold">{resumenGeneral.cerdas}</div>
+        </div>
+
+        <div className="border rounded p-3 bg-white">
+          <div className="text-xs text-gray-500">Lechones estimados</div>
+          <div className="text-lg font-bold">{resumenGeneral.lechones}</div>
+        </div>
+
+        <div className="border rounded p-3 bg-white">
+          <div className="text-xs text-gray-500">Cerdos normales</div>
+          <div className="text-lg font-bold">{resumenGeneral.cerdos}</div>
+        </div>
+      </div>
+
+      <div className="border rounded p-3 bg-white mb-5">
+        <div className="text-xs text-gray-500 mb-2">Totales por grupo</div>
+
+        <div className="text-xs text-gray-700 grid md:grid-cols-2 xl:grid-cols-3 gap-2">
+          {Object.entries(totalesPorGrupo)
+            .sort(([a], [b]) => ordenarGrupos(a, b))
+            .map(([grupo, resumen]) => (
+              <div key={grupo} className="border rounded p-2 bg-gray-50">
+                <div className="font-semibold">{grupo}</div>
+                <div className="flex flex-wrap gap-x-3 gap-y-1 mt-1">
+                  <span>Total: {resumen.total}</span>
+                  <span>Cerdas: {resumen.cerdas}</span>
+                  <span>Lechones: {resumen.lechones}</span>
+                  <span>Cerdos: {resumen.cerdos}</span>
+                </div>
+              </div>
+            ))}
         </div>
       </div>
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-        {Object.entries(grupos).map(([grupo, lista]) => (
-          <div key={grupo} className="border rounded-lg bg-white shadow-sm p-3">
-            <div className="flex items-center justify-between mb-2">
-              <h2 className="text-xs font-semibold uppercase tracking-wide">{grupo}</h2>
-              <span className="text-[11px] text-gray-600">
-                Total: {lista.reduce((acc, u) => acc + toNum(stockTeorico[u.id] ?? 0), 0)}
-              </span>
-            </div>
+        {Object.entries(grupos)
+          .sort(([a], [b]) => ordenarGrupos(a, b))
+          .map(([grupo, lista]) => (
+            <div key={grupo} className="border rounded-lg bg-white shadow-sm p-3">
+              <div className="flex items-start justify-between gap-3 mb-3">
+                <div>
+                  <h2 className="text-xs font-semibold uppercase tracking-wide">{grupo}</h2>
+                  {renderResumenGrupo(grupo)}
+                </div>
+              </div>
 
-            <div className="grid grid-cols-[auto,1fr] gap-x-2 gap-y-1 text-xs">
-              {lista.map((u) => (
-                <Fragment key={u.id}>
-                  <div className="py-1 pr-1 text-right font-medium">{u.codigo}</div>
-                  <input
-                    type="number"
-                    className="border rounded w-full px-2 py-1 text-right"
-                    value={valoresEditados[u.id] ?? ''}
-                    onChange={(e) => actualizarValor(u.id, e.target.value)}
-                  />
-                </Fragment>
-              ))}
+              <div className="grid grid-cols-[auto_1fr_auto_auto_auto_auto] gap-x-2 gap-y-1 text-xs items-center">
+                <div className="text-gray-500 text-right font-semibold">Ubic.</div>
+                <div className="text-gray-500 font-semibold">Total editable</div>
+                <div className="text-gray-500 text-right font-semibold">Cerdas</div>
+                <div className="text-gray-500 text-right font-semibold">Lech.</div>
+                <div className="text-gray-500 text-right font-semibold">Cerdos</div>
+                <div className="text-gray-500 text-right font-semibold">Tipo</div>
+
+                {lista.map((ubicacion) => {
+                  const desglose = calcularDesglose(
+                    ubicacion,
+                    stockTeorico,
+                    cerdasPorUbicacion
+                  )
+
+                  const tipoLugar = esMaternidadOGestacion(ubicacion)
+                    ? 'Cerdas/lechones'
+                    : 'Cerdos'
+
+                  return (
+                    <Fragment key={ubicacion.id}>
+                      <div className="py-1 pr-1 text-right font-medium">
+                        {ubicacion.codigo}
+                        {ubicacion.nombre ? (
+                          <div className="text-[10px] text-gray-500 font-normal">
+                            {ubicacion.nombre}
+                          </div>
+                        ) : null}
+                      </div>
+
+                      <input
+                        type="number"
+                        className="border rounded w-full px-2 py-1 text-right"
+                        value={valoresEditados[ubicacion.id] ?? ''}
+                        onChange={(e) => actualizarValor(ubicacion.id, e.target.value)}
+                      />
+
+                      <div className="text-right font-semibold">{desglose.cerdas}</div>
+
+                      <div className="text-right font-semibold">{desglose.lechones}</div>
+
+                      <div className="text-right font-semibold">{desglose.cerdos}</div>
+
+                      <div className="text-right text-[10px] text-gray-500">{tipoLugar}</div>
+                    </Fragment>
+                  )
+                })}
+              </div>
             </div>
-          </div>
-        ))}
+          ))}
       </div>
+
+      <p className="text-xs text-gray-500 mt-4">
+        Nota: en maternidad y gestación, las cerdas salen del maestro de cerdas activas.
+        El resto del inventario de esas ubicaciones se muestra como lechones. En otras áreas,
+        el total se muestra como cerdos normales.
+      </p>
     </div>
   )
 }
