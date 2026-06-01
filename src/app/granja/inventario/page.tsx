@@ -37,9 +37,12 @@ type CerdasMap = Record<number, number>
 
 type DesgloseUbicacion = {
   total: number
-  cerdas: number
-  lechones: number
-  cerdos: number
+  cerdasProtegidas: number
+  lechonesEditables: number
+  cerdosEditables: number
+  editableActual: number
+  tipoEditable: 'LECHONES' | 'CERDOS'
+  esZonaProtegida: boolean
 }
 
 const toNum = (v: unknown) => {
@@ -134,25 +137,50 @@ const calcularDesglose = (
 ): DesgloseUbicacion => {
   const total = toNum(stockTeorico[ubicacion.id] ?? 0)
   const cerdasRegistradas = toNum(cerdasPorUbicacion[ubicacion.id] ?? 0)
+  const esZonaProtegida = esMaternidadOGestacion(ubicacion)
 
-  if (esMaternidadOGestacion(ubicacion)) {
-    const cerdas = Math.min(cerdasRegistradas, Math.max(total, 0))
-    const lechones = Math.max(total - cerdas, 0)
+  if (esZonaProtegida) {
+    const cerdasProtegidas = Math.max(cerdasRegistradas, 0)
+    const lechonesEditables = Math.max(total - cerdasProtegidas, 0)
 
     return {
       total,
-      cerdas,
-      lechones,
-      cerdos: 0,
+      cerdasProtegidas,
+      lechonesEditables,
+      cerdosEditables: 0,
+      editableActual: lechonesEditables,
+      tipoEditable: 'LECHONES',
+      esZonaProtegida,
     }
   }
 
   return {
     total,
-    cerdas: 0,
-    lechones: 0,
-    cerdos: total,
+    cerdasProtegidas: 0,
+    lechonesEditables: 0,
+    cerdosEditables: total,
+    editableActual: total,
+    tipoEditable: 'CERDOS',
+    esZonaProtegida,
   }
+}
+
+const calcularTotalVisual = (
+  ubicacion: Ubicacion,
+  valorEditable: string,
+  stockTeorico: StockMap,
+  cerdasPorUbicacion: CerdasMap
+) => {
+  const desglose = calcularDesglose(ubicacion, stockTeorico, cerdasPorUbicacion)
+  const editable = valorEditable.trim() === '' ? 0 : Number(valorEditable)
+
+  if (!Number.isFinite(editable)) return desglose.total
+
+  if (desglose.esZonaProtegida) {
+    return desglose.cerdasProtegidas + editable
+  }
+
+  return editable
 }
 
 async function fetchLogoDataUrl(): Promise<string | null> {
@@ -177,8 +205,9 @@ function generarPdfInventarioPorCuadros(params: {
   grupos: Record<string, Ubicacion[]>
   stockTeorico: StockMap
   cerdasPorUbicacion: CerdasMap
+  valoresEditados: Record<number, string>
 }) {
-  const { fechaCorte, grupos, stockTeorico, cerdasPorUbicacion } = params
+  const { fechaCorte, grupos, stockTeorico, cerdasPorUbicacion, valoresEditados } = params
 
   const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
 
@@ -198,14 +227,18 @@ function generarPdfInventarioPorCuadros(params: {
       const d = calcularDesglose(ubicacion, stockTeorico, cerdasPorUbicacion)
 
       totalGeneral += d.total
-      totalCerdas += d.cerdas
-      totalLechones += d.lechones
-      totalCerdos += d.cerdos
+      totalCerdas += d.cerdasProtegidas
+      totalLechones += d.lechonesEditables
+      totalCerdos += d.cerdosEditables
     })
   })
 
   doc.text(`Total general: ${totalGeneral}`, 14, 29)
-  doc.text(`Cerdas: ${totalCerdas}   Lechones: ${totalLechones}   Cerdos normales: ${totalCerdos}`, 14, 35)
+  doc.text(
+    `Cerdas protegidas: ${totalCerdas}   Lechones: ${totalLechones}   Cerdos normales: ${totalCerdos}`,
+    14,
+    35
+  )
 
   const resumenBody: string[][] = []
 
@@ -221,9 +254,9 @@ function generarPdfInventarioPorCuadros(params: {
         const d = calcularDesglose(ubicacion, stockTeorico, cerdasPorUbicacion)
 
         total += d.total
-        cerdas += d.cerdas
-        lechones += d.lechones
-        cerdos += d.cerdos
+        cerdas += d.cerdasProtegidas
+        lechones += d.lechonesEditables
+        cerdos += d.cerdosEditables
       })
 
       resumenBody.push([
@@ -245,7 +278,7 @@ function generarPdfInventarioPorCuadros(params: {
 
   autoTable(doc, {
     startY: 42,
-    head: [['Grupo', 'Total', 'Cerdas', 'Lechones', 'Cerdos']],
+    head: [['Grupo', 'Total', 'Cerdas protegidas', 'Lechones', 'Cerdos']],
     body: resumenBody,
     styles: { fontSize: 8 },
     headStyles: { fillColor: [220, 220, 220] },
@@ -274,16 +307,18 @@ function generarPdfInventarioPorCuadros(params: {
 
       autoTable(doc, {
         startY: y + 2,
-        head: [['Ubicación', 'Total', 'Cerdas', 'Lechones', 'Cerdos']],
+        head: [['Ubicación', 'Total', 'Cerdas protegidas', 'Lechones', 'Cerdos', 'Editable']],
         body: lista.map((ubicacion) => {
           const d = calcularDesglose(ubicacion, stockTeorico, cerdasPorUbicacion)
+          const editable = valoresEditados[ubicacion.id] ?? String(d.editableActual)
 
           return [
             ubicacion.codigo,
             String(d.total),
-            String(d.cerdas),
-            String(d.lechones),
-            String(d.cerdos),
+            String(d.cerdasProtegidas),
+            String(d.lechonesEditables),
+            String(d.cerdosEditables),
+            editable,
           ]
         }),
         styles: { fontSize: 8 },
@@ -294,6 +329,7 @@ function generarPdfInventarioPorCuadros(params: {
           2: { halign: 'right' },
           3: { halign: 'right' },
           4: { halign: 'right' },
+          5: { halign: 'right' },
         },
       })
 
@@ -360,9 +396,9 @@ export default function GranjaInventarioPage() {
       const d = calcularDesglose(ubicacion, stockTeorico, cerdasPorUbicacion)
 
       total += d.total
-      cerdas += d.cerdas
-      lechones += d.lechones
-      cerdos += d.cerdos
+      cerdas += d.cerdasProtegidas
+      lechones += d.lechonesEditables
+      cerdos += d.cerdosEditables
     })
 
     return {
@@ -394,9 +430,9 @@ export default function GranjaInventarioPage() {
         const d = calcularDesglose(ubicacion, stockTeorico, cerdasPorUbicacion)
 
         total += d.total
-        cerdas += d.cerdas
-        lechones += d.lechones
-        cerdos += d.cerdos
+        cerdas += d.cerdasProtegidas
+        lechones += d.lechonesEditables
+        cerdos += d.cerdosEditables
       })
 
       t[grupo] = {
@@ -502,8 +538,8 @@ export default function GranjaInventarioPage() {
       const inicial: Record<number, string> = {}
 
       ubicList.forEach((ubicacion) => {
-        const cant = mapa[ubicacion.id] ?? 0
-        inicial[ubicacion.id] = String(cant)
+        const d = calcularDesglose(ubicacion, mapa, mapaCerdas)
+        inicial[ubicacion.id] = String(d.editableActual)
       })
 
       setValoresEditados(inicial)
@@ -547,6 +583,7 @@ export default function GranjaInventarioPage() {
         grupos,
         stockTeorico,
         cerdasPorUbicacion,
+        valoresEditados,
       })
     } finally {
       setGenerandoPdf(false)
@@ -581,25 +618,34 @@ export default function GranjaInventarioPage() {
       const fechaMovimiento = finDeDiaUTC(fechaCorte)
 
       for (const ubicacion of ubicaciones) {
-        const original = stockTeorico[ubicacion.id] ?? 0
+        const desglose = calcularDesglose(ubicacion, stockTeorico, cerdasPorUbicacion)
         const texto = valoresEditados[ubicacion.id] ?? ''
-        const nuevoNumero = texto.trim() === '' ? 0 : Number(texto)
+        const nuevoEditable = texto.trim() === '' ? 0 : Number(texto)
 
-        if (Number.isNaN(nuevoNumero)) {
-          alert(`El valor para la ubicación ${ubicacion.codigo} no es un número válido.`)
+        if (Number.isNaN(nuevoEditable)) {
+          alert(`El valor editable para ${ubicacion.codigo} no es un número válido.`)
           return
         }
 
-        const diff = nuevoNumero - original
+        if (nuevoEditable < 0) {
+          alert(`El valor editable para ${ubicacion.codigo} no puede ser negativo.`)
+          return
+        }
+
+        const diff = nuevoEditable - desglose.editableActual
 
         if (diff !== 0) {
+          const tipoProteccion = desglose.esZonaProtegida
+            ? 'Solo se ajustaron lechones. Las cerdas registradas están protegidas.'
+            : 'Se ajustaron cerdos normales.'
+
           ajustes.push({
             ubicacion_id: ubicacion.id,
             tipo: 'AJUSTE',
             cantidad: diff,
             referencia_tabla: 'INVENTARIO_MANUAL',
             referencia_id: null,
-            observaciones: `Ajuste manual desde pantalla de inventario (corte ${fechaCorte})`,
+            observaciones: `Ajuste manual desde inventario (corte ${fechaCorte}). ${tipoProteccion}`,
             user_id: userId,
             fecha: fechaMovimiento,
           })
@@ -611,6 +657,12 @@ export default function GranjaInventarioPage() {
         return
       }
 
+      const confirmar = confirm(
+        'Se guardarán ajustes únicamente sobre la parte editable. Las cerdas registradas NO serán eliminadas ni modificadas desde esta pantalla. ¿Continuar?'
+      )
+
+      if (!confirmar) return
+
       const { error: insertError } = await supabase.from('granja_movimientos').insert(ajustes)
 
       if (insertError) {
@@ -619,7 +671,7 @@ export default function GranjaInventarioPage() {
         return
       }
 
-      alert('Inventario guardado correctamente.')
+      alert('Inventario guardado correctamente. Las cerdas registradas no fueron modificadas.')
       await cargarDatos()
     } finally {
       setGuardando(false)
@@ -640,7 +692,7 @@ export default function GranjaInventarioPage() {
           Total: <b>{resumen.total}</b>
         </span>
         <span>
-          Cerdas: <b>{resumen.cerdas}</b>
+          Cerdas protegidas: <b>{resumen.cerdas}</b>
         </span>
         <span>
           Lechones: <b>{resumen.lechones}</b>
@@ -660,7 +712,7 @@ export default function GranjaInventarioPage() {
         <div>
           <h1 className="text-2xl font-bold">Granja — Inventario</h1>
           <p className="text-xs text-gray-600">
-            Inventario por ubicación con desglose simple: cerdas, lechones y cerdos normales.
+            Inventario por ubicación. Las cerdas registradas están protegidas y no se eliminan desde esta pantalla.
           </p>
         </div>
 
@@ -670,6 +722,12 @@ export default function GranjaInventarioPage() {
         >
           ← Menú de Granja
         </Link>
+      </div>
+
+      <div className="mb-4 p-3 border rounded bg-amber-50 text-xs text-amber-900">
+        <b>Importante:</b> en Gestación y Maternidad, el campo editable modifica solo los
+        lechones. Las cerdas registradas se muestran como “protegidas” y solo deberán manejarse
+        desde una pantalla especial de control de cerdas.
       </div>
 
       <div className="mb-4 flex flex-wrap items-end gap-3 justify-between">
@@ -730,17 +788,17 @@ export default function GranjaInventarioPage() {
         </div>
 
         <div className="border rounded p-3 bg-white">
-          <div className="text-xs text-gray-500">Cerdas registradas</div>
+          <div className="text-xs text-gray-500">Cerdas protegidas</div>
           <div className="text-lg font-bold">{resumenGeneral.cerdas}</div>
         </div>
 
         <div className="border rounded p-3 bg-white">
-          <div className="text-xs text-gray-500">Lechones estimados</div>
+          <div className="text-xs text-gray-500">Lechones editables</div>
           <div className="text-lg font-bold">{resumenGeneral.lechones}</div>
         </div>
 
         <div className="border rounded p-3 bg-white">
-          <div className="text-xs text-gray-500">Cerdos normales</div>
+          <div className="text-xs text-gray-500">Cerdos editables</div>
           <div className="text-lg font-bold">{resumenGeneral.cerdos}</div>
         </div>
       </div>
@@ -756,7 +814,7 @@ export default function GranjaInventarioPage() {
                 <div className="font-semibold">{grupo}</div>
                 <div className="flex flex-wrap gap-x-3 gap-y-1 mt-1">
                   <span>Total: {resumen.total}</span>
-                  <span>Cerdas: {resumen.cerdas}</span>
+                  <span>Cerdas protegidas: {resumen.cerdas}</span>
                   <span>Lechones: {resumen.lechones}</span>
                   <span>Cerdos: {resumen.cerdos}</span>
                 </div>
@@ -777,13 +835,13 @@ export default function GranjaInventarioPage() {
                 </div>
               </div>
 
-              <div className="grid grid-cols-[auto_1fr_auto_auto_auto_auto] gap-x-2 gap-y-1 text-xs items-center">
+              <div className="grid grid-cols-[auto_60px_80px_60px_60px_80px] gap-x-2 gap-y-1 text-xs items-center">
                 <div className="text-gray-500 text-right font-semibold">Ubic.</div>
-                <div className="text-gray-500 font-semibold">Total editable</div>
+                <div className="text-gray-500 text-right font-semibold">Total</div>
+                <div className="text-gray-500 text-right font-semibold">Editable</div>
                 <div className="text-gray-500 text-right font-semibold">Cerdas</div>
                 <div className="text-gray-500 text-right font-semibold">Lech.</div>
-                <div className="text-gray-500 text-right font-semibold">Cerdos</div>
-                <div className="text-gray-500 text-right font-semibold">Tipo</div>
+                <div className="text-gray-500 text-right font-semibold">Qué edita</div>
 
                 {lista.map((ubicacion) => {
                   const desglose = calcularDesglose(
@@ -792,8 +850,16 @@ export default function GranjaInventarioPage() {
                     cerdasPorUbicacion
                   )
 
-                  const tipoLugar = esMaternidadOGestacion(ubicacion)
-                    ? 'Cerdas/lechones'
+                  const valorEditable = valoresEditados[ubicacion.id] ?? String(desglose.editableActual)
+                  const totalVisual = calcularTotalVisual(
+                    ubicacion,
+                    valorEditable,
+                    stockTeorico,
+                    cerdasPorUbicacion
+                  )
+
+                  const etiquetaEditable = desglose.esZonaProtegida
+                    ? 'Lechones'
                     : 'Cerdos'
 
                   return (
@@ -807,20 +873,37 @@ export default function GranjaInventarioPage() {
                         ) : null}
                       </div>
 
+                      <div className="text-right font-semibold">
+                        {totalVisual}
+                      </div>
+
                       <input
                         type="number"
+                        min="0"
                         className="border rounded w-full px-2 py-1 text-right"
-                        value={valoresEditados[ubicacion.id] ?? ''}
+                        value={valorEditable}
                         onChange={(e) => actualizarValor(ubicacion.id, e.target.value)}
+                        title={
+                          desglose.esZonaProtegida
+                            ? 'Este campo solo ajusta lechones. Las cerdas están protegidas.'
+                            : 'Este campo ajusta cerdos normales.'
+                        }
                       />
 
-                      <div className="text-right font-semibold">{desglose.cerdas}</div>
+                      <div className="text-right font-semibold">
+                        {desglose.cerdasProtegidas}
+                        {desglose.cerdasProtegidas > 0 ? (
+                          <div className="text-[9px] text-amber-700">protegidas</div>
+                        ) : null}
+                      </div>
 
-                      <div className="text-right font-semibold">{desglose.lechones}</div>
+                      <div className="text-right font-semibold">
+                        {desglose.lechonesEditables}
+                      </div>
 
-                      <div className="text-right font-semibold">{desglose.cerdos}</div>
-
-                      <div className="text-right text-[10px] text-gray-500">{tipoLugar}</div>
+                      <div className="text-right text-[10px] text-gray-500">
+                        {etiquetaEditable}
+                      </div>
                     </Fragment>
                   )
                 })}
@@ -830,9 +913,9 @@ export default function GranjaInventarioPage() {
       </div>
 
       <p className="text-xs text-gray-500 mt-4">
-        Nota: en maternidad y gestación, las cerdas salen del maestro de cerdas activas.
-        El resto del inventario de esas ubicaciones se muestra como lechones. En otras áreas,
-        el total se muestra como cerdos normales.
+        Nota: esta pantalla no elimina cerdas registradas. En Gestación y Maternidad,
+        cualquier ajuste manual se aplica únicamente a lechones. En las demás áreas,
+        el ajuste se aplica a cerdos normales.
       </p>
     </div>
   )
