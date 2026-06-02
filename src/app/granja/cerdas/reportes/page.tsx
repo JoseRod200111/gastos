@@ -48,7 +48,7 @@ type CerdaEvento = {
   resultado: string | null
   ubicacion_id: number | null
   lote_id: number | null
-  datos: any
+  datos: unknown
   observaciones: string | null
   created_at: string | null
   granja_ubicaciones?: {
@@ -83,19 +83,22 @@ const ESTADOS_CERDA = [
   'BAJA',
 ]
 
-const toNum = (v: unknown) => {
-  const n = Number(v)
-  return Number.isFinite(n) ? n : 0
-}
-
 const formatFecha = (fecha?: string | null) => {
   if (!fecha) return '—'
   return String(fecha).slice(0, 10)
 }
 
-const ubicacionTexto = (u?: { codigo: string | null; nombre: string | null } | null) => {
+const ubicacionTexto = (
+  u?: { codigo: string | null; nombre: string | null } | null
+) => {
   if (!u) return '—'
-  return `${u.codigo || ''}${u.nombre ? ` — ${u.nombre}` : ''}` || '—'
+
+  const codigo = u.codigo || ''
+  const nombre = u.nombre || ''
+
+  if (!codigo && !nombre) return '—'
+
+  return `${codigo}${nombre ? ` — ${nombre}` : ''}`
 }
 
 function generarFichaCerdaPdf(cerda: Cerda, eventos: CerdaEvento[]) {
@@ -105,7 +108,11 @@ function generarFichaCerdaPdf(cerda: Cerda, eventos: CerdaEvento[]) {
   doc.text('FICHA INDIVIDUAL DE CERDA', 14, 16)
 
   doc.setFontSize(10)
-  doc.text(`Generado: ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString()}`, 14, 23)
+  doc.text(
+    `Generado: ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString()}`,
+    14,
+    23
+  )
 
   autoTable(doc, {
     startY: 30,
@@ -118,7 +125,12 @@ function generarFichaCerdaPdf(cerda: Cerda, eventos: CerdaEvento[]) {
       ['Ubicación actual', ubicacionTexto(cerda.granja_ubicaciones)],
       ['Lote', cerda.granja_lotes?.codigo || '—'],
       ['Fecha nacimiento', formatFecha(cerda.fecha_nacimiento)],
-      ['Peso lb', cerda.peso_lb !== null && cerda.peso_lb !== undefined ? String(cerda.peso_lb) : '—'],
+      [
+        'Peso lb',
+        cerda.peso_lb !== null && cerda.peso_lb !== undefined
+          ? String(cerda.peso_lb)
+          : '—',
+      ],
       ['Fecha de registro', formatFecha(cerda.created_at)],
       ['Última actualización', formatFecha(cerda.updated_at)],
       ['Notas', cerda.notas || '—'],
@@ -132,7 +144,7 @@ function generarFichaCerdaPdf(cerda: Cerda, eventos: CerdaEvento[]) {
     margin: { left: 14, right: 14 },
   })
 
-  let y = (doc as any).lastAutoTable.finalY + 10
+  const y = (doc as any).lastAutoTable.finalY + 10
 
   doc.setFontSize(13)
   doc.text('Historial de eventos', 14, y)
@@ -148,7 +160,10 @@ function generarFichaCerdaPdf(cerda: Cerda, eventos: CerdaEvento[]) {
   autoTable(doc, {
     startY: y + 5,
     head: [['Fecha', 'Tipo', 'Resultado', 'Ubicación', 'Observaciones']],
-    body: bodyEventos.length > 0 ? bodyEventos : [['—', 'Sin eventos registrados', '—', '—', '—']],
+    body:
+      bodyEventos.length > 0
+        ? bodyEventos
+        : [['—', 'Sin eventos registrados', '—', '—', '—']],
     styles: { fontSize: 8 },
     headStyles: { fillColor: [230, 230, 230] },
     margin: { left: 14, right: 14 },
@@ -182,7 +197,9 @@ export default function CerdasReportesPage() {
   const [filtroEstado, setFiltroEstado] = useState('')
   const [mostrarInactivas, setMostrarInactivas] = useState(false)
 
-  const [cerdaSeleccionadaId, setCerdaSeleccionadaId] = useState<number | null>(null)
+  const [cerdaSeleccionadaId, setCerdaSeleccionadaId] = useState<number | null>(
+    null
+  )
 
   const [form, setForm] = useState<FormCerda>({
     arete: '',
@@ -198,7 +215,10 @@ export default function CerdasReportesPage() {
 
   const cerdaSeleccionada = useMemo(() => {
     if (!cerdaSeleccionadaId) return null
-    return cerdas.find((c) => Number(c.id) === Number(cerdaSeleccionadaId)) || null
+
+    return (
+      cerdas.find((c) => Number(c.id) === Number(cerdaSeleccionadaId)) || null
+    )
   }, [cerdas, cerdaSeleccionadaId])
 
   const eventosCerdaSeleccionada = useMemo(() => {
@@ -213,70 +233,71 @@ export default function CerdasReportesPage() {
     setLoading(true)
 
     try {
-      const [cerdasRes, ubicacionesRes, lotesRes, eventosRes] = await Promise.all([
-        supabase
-          .from('granja_cerdas')
-          .select(
+      const [cerdasRes, ubicacionesRes, lotesRes, eventosRes] =
+        await Promise.all([
+          supabase
+            .from('granja_cerdas')
+            .select(
+              `
+              id,
+              arete,
+              nombre,
+              estado,
+              ubicacion_id,
+              lote_id,
+              fecha_nacimiento,
+              peso_lb,
+              notas,
+              activa,
+              created_at,
+              updated_at,
+              granja_ubicaciones (
+                codigo,
+                nombre
+              ),
+              granja_lotes (
+                codigo
+              )
             `
-            id,
-            arete,
-            nombre,
-            estado,
-            ubicacion_id,
-            lote_id,
-            fecha_nacimiento,
-            peso_lb,
-            notas,
-            activa,
-            created_at,
-            updated_at,
-            granja_ubicaciones (
-              codigo,
-              nombre
-            ),
-            granja_lotes (
-              codigo
             )
-          `
-          )
-          .order('arete', { ascending: true }),
+            .order('arete', { ascending: true }),
 
-        supabase
-          .from('granja_ubicaciones')
-          .select('id, codigo, nombre')
-          .eq('activo', true)
-          .order('codigo', { ascending: true }),
+          supabase
+            .from('granja_ubicaciones')
+            .select('id, codigo, nombre')
+            .eq('activo', true)
+            .order('codigo', { ascending: true }),
 
-        supabase
-          .from('granja_lotes')
-          .select('id, codigo')
-          .order('codigo', { ascending: true }),
+          supabase
+            .from('granja_lotes')
+            .select('id, codigo')
+            .order('codigo', { ascending: true }),
 
-        supabase
-          .from('granja_cerda_eventos')
-          .select(
+          supabase
+            .from('granja_cerda_eventos')
+            .select(
+              `
+              id,
+              cerda_id,
+              fecha,
+              tipo,
+              resultado,
+              ubicacion_id,
+              lote_id,
+              datos,
+              observaciones,
+              created_at,
+              granja_ubicaciones (
+                codigo,
+                nombre
+              ),
+              granja_lotes (
+                codigo
+              )
             `
-            id,
-            cerda_id,
-            fecha,
-            tipo,
-            resultado,
-            ubicacion_id,
-            lote_id,
-            datos,
-            observaciones,
-            created_at,
-            granja_ubicaciones (
-              codigo,
-              nombre
-            ),
-            granja_lotes (
-              codigo
             )
-          `
-          )
-          .order('fecha', { ascending: false }),
-      ])
+            .order('fecha', { ascending: false }),
+        ])
 
       if (cerdasRes.error) {
         console.error(cerdasRes.error)
@@ -300,10 +321,10 @@ export default function CerdasReportesPage() {
         return
       }
 
-      setCerdas((cerdasRes.data || []) as any)
+      setCerdas((cerdasRes.data || []) as unknown as Cerda[])
       setUbicaciones((ubicacionesRes.data || []) as Ubicacion[])
       setLotes((lotesRes.data || []) as Lote[])
-      setEventos((eventosRes.data || []) as any)
+      setEventos((eventosRes.data || []) as unknown as CerdaEvento[])
     } finally {
       setLoading(false)
     }
@@ -348,8 +369,13 @@ export default function CerdasReportesPage() {
       estado: cerda.estado || 'VACIA',
       ubicacion_id: cerda.ubicacion_id ? String(cerda.ubicacion_id) : '',
       lote_id: cerda.lote_id ? String(cerda.lote_id) : '',
-      fecha_nacimiento: cerda.fecha_nacimiento ? String(cerda.fecha_nacimiento).slice(0, 10) : '',
-      peso_lb: cerda.peso_lb !== null && cerda.peso_lb !== undefined ? String(cerda.peso_lb) : '',
+      fecha_nacimiento: cerda.fecha_nacimiento
+        ? String(cerda.fecha_nacimiento).slice(0, 10)
+        : '',
+      peso_lb:
+        cerda.peso_lb !== null && cerda.peso_lb !== undefined
+          ? String(cerda.peso_lb)
+          : '',
       notas: cerda.notas || '',
       activa: Boolean(cerda.activa),
     })
@@ -419,19 +445,21 @@ export default function CerdasReportesPage() {
         return
       }
 
-      const { error: eventoError } = await supabase.from('granja_cerda_eventos').insert({
-        cerda_id: cerdaSeleccionadaId,
-        fecha: new Date().toISOString().slice(0, 10),
-        tipo: 'EDICION',
-        resultado: 'ACTUALIZADA',
-        ubicacion_id: payload.ubicacion_id,
-        lote_id: payload.lote_id,
-        datos: {
-          cambios: payload,
-        },
-        observaciones: 'Edición manual desde página de reportes de cerdas.',
-        user_id: userId,
-      })
+      const { error: eventoError } = await supabase
+        .from('granja_cerda_eventos')
+        .insert({
+          cerda_id: cerdaSeleccionadaId,
+          fecha: new Date().toISOString().slice(0, 10),
+          tipo: 'EDICION',
+          resultado: 'ACTUALIZADA',
+          ubicacion_id: payload.ubicacion_id,
+          lote_id: payload.lote_id,
+          datos: {
+            cambios: payload,
+          },
+          observaciones: 'Edición manual desde página de reportes de cerdas.',
+          user_id: userId,
+        })
 
       if (eventoError) {
         console.error(eventoError)
@@ -480,19 +508,21 @@ export default function CerdasReportesPage() {
         return
       }
 
-      const { error: eventoError } = await supabase.from('granja_cerda_eventos').insert({
-        cerda_id: cerdaSeleccionada.id,
-        fecha: new Date().toISOString().slice(0, 10),
-        tipo: 'BAJA',
-        resultado: 'COMPLETADA',
-        ubicacion_id: cerdaSeleccionada.ubicacion_id,
-        lote_id: cerdaSeleccionada.lote_id,
-        datos: {
-          arete: cerdaSeleccionada.arete,
-        },
-        observaciones: motivo || 'Baja manual desde reportes',
-        user_id: userId,
-      })
+      const { error: eventoError } = await supabase
+        .from('granja_cerda_eventos')
+        .insert({
+          cerda_id: cerdaSeleccionada.id,
+          fecha: new Date().toISOString().slice(0, 10),
+          tipo: 'BAJA',
+          resultado: 'COMPLETADA',
+          ubicacion_id: cerdaSeleccionada.ubicacion_id,
+          lote_id: cerdaSeleccionada.lote_id,
+          datos: {
+            arete: cerdaSeleccionada.arete,
+          },
+          observaciones: motivo || 'Baja manual desde reportes',
+          user_id: userId,
+        })
 
       if (eventoError) {
         console.error(eventoError)
@@ -561,9 +591,7 @@ export default function CerdasReportesPage() {
         <div className="border rounded-lg bg-white p-4 shadow-sm">
           <div className="flex flex-wrap items-end gap-3 mb-4">
             <div className="flex-1 min-w-[220px]">
-              <label className="block text-xs font-semibold mb-1">
-                Buscar
-              </label>
+              <label className="block text-xs font-semibold mb-1">Buscar</label>
               <input
                 className="border rounded p-2 w-full text-sm"
                 placeholder="Arete, nombre, estado, ubicación, lote..."
@@ -573,9 +601,7 @@ export default function CerdasReportesPage() {
             </div>
 
             <div>
-              <label className="block text-xs font-semibold mb-1">
-                Estado
-              </label>
+              <label className="block text-xs font-semibold mb-1">Estado</label>
               <select
                 className="border rounded p-2 text-sm"
                 value={filtroEstado}
@@ -672,7 +698,8 @@ export default function CerdasReportesPage() {
 
           {!cerdaSeleccionada ? (
             <div className="text-sm text-gray-500">
-              Selecciona una cerda de la tabla para ver, editar o imprimir su ficha.
+              Selecciona una cerda de la tabla para ver, editar o imprimir su
+              ficha.
             </div>
           ) : (
             <>
@@ -684,7 +711,10 @@ export default function CerdasReportesPage() {
                       className="border rounded p-2 w-full"
                       value={form.arete}
                       onChange={(e) =>
-                        setForm((prev) => ({ ...prev, arete: e.target.value }))
+                        setForm((prev) => ({
+                          ...prev,
+                          arete: e.target.value,
+                        }))
                       }
                     />
                   </div>
@@ -695,7 +725,10 @@ export default function CerdasReportesPage() {
                       className="border rounded p-2 w-full"
                       value={form.nombre}
                       onChange={(e) =>
-                        setForm((prev) => ({ ...prev, nombre: e.target.value }))
+                        setForm((prev) => ({
+                          ...prev,
+                          nombre: e.target.value,
+                        }))
                       }
                     />
                   </div>
@@ -708,7 +741,10 @@ export default function CerdasReportesPage() {
                       className="border rounded p-2 w-full"
                       value={form.estado}
                       onChange={(e) =>
-                        setForm((prev) => ({ ...prev, estado: e.target.value }))
+                        setForm((prev) => ({
+                          ...prev,
+                          estado: e.target.value,
+                        }))
                       }
                     >
                       {ESTADOS_CERDA.map((estado) => (
@@ -738,12 +774,17 @@ export default function CerdasReportesPage() {
                 </div>
 
                 <div>
-                  <label className="block text-xs font-semibold mb-1">Ubicación</label>
+                  <label className="block text-xs font-semibold mb-1">
+                    Ubicación
+                  </label>
                   <select
                     className="border rounded p-2 w-full"
                     value={form.ubicacion_id}
                     onChange={(e) =>
-                      setForm((prev) => ({ ...prev, ubicacion_id: e.target.value }))
+                      setForm((prev) => ({
+                        ...prev,
+                        ubicacion_id: e.target.value,
+                      }))
                     }
                   >
                     <option value="">— Sin ubicación —</option>
@@ -762,7 +803,10 @@ export default function CerdasReportesPage() {
                     className="border rounded p-2 w-full"
                     value={form.lote_id}
                     onChange={(e) =>
-                      setForm((prev) => ({ ...prev, lote_id: e.target.value }))
+                      setForm((prev) => ({
+                        ...prev,
+                        lote_id: e.target.value,
+                      }))
                     }
                   >
                     <option value="">— Sin lote —</option>
@@ -793,13 +837,18 @@ export default function CerdasReportesPage() {
                   </div>
 
                   <div>
-                    <label className="block text-xs font-semibold mb-1">Peso lb</label>
+                    <label className="block text-xs font-semibold mb-1">
+                      Peso lb
+                    </label>
                     <input
                       type="number"
                       className="border rounded p-2 w-full"
                       value={form.peso_lb}
                       onChange={(e) =>
-                        setForm((prev) => ({ ...prev, peso_lb: e.target.value }))
+                        setForm((prev) => ({
+                          ...prev,
+                          peso_lb: e.target.value,
+                        }))
                       }
                     />
                   </div>
@@ -811,7 +860,10 @@ export default function CerdasReportesPage() {
                     className="border rounded p-2 w-full min-h-[80px]"
                     value={form.notas}
                     onChange={(e) =>
-                      setForm((prev) => ({ ...prev, notas: e.target.value }))
+                      setForm((prev) => ({
+                        ...prev,
+                        notas: e.target.value,
+                      }))
                     }
                   />
                 </div>
