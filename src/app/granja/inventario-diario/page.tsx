@@ -16,7 +16,12 @@ type Ubicacion = {
 
 type GranjaMovimiento = {
   ubicacion_id: number
-  tipo: 'ENTRADA_COMPRA' | 'ENTRADA_PARTO' | 'SALIDA_VENTA' | 'SALIDA_MUERTE' | 'AJUSTE'
+  tipo:
+    | 'ENTRADA_COMPRA'
+    | 'ENTRADA_PARTO'
+    | 'SALIDA_VENTA'
+    | 'SALIDA_MUERTE'
+    | 'AJUSTE'
   cantidad: number | null
   fecha: string
 }
@@ -38,20 +43,25 @@ type CerdaRow = {
   activa: boolean | null
 }
 
-type CerdasMap = Record<number, number>
-type CerdasAretesMap = Record<number, string[]>
-
 type EstadoUbicacion = {
   teorico: number
-  cerdasProtegidas: number
+
+  cerdasTeorico: number
+  lechonesTeorico: number
+  cerdosTeorico: number
+
+  cerdasManual: string
+  lechonesManual: string
+  cerdosManual: string
+
   aretes: string[]
-  editableTeorico: number
-  manual: string
   totalManual: number
   diferencia: number
 }
 
 type GrupoUbicaciones = Record<string, Ubicacion[]>
+type CerdasMap = Record<number, number>
+type AretesMap = Record<number, string[]>
 
 const toNum = (v: unknown) => {
   const n = Number(v)
@@ -149,6 +159,25 @@ const ordenarGrupos = (a: string, b: string) => {
   })
 }
 
+const limpiarNumeroInput = (value: string) => {
+  if (value === '') return ''
+  const n = Number(value)
+  if (!Number.isFinite(n)) return ''
+  return String(Math.max(Math.floor(n), 0))
+}
+
+const calcularTotalManual = (
+  cerdasManual: string,
+  lechonesManual: string,
+  cerdosManual: string
+) => {
+  if (cerdasManual === '' && lechonesManual === '' && cerdosManual === '') {
+    return 0
+  }
+
+  return toNum(cerdasManual) + toNum(lechonesManual) + toNum(cerdosManual)
+}
+
 function generarPdfInventarioDiario(
   fecha: string,
   grupos: GrupoUbicaciones,
@@ -171,14 +200,16 @@ function generarPdfInventarioDiario(
     area: string
     teorico: number
     cerdas: number
-    editable: number
+    lechones: number
+    cerdos: number
     manual: number
     diferencia: number
   }> = []
 
   let totalTeorico = 0
   let totalCerdas = 0
-  let totalEditable = 0
+  let totalLechones = 0
+  let totalCerdos = 0
   let totalManual = 0
   let totalDiferencia = 0
 
@@ -187,7 +218,8 @@ function generarPdfInventarioDiario(
     .forEach(([area, ubicaciones]) => {
       let teorico = 0
       let cerdas = 0
-      let editable = 0
+      let lechones = 0
+      let cerdos = 0
       let manual = 0
       let diferencia = 0
       let tieneConteos = false
@@ -197,30 +229,37 @@ function generarPdfInventarioDiario(
         if (!item) return
 
         teorico += item.teorico
-        cerdas += item.cerdasProtegidas
-        editable += item.editableTeorico
 
-        if (item.manual !== '') {
+        if (
+          item.cerdasManual !== '' ||
+          item.lechonesManual !== '' ||
+          item.cerdosManual !== ''
+        ) {
           tieneConteos = true
+          cerdas += toNum(item.cerdasManual)
+          lechones += toNum(item.lechonesManual)
+          cerdos += toNum(item.cerdosManual)
           manual += item.totalManual
           diferencia += item.diferencia
         }
       })
 
-      if (!tieneConteos && teorico === 0 && cerdas === 0 && editable === 0) return
+      if (!tieneConteos && teorico === 0) return
 
       resumen.push({
         area,
         teorico,
         cerdas,
-        editable,
+        lechones,
+        cerdos,
         manual,
         diferencia,
       })
 
       totalTeorico += teorico
       totalCerdas += cerdas
-      totalEditable += editable
+      totalLechones += lechones
+      totalCerdos += cerdos
       totalManual += manual
       totalDiferencia += diferencia
     })
@@ -229,7 +268,8 @@ function generarPdfInventarioDiario(
     row.area,
     String(row.teorico),
     String(row.cerdas),
-    String(row.editable),
+    String(row.lechones),
+    String(row.cerdos),
     String(row.manual),
     String(row.diferencia),
   ])
@@ -238,14 +278,15 @@ function generarPdfInventarioDiario(
     'TOTAL GENERAL',
     String(totalTeorico),
     String(totalCerdas),
-    String(totalEditable),
+    String(totalLechones),
+    String(totalCerdos),
     String(totalManual),
     String(totalDiferencia),
   ])
 
   autoTable(doc, {
     startY: 38,
-    head: [['Área', 'Teórico', 'Cerdas', 'Editable teórico', 'Conteo total', 'Diferencia']],
+    head: [['Área', 'Teórico', 'Cerdas', 'Lechones', 'Cerdos', 'Conteo total', 'Diferencia']],
     body,
     styles: { fontSize: 8 },
     headStyles: { fillColor: [220, 220, 220] },
@@ -255,6 +296,7 @@ function generarPdfInventarioDiario(
       3: { halign: 'right' },
       4: { halign: 'right' },
       5: { halign: 'right' },
+      6: { halign: 'right' },
     },
   })
 
@@ -266,16 +308,23 @@ function generarPdfInventarioDiario(
       const rows = ubicaciones
         .map((ubicacion) => {
           const item = estado[ubicacion.id]
-          if (!item || item.manual === '') return null
+          if (!item) return null
+
+          const tieneConteo =
+            item.cerdasManual !== '' ||
+            item.lechonesManual !== '' ||
+            item.cerdosManual !== ''
+
+          if (!tieneConteo) return null
 
           return [
             ubicacion.codigo,
             ubicacion.nombre || '',
             String(item.teorico),
-            String(item.cerdasProtegidas),
             item.aretes.length > 0 ? item.aretes.join(', ') : '—',
-            String(item.editableTeorico),
-            item.manual,
+            String(toNum(item.cerdasManual)),
+            String(toNum(item.lechonesManual)),
+            String(toNum(item.cerdosManual)),
             String(item.totalManual),
             String(item.diferencia),
           ]
@@ -299,11 +348,11 @@ function generarPdfInventarioDiario(
             'Ubicación',
             'Nombre',
             'Teórico',
-            'Cerdas',
             'Aretes',
-            'Editable teórico',
-            'Conteo editable',
-            'Conteo total',
+            'Cerdas',
+            'Lechones',
+            'Cerdos',
+            'Total',
             'Dif.',
           ],
         ],
@@ -313,7 +362,7 @@ function generarPdfInventarioDiario(
         margin: { left: 14, right: 14 },
         columnStyles: {
           2: { halign: 'right' },
-          3: { halign: 'right' },
+          4: { halign: 'right' },
           5: { halign: 'right' },
           6: { halign: 'right' },
           7: { halign: 'right' },
@@ -368,29 +417,71 @@ export default function InventarioDiarioPage() {
   }, [estado])
 
   const totalCerdasGeneral = useMemo(() => {
-    return Object.values(estado).reduce(
-      (sum, item) => sum + toNum(item.cerdasProtegidas),
-      0
-    )
+    return Object.values(estado).reduce((sum, item) => {
+      if (
+        item.cerdasManual === '' &&
+        item.lechonesManual === '' &&
+        item.cerdosManual === ''
+      ) {
+        return sum
+      }
+
+      return sum + toNum(item.cerdasManual)
+    }, 0)
   }, [estado])
 
-  const totalEditableTeoricoGeneral = useMemo(() => {
-    return Object.values(estado).reduce(
-      (sum, item) => sum + toNum(item.editableTeorico),
-      0
-    )
+  const totalLechonesGeneral = useMemo(() => {
+    return Object.values(estado).reduce((sum, item) => {
+      if (
+        item.cerdasManual === '' &&
+        item.lechonesManual === '' &&
+        item.cerdosManual === ''
+      ) {
+        return sum
+      }
+
+      return sum + toNum(item.lechonesManual)
+    }, 0)
+  }, [estado])
+
+  const totalCerdosGeneral = useMemo(() => {
+    return Object.values(estado).reduce((sum, item) => {
+      if (
+        item.cerdasManual === '' &&
+        item.lechonesManual === '' &&
+        item.cerdosManual === ''
+      ) {
+        return sum
+      }
+
+      return sum + toNum(item.cerdosManual)
+    }, 0)
   }, [estado])
 
   const totalManualGeneral = useMemo(() => {
     return Object.values(estado).reduce((sum, item) => {
-      if (item.manual === '') return sum
+      if (
+        item.cerdasManual === '' &&
+        item.lechonesManual === '' &&
+        item.cerdosManual === ''
+      ) {
+        return sum
+      }
+
       return sum + toNum(item.totalManual)
     }, 0)
   }, [estado])
 
   const totalDiferenciaGeneral = useMemo(() => {
     return Object.values(estado).reduce((sum, item) => {
-      if (item.manual === '') return sum
+      if (
+        item.cerdasManual === '' &&
+        item.lechonesManual === '' &&
+        item.cerdosManual === ''
+      ) {
+        return sum
+      }
+
       return sum + toNum(item.diferencia)
     }, 0)
   }, [estado])
@@ -433,14 +524,15 @@ export default function InventarioDiarioPage() {
     if (error) {
       console.error('Error cargando cerdas', error)
       alert(`Error cargando cerdas registradas: ${error.message}`)
+
       return {
         cerdasPorUbicacion: {} as CerdasMap,
-        aretesPorUbicacion: {} as CerdasAretesMap,
+        aretesPorUbicacion: {} as AretesMap,
       }
     }
 
     const cerdasPorUbicacion: CerdasMap = {}
-    const aretesPorUbicacion: CerdasAretesMap = {}
+    const aretesPorUbicacion: AretesMap = {}
 
     ;((data ?? []) as CerdaRow[]).forEach((cerda) => {
       if (!cerda.ubicacion_id) return
@@ -548,50 +640,59 @@ export default function InventarioDiarioPage() {
 
       ubicacionesData.forEach((ubicacion) => {
         const teoricoActual = teoricos[ubicacion.id] ?? 0
-        const cerdasProtegidas = cerdasPorUbicacion[ubicacion.id] ?? 0
+
+        const cerdasTeorico = cerdasPorUbicacion[ubicacion.id] ?? 0
         const aretes = aretesPorUbicacion[ubicacion.id] ?? []
 
-        const zonaProtegida = esMaternidadOGestacion(ubicacion)
+        const zonaLechones = esMaternidadOGestacion(ubicacion)
+        const restanteTeorico = Math.max(teoricoActual - cerdasTeorico, 0)
 
-        const cerdasAplicables = zonaProtegida ? cerdasProtegidas : 0
-        const editableTeorico = zonaProtegida
-          ? Math.max(teoricoActual - cerdasAplicables, 0)
-          : Math.max(teoricoActual, 0)
+        const lechonesTeorico = zonaLechones ? restanteTeorico : 0
+        const cerdosTeorico = zonaLechones ? 0 : restanteTeorico
 
         const rowGuardado = mapInventarioDiario.get(ubicacion.id)
 
-        let manualEditableStr = ''
+        let cerdasManual = ''
+        let lechonesManual = ''
+        let cerdosManual = ''
 
         if (rowGuardado) {
-          const totalManualGuardado = toNum(rowGuardado.conteo_manual)
+          const totalManualGuardado = Math.max(toNum(rowGuardado.conteo_manual), 0)
+          const hembrasGuardadas = Math.max(toNum(rowGuardado.hembras_manual), 0)
+          const cerdosGuardados = Math.max(toNum(rowGuardado.machos_manual), 0)
+          const lechonesGuardados = Math.max(
+            totalManualGuardado - hembrasGuardadas - cerdosGuardados,
+            0
+          )
 
-          if (zonaProtegida) {
-            manualEditableStr = String(Math.max(totalManualGuardado - cerdasAplicables, 0))
-          } else {
-            manualEditableStr = String(Math.max(totalManualGuardado, 0))
-          }
+          cerdasManual = String(hembrasGuardadas)
+          lechonesManual = String(lechonesGuardados)
+          cerdosManual = String(cerdosGuardados)
         }
 
-        const manualEditableNum =
-          manualEditableStr === '' ? 0 : Math.max(Number(manualEditableStr) || 0, 0)
+        const totalManual = calcularTotalManual(
+          cerdasManual,
+          lechonesManual,
+          cerdosManual
+        )
 
-        const totalManual =
-          manualEditableStr === ''
-            ? 0
-            : zonaProtegida
-              ? cerdasAplicables + manualEditableNum
-              : manualEditableNum
-
-        const diferencia = manualEditableStr === '' ? 0 : totalManual - teoricoActual
+        const tieneConteo =
+          cerdasManual !== '' || lechonesManual !== '' || cerdosManual !== ''
 
         nuevoEstado[ubicacion.id] = {
           teorico: teoricoActual,
-          cerdasProtegidas: cerdasAplicables,
-          aretes: zonaProtegida ? aretes : [],
-          editableTeorico,
-          manual: manualEditableStr,
+
+          cerdasTeorico,
+          lechonesTeorico,
+          cerdosTeorico,
+
+          cerdasManual,
+          lechonesManual,
+          cerdosManual,
+
+          aretes,
           totalManual,
-          diferencia,
+          diferencia: tieneConteo ? totalManual - teoricoActual : 0,
         }
       })
 
@@ -611,26 +712,43 @@ export default function InventarioDiarioPage() {
     }
   }, [fecha, cargarDatos])
 
-  const handleManualChange = (ubicacionId: number, value: string) => {
-    const limpio = value === '' ? '' : String(Math.max(Number(value) || 0, 0))
+  const actualizarConteo = (
+    ubicacionId: number,
+    campo: 'cerdasManual' | 'lechonesManual' | 'cerdosManual',
+    value: string
+  ) => {
+    const limpio = limpiarNumeroInput(value)
 
     setEstado((prev) => {
       const actual = prev[ubicacionId]
 
       if (!actual) return prev
 
-      const manualEditableNum = limpio === '' ? 0 : Number(limpio) || 0
-      const totalManual =
-        limpio === '' ? 0 : actual.cerdasProtegidas + manualEditableNum
-      const diferencia = limpio === '' ? 0 : totalManual - actual.teorico
+      const cerdasManual =
+        campo === 'cerdasManual' ? limpio : actual.cerdasManual
+      const lechonesManual =
+        campo === 'lechonesManual' ? limpio : actual.lechonesManual
+      const cerdosManual =
+        campo === 'cerdosManual' ? limpio : actual.cerdosManual
+
+      const totalManual = calcularTotalManual(
+        cerdasManual,
+        lechonesManual,
+        cerdosManual
+      )
+
+      const tieneConteo =
+        cerdasManual !== '' || lechonesManual !== '' || cerdosManual !== ''
 
       return {
         ...prev,
         [ubicacionId]: {
           ...actual,
-          manual: limpio,
+          cerdasManual,
+          lechonesManual,
+          cerdosManual,
           totalManual,
-          diferencia,
+          diferencia: tieneConteo ? totalManual - actual.teorico : 0,
         },
       }
     })
@@ -641,13 +759,21 @@ export default function InventarioDiarioPage() {
       const copy: Record<number, EstadoUbicacion> = {}
 
       Object.entries(prev).forEach(([ubicacionId, item]) => {
-        const manual = String(Math.max(item.editableTeorico, 0))
-        const manualNum = Number(manual) || 0
-        const totalManual = item.cerdasProtegidas + manualNum
+        const cerdasManual = String(Math.max(item.cerdasTeorico, 0))
+        const lechonesManual = String(Math.max(item.lechonesTeorico, 0))
+        const cerdosManual = String(Math.max(item.cerdosTeorico, 0))
+
+        const totalManual = calcularTotalManual(
+          cerdasManual,
+          lechonesManual,
+          cerdosManual
+        )
 
         copy[Number(ubicacionId)] = {
           ...item,
-          manual,
+          cerdasManual,
+          lechonesManual,
+          cerdosManual,
           totalManual,
           diferencia: totalManual - item.teorico,
         }
@@ -667,7 +793,9 @@ export default function InventarioDiarioPage() {
       Object.entries(prev).forEach(([ubicacionId, item]) => {
         copy[Number(ubicacionId)] = {
           ...item,
-          manual: '',
+          cerdasManual: '',
+          lechonesManual: '',
+          cerdosManual: '',
           totalManual: 0,
           diferencia: 0,
         }
@@ -688,7 +816,12 @@ export default function InventarioDiarioPage() {
       return
     }
 
-    const hayConteos = Object.values(estado).some((item) => item.manual !== '')
+    const hayConteos = Object.values(estado).some(
+      (item) =>
+        item.cerdasManual !== '' ||
+        item.lechonesManual !== '' ||
+        item.cerdosManual !== ''
+    )
 
     if (!hayConteos) {
       const ok = confirm('No hay conteos manuales ingresados. ¿Generar PDF de todos modos?')
@@ -711,10 +844,18 @@ export default function InventarioDiarioPage() {
     }
 
     const registrosBase = Object.entries(estado)
-      .filter(([, value]) => value.manual !== '')
+      .filter(
+        ([, value]) =>
+          value.cerdasManual !== '' ||
+          value.lechonesManual !== '' ||
+          value.cerdosManual !== ''
+      )
       .map(([ubicacionId, value]) => {
-        const manualEditable = Number(value.manual) || 0
-        const totalManual = value.cerdasProtegidas + manualEditable
+        const cerdasManual = toNum(value.cerdasManual)
+        const lechonesManual = toNum(value.lechonesManual)
+        const cerdosManual = toNum(value.cerdosManual)
+
+        const totalManual = cerdasManual + lechonesManual + cerdosManual
         const teorico = value.teorico || 0
 
         return {
@@ -723,20 +864,13 @@ export default function InventarioDiarioPage() {
           conteo_manual: totalManual,
           teorico_al_momento: teorico,
           diferencia: totalManual - teorico,
-          hembras_manual: value.cerdasProtegidas,
-          machos_manual: null,
+          hembras_manual: cerdasManual,
+          machos_manual: cerdosManual,
         }
       })
 
     if (registrosBase.length === 0) {
       alert('No hay conteos para guardar.')
-      return
-    }
-
-    const invalidos = registrosBase.filter((row) => row.conteo_manual < row.hembras_manual)
-
-    if (invalidos.length > 0) {
-      alert('Hay ubicaciones donde el conteo total sería menor que las cerdas registradas.')
       return
     }
 
@@ -789,70 +923,133 @@ export default function InventarioDiarioPage() {
   const renderCampoUbicacion = (ubicacion: Ubicacion) => {
     const data = estado[ubicacion.id] || {
       teorico: 0,
-      cerdasProtegidas: 0,
+
+      cerdasTeorico: 0,
+      lechonesTeorico: 0,
+      cerdosTeorico: 0,
+
+      cerdasManual: '',
+      lechonesManual: '',
+      cerdosManual: '',
+
       aretes: [],
-      editableTeorico: 0,
-      manual: '',
       totalManual: 0,
       diferencia: 0,
     }
 
+    const tieneConteo =
+      data.cerdasManual !== '' ||
+      data.lechonesManual !== '' ||
+      data.cerdosManual !== ''
+
     const diferencia = data.diferencia
 
     const diffColor =
-      diferencia === 0
+      !tieneConteo || diferencia === 0
         ? 'text-gray-600'
         : diferencia > 0
           ? 'text-emerald-700'
           : 'text-red-700'
 
-    const tieneCerdas = data.cerdasProtegidas > 0
-
     return (
-      <div
-        key={ubicacion.id}
-        className="grid grid-cols-[92px_48px_48px_minmax(70px,1fr)_80px_58px_58px] items-start gap-2 mb-2"
-      >
-        <div>
-          <div className="text-[11px] font-semibold text-right leading-tight">
-            {ubicacion.codigo}
+      <div key={ubicacion.id} className="border-b last:border-b-0 py-2">
+        <div className="grid grid-cols-[90px_1fr] gap-2">
+          <div className="text-right">
+            <div className="text-[11px] font-semibold leading-tight">
+              {ubicacion.codigo}
+            </div>
+
+            <div className="text-[10px] text-gray-500 leading-tight">
+              {ubicacion.nombre || ''}
+            </div>
           </div>
-          <div className="text-[10px] text-gray-500 text-right leading-tight">
-            {ubicacion.nombre || ''}
+
+          <div className="min-w-0">
+            <div className="grid grid-cols-[46px_46px_46px_minmax(60px,1fr)] gap-2 items-start mb-1">
+              <div>
+                <div className="text-[9px] text-gray-500 text-right">Teórico</div>
+                <div className="text-[11px] text-gray-700 text-right">
+                  {data.teorico}
+                </div>
+              </div>
+
+              <div>
+                <div className="text-[9px] text-gray-500 text-right">Cer. T.</div>
+                <div className="text-[11px] text-gray-700 text-right">
+                  {data.cerdasTeorico}
+                </div>
+              </div>
+
+              <div>
+                <div className="text-[9px] text-gray-500 text-right">Lech. T.</div>
+                <div className="text-[11px] text-gray-700 text-right">
+                  {data.lechonesTeorico}
+                </div>
+              </div>
+
+              <div className="min-w-0">
+                <div className="text-[9px] text-gray-500 text-left">Aretes</div>
+                <div className="text-[10px] text-gray-700 leading-tight break-words">
+                  {data.aretes.length > 0 ? data.aretes.join(', ') : '—'}
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-[64px_64px_64px_44px_44px] gap-2 items-start">
+              <div>
+                <div className="text-[9px] text-gray-500 text-right">Cerdas</div>
+                <input
+                  type="number"
+                  min="0"
+                  className="border rounded px-1 py-1 text-right text-[11px] w-full"
+                  value={data.cerdasManual}
+                  onChange={(e) =>
+                    actualizarConteo(ubicacion.id, 'cerdasManual', e.target.value)
+                  }
+                />
+              </div>
+
+              <div>
+                <div className="text-[9px] text-gray-500 text-right">Lechones</div>
+                <input
+                  type="number"
+                  min="0"
+                  className="border rounded px-1 py-1 text-right text-[11px] w-full"
+                  value={data.lechonesManual}
+                  onChange={(e) =>
+                    actualizarConteo(ubicacion.id, 'lechonesManual', e.target.value)
+                  }
+                />
+              </div>
+
+              <div>
+                <div className="text-[9px] text-gray-500 text-right">Cerdos</div>
+                <input
+                  type="number"
+                  min="0"
+                  className="border rounded px-1 py-1 text-right text-[11px] w-full"
+                  value={data.cerdosManual}
+                  onChange={(e) =>
+                    actualizarConteo(ubicacion.id, 'cerdosManual', e.target.value)
+                  }
+                />
+              </div>
+
+              <div>
+                <div className="text-[9px] text-gray-500 text-right">Total</div>
+                <div className="text-[11px] text-gray-700 text-right py-1">
+                  {tieneConteo ? data.totalManual : '—'}
+                </div>
+              </div>
+
+              <div>
+                <div className="text-[9px] text-gray-500 text-right">Dif.</div>
+                <div className={`text-[11px] text-right py-1 ${diffColor}`}>
+                  {tieneConteo ? diferencia : '—'}
+                </div>
+              </div>
+            </div>
           </div>
-        </div>
-
-        <div className="text-right text-[11px] text-gray-700 py-1">
-          {data.teorico}
-        </div>
-
-        <div className="text-right text-[11px] text-gray-700 py-1">
-          {data.cerdasProtegidas}
-        </div>
-
-        <div className="text-left text-[10px] text-gray-600 leading-tight py-1 break-words min-w-0">
-          {tieneCerdas ? data.aretes.join(', ') : '—'}
-        </div>
-
-        <input
-          type="number"
-          min="0"
-          className="border rounded px-1 py-1 text-right text-[11px] w-full"
-          value={data.manual}
-          onChange={(e) => handleManualChange(ubicacion.id, e.target.value)}
-          title={
-            tieneCerdas
-              ? 'Este conteo no modifica las cerdas registradas. Solo cuenta la parte editable.'
-              : 'Conteo manual de esta ubicación.'
-          }
-        />
-
-        <div className="text-right text-[11px] text-gray-700 py-1">
-          {data.manual === '' ? '—' : data.totalManual}
-        </div>
-
-        <div className={`text-right text-[11px] py-1 ${diffColor}`}>
-          {data.manual === '' ? '—' : diferencia}
         </div>
       </div>
     )
@@ -935,29 +1132,34 @@ export default function InventarioDiarioPage() {
         </button>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-5 gap-3 mb-4">
+      <div className="grid grid-cols-1 md:grid-cols-6 gap-3 mb-4">
         <div className="border rounded bg-white p-3">
           <div className="text-xs text-gray-600">Total teórico</div>
           <div className="text-xl font-bold">{totalTeoricoGeneral}</div>
         </div>
 
         <div className="border rounded bg-white p-3">
-          <div className="text-xs text-gray-600">Cerdas registradas</div>
+          <div className="text-xs text-gray-600">Cerdas contadas</div>
           <div className="text-xl font-bold">{totalCerdasGeneral}</div>
         </div>
 
         <div className="border rounded bg-white p-3">
-          <div className="text-xs text-gray-600">Editable teórico</div>
-          <div className="text-xl font-bold">{totalEditableTeoricoGeneral}</div>
+          <div className="text-xs text-gray-600">Lechones contados</div>
+          <div className="text-xl font-bold">{totalLechonesGeneral}</div>
         </div>
 
         <div className="border rounded bg-white p-3">
-          <div className="text-xs text-gray-600">Total conteo manual</div>
+          <div className="text-xs text-gray-600">Cerdos contados</div>
+          <div className="text-xl font-bold">{totalCerdosGeneral}</div>
+        </div>
+
+        <div className="border rounded bg-white p-3">
+          <div className="text-xs text-gray-600">Total conteo</div>
           <div className="text-xl font-bold">{totalManualGeneral}</div>
         </div>
 
         <div className="border rounded bg-white p-3">
-          <div className="text-xs text-gray-600">Diferencia total</div>
+          <div className="text-xs text-gray-600">Diferencia</div>
           <div
             className={`text-xl font-bold ${
               totalDiferenciaGeneral > 0
@@ -972,17 +1174,7 @@ export default function InventarioDiarioPage() {
         </div>
       </div>
 
-      <div className="mb-2 text-[11px] text-gray-600 grid grid-cols-[92px_48px_48px_minmax(70px,1fr)_80px_58px_58px] gap-2 pr-4">
-        <span></span>
-        <span className="text-right">Teórico</span>
-        <span className="text-right">Cerdas</span>
-        <span className="text-left">Aretes</span>
-        <span className="text-right">Conteo</span>
-        <span className="text-right">Total</span>
-        <span className="text-right">Dif.</span>
-      </div>
-
-      <div className="grid gap-4 lg:grid-cols-2 xl:grid-cols-3">
+      <div className="grid gap-4 lg:grid-cols-2 xl:grid-cols-2">
         {Object.entries(grupos)
           .sort(([a], [b]) => ordenarGrupos(a, b))
           .map(([nombreGrupo, ubicacionesGrupo]) => {
@@ -991,18 +1183,18 @@ export default function InventarioDiarioPage() {
               0
             )
 
-            const totalGrupoCerdas = ubicacionesGrupo.reduce(
-              (sum, ubicacion) =>
-                sum + toNum(estado[ubicacion.id]?.cerdasProtegidas),
-              0
-            )
-
             return (
-              <div key={nombreGrupo} className="border rounded-lg p-3 bg-white shadow-sm overflow-hidden">
+              <div
+                key={nombreGrupo}
+                className="border rounded-lg p-3 bg-white shadow-sm overflow-hidden"
+              >
                 <div className="flex items-center justify-between mb-2 gap-2">
-                  <h2 className="font-semibold text-sm">{nombreGrupo.toUpperCase()}</h2>
+                  <h2 className="font-semibold text-sm">
+                    {nombreGrupo.toUpperCase()}
+                  </h2>
+
                   <span className="text-[11px] text-gray-600 whitespace-nowrap">
-                    Total: {totalGrupoTeorico} · Cerdas: {totalGrupoCerdas}
+                    Total: {totalGrupoTeorico}
                   </span>
                 </div>
 
