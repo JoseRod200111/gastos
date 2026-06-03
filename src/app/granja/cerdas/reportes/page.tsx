@@ -27,6 +27,7 @@ type Cerda = {
   lote_id: number | null
   fecha_nacimiento: string | null
   peso_lb: number | null
+  paridad: number | null
   notas: string | null
   activa: boolean
   created_at: string | null
@@ -68,6 +69,7 @@ type FormCerda = {
   lote_id: string
   fecha_nacimiento: string
   peso_lb: string
+  paridad: string
   notas: string
   activa: boolean
 }
@@ -101,7 +103,18 @@ const ubicacionTexto = (
   return `${codigo}${nombre ? ` — ${nombre}` : ''}`
 }
 
-function generarFichaCerdaPdf(cerda: Cerda, eventos: CerdaEvento[]) {
+const normalizar = (v: string | null | undefined) => String(v || '').trim().toUpperCase()
+
+const contarPartos = (eventos: CerdaEvento[]) => {
+  return eventos.filter((ev) => normalizar(ev.tipo) === 'PARTO').length
+}
+
+function generarFichaCerdaPdf(
+  cerda: Cerda,
+  eventosFiltrados: CerdaEvento[],
+  totalEventos: number,
+  partosRegistradosEnHistorial: number
+) {
   const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
 
   doc.setFontSize(16)
@@ -121,6 +134,8 @@ function generarFichaCerdaPdf(cerda: Cerda, eventos: CerdaEvento[]) {
       ['Arete', cerda.arete || '—'],
       ['Nombre', cerda.nombre || '—'],
       ['Estado', cerda.estado || '—'],
+      ['Paridad', String(cerda.paridad ?? 0)],
+      ['Partos registrados en historial', String(partosRegistradosEnHistorial)],
       ['Activa', cerda.activa ? 'Sí' : 'No'],
       ['Ubicación actual', ubicacionTexto(cerda.granja_ubicaciones)],
       ['Lote', cerda.granja_lotes?.codigo || '—'],
@@ -138,18 +153,29 @@ function generarFichaCerdaPdf(cerda: Cerda, eventos: CerdaEvento[]) {
     styles: { fontSize: 9 },
     headStyles: { fillColor: [220, 220, 220] },
     columnStyles: {
-      0: { fontStyle: 'bold', cellWidth: 45 },
-      1: { cellWidth: 135 },
+      0: { fontStyle: 'bold', cellWidth: 55 },
+      1: { cellWidth: 125 },
     },
     margin: { left: 14, right: 14 },
   })
 
-  const y = (doc as any).lastAutoTable.finalY + 10
+  const afterInfoY =
+    (doc as jsPDF & { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY ??
+    30
+
+  const y = afterInfoY + 10
 
   doc.setFontSize(13)
   doc.text('Historial de eventos', 14, y)
 
-  const bodyEventos = eventos.map((ev) => [
+  doc.setFontSize(9)
+  doc.text(
+    `Eventos mostrados: ${eventosFiltrados.length} de ${totalEventos}. La paridad no depende de este filtro.`,
+    14,
+    y + 6
+  )
+
+  const bodyEventos = eventosFiltrados.map((ev) => [
     formatFecha(ev.fecha),
     ev.tipo || '—',
     ev.resultado || '—',
@@ -158,12 +184,12 @@ function generarFichaCerdaPdf(cerda: Cerda, eventos: CerdaEvento[]) {
   ])
 
   autoTable(doc, {
-    startY: y + 5,
+    startY: y + 10,
     head: [['Fecha', 'Tipo', 'Resultado', 'Ubicación', 'Observaciones']],
     body:
       bodyEventos.length > 0
         ? bodyEventos
-        : [['—', 'Sin eventos registrados', '—', '—', '—']],
+        : [['—', 'Sin eventos en el filtro aplicado', '—', '—', '—']],
     styles: { fontSize: 8 },
     headStyles: { fillColor: [230, 230, 230] },
     margin: { left: 14, right: 14 },
@@ -197,6 +223,11 @@ export default function CerdasReportesPage() {
   const [filtroEstado, setFiltroEstado] = useState('')
   const [mostrarInactivas, setMostrarInactivas] = useState(false)
 
+  const [eventoDesde, setEventoDesde] = useState('')
+  const [eventoHasta, setEventoHasta] = useState('')
+  const [eventoTipo, setEventoTipo] = useState('')
+  const [eventoBusqueda, setEventoBusqueda] = useState('')
+
   const [cerdaSeleccionadaId, setCerdaSeleccionadaId] = useState<number | null>(
     null
   )
@@ -209,6 +240,7 @@ export default function CerdasReportesPage() {
     lote_id: '',
     fecha_nacimiento: '',
     peso_lb: '',
+    paridad: '0',
     notas: '',
     activa: true,
   })
@@ -221,13 +253,62 @@ export default function CerdasReportesPage() {
     )
   }, [cerdas, cerdaSeleccionadaId])
 
-  const eventosCerdaSeleccionada = useMemo(() => {
+  const eventosCerdaSeleccionadaTodos = useMemo(() => {
     if (!cerdaSeleccionadaId) return []
 
     return eventos
       .filter((ev) => Number(ev.cerda_id) === Number(cerdaSeleccionadaId))
       .sort((a, b) => String(b.fecha).localeCompare(String(a.fecha)))
   }, [eventos, cerdaSeleccionadaId])
+
+  const tiposEventosDisponibles = useMemo(() => {
+    const tipos = new Set<string>()
+
+    eventosCerdaSeleccionadaTodos.forEach((ev) => {
+      if (ev.tipo) tipos.add(ev.tipo)
+    })
+
+    return Array.from(tipos).sort((a, b) => a.localeCompare(b, 'es'))
+  }, [eventosCerdaSeleccionadaTodos])
+
+  const eventosCerdaSeleccionadaFiltrados = useMemo(() => {
+    const q = eventoBusqueda.trim().toLowerCase()
+
+    return eventosCerdaSeleccionadaTodos.filter((ev) => {
+      const fecha = formatFecha(ev.fecha)
+
+      if (eventoDesde && fecha < eventoDesde) return false
+      if (eventoHasta && fecha > eventoHasta) return false
+      if (eventoTipo && ev.tipo !== eventoTipo) return false
+
+      if (!q) return true
+
+      const texto = [
+        ev.fecha,
+        ev.tipo,
+        ev.resultado,
+        ev.observaciones,
+        ev.granja_ubicaciones?.codigo,
+        ev.granja_ubicaciones?.nombre,
+        ev.granja_lotes?.codigo,
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase()
+
+      return texto.includes(q)
+    })
+  }, [
+    eventosCerdaSeleccionadaTodos,
+    eventoDesde,
+    eventoHasta,
+    eventoTipo,
+    eventoBusqueda,
+  ])
+
+  const partosRegistradosEnHistorial = useMemo(() => {
+    return contarPartos(eventosCerdaSeleccionadaTodos)
+  }, [eventosCerdaSeleccionadaTodos])
 
   const cargarDatos = useCallback(async () => {
     setLoading(true)
@@ -247,6 +328,7 @@ export default function CerdasReportesPage() {
               lote_id,
               fecha_nacimiento,
               peso_lb,
+              paridad,
               notas,
               activa,
               created_at,
@@ -351,6 +433,9 @@ export default function CerdasReportesPage() {
         cerda.granja_ubicaciones?.codigo,
         cerda.granja_ubicaciones?.nombre,
         cerda.granja_lotes?.codigo,
+        cerda.paridad !== null && cerda.paridad !== undefined
+          ? `paridad ${cerda.paridad}`
+          : '',
       ]
         .filter(Boolean)
         .join(' ')
@@ -362,6 +447,11 @@ export default function CerdasReportesPage() {
 
   const llenarFormulario = (cerda: Cerda) => {
     setCerdaSeleccionadaId(cerda.id)
+
+    setEventoDesde('')
+    setEventoHasta('')
+    setEventoTipo('')
+    setEventoBusqueda('')
 
     setForm({
       arete: cerda.arete || '',
@@ -376,6 +466,10 @@ export default function CerdasReportesPage() {
         cerda.peso_lb !== null && cerda.peso_lb !== undefined
           ? String(cerda.peso_lb)
           : '',
+      paridad:
+        cerda.paridad !== null && cerda.paridad !== undefined
+          ? String(cerda.paridad)
+          : '0',
       notas: cerda.notas || '',
       activa: Boolean(cerda.activa),
     })
@@ -383,6 +477,11 @@ export default function CerdasReportesPage() {
 
   const limpiarSeleccion = () => {
     setCerdaSeleccionadaId(null)
+
+    setEventoDesde('')
+    setEventoHasta('')
+    setEventoTipo('')
+    setEventoBusqueda('')
 
     setForm({
       arete: '',
@@ -392,6 +491,7 @@ export default function CerdasReportesPage() {
       lote_id: '',
       fecha_nacimiento: '',
       peso_lb: '',
+      paridad: '0',
       notas: '',
       activa: true,
     })
@@ -415,6 +515,13 @@ export default function CerdasReportesPage() {
       return
     }
 
+    const paridadNum = Number(form.paridad)
+
+    if (!Number.isInteger(paridadNum) || paridadNum < 0) {
+      alert('La paridad debe ser un número entero mayor o igual a 0.')
+      return
+    }
+
     setGuardando(true)
 
     try {
@@ -429,6 +536,7 @@ export default function CerdasReportesPage() {
         lote_id: form.lote_id ? Number(form.lote_id) : null,
         fecha_nacimiento: form.fecha_nacimiento || null,
         peso_lb: form.peso_lb.trim() === '' ? null : Number(form.peso_lb),
+        paridad: paridadNum,
         notas: form.notas.trim() || null,
         activa: form.activa,
         updated_at: new Date().toISOString(),
@@ -542,7 +650,12 @@ export default function CerdasReportesPage() {
       return
     }
 
-    generarFichaCerdaPdf(cerdaSeleccionada, eventosCerdaSeleccionada)
+    generarFichaCerdaPdf(
+      cerdaSeleccionada,
+      eventosCerdaSeleccionadaFiltrados,
+      eventosCerdaSeleccionadaTodos.length,
+      partosRegistradosEnHistorial
+    )
   }
 
   const totalActivas = cerdas.filter((c) => c.activa).length
@@ -594,7 +707,7 @@ export default function CerdasReportesPage() {
               <label className="block text-xs font-semibold mb-1">Buscar</label>
               <input
                 className="border rounded p-2 w-full text-sm"
-                placeholder="Arete, nombre, estado, ubicación, lote..."
+                placeholder="Arete, nombre, estado, ubicación, lote, paridad..."
                 value={busqueda}
                 onChange={(e) => setBusqueda(e.target.value)}
               />
@@ -641,6 +754,7 @@ export default function CerdasReportesPage() {
                   <th className="p-2 text-left">Arete</th>
                   <th className="p-2 text-left">Nombre</th>
                   <th className="p-2 text-left">Estado</th>
+                  <th className="p-2 text-left">Paridad</th>
                   <th className="p-2 text-left">Ubicación</th>
                   <th className="p-2 text-left">Activa</th>
                   <th className="p-2 text-left">Acción</th>
@@ -650,7 +764,7 @@ export default function CerdasReportesPage() {
               <tbody>
                 {cerdasFiltradas.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="p-3 text-gray-500">
+                    <td colSpan={7} className="p-3 text-gray-500">
                       No hay cerdas para mostrar.
                     </td>
                   </tr>
@@ -665,6 +779,7 @@ export default function CerdasReportesPage() {
                       <td className="p-2 font-semibold">{cerda.arete}</td>
                       <td className="p-2">{cerda.nombre || '—'}</td>
                       <td className="p-2">{cerda.estado || '—'}</td>
+                      <td className="p-2">{cerda.paridad ?? 0}</td>
                       <td className="p-2 text-xs">
                         {ubicacionTexto(cerda.granja_ubicaciones)}
                       </td>
@@ -734,7 +849,7 @@ export default function CerdasReportesPage() {
                   </div>
                 </div>
 
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-3 gap-3">
                   <div>
                     <label className="block text-xs font-semibold mb-1">Estado</label>
                     <select
@@ -753,6 +868,25 @@ export default function CerdasReportesPage() {
                         </option>
                       ))}
                     </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold mb-1">Paridad</label>
+                    <input
+                      type="number"
+                      min="0"
+                      className="border rounded p-2 w-full"
+                      value={form.paridad}
+                      onChange={(e) =>
+                        setForm((prev) => ({
+                          ...prev,
+                          paridad: e.target.value,
+                        }))
+                      }
+                    />
+                    <div className="text-[10px] text-gray-500 mt-1">
+                      Partos en historial: {partosRegistradosEnHistorial}
+                    </div>
                   </div>
 
                   <div>
@@ -902,7 +1036,80 @@ export default function CerdasReportesPage() {
               </div>
 
               <div className="mt-5 border-t pt-4">
-                <h3 className="font-semibold mb-2">Historial de eventos</h3>
+                <div className="flex items-center justify-between gap-2 mb-2">
+                  <div>
+                    <h3 className="font-semibold">Historial de eventos</h3>
+                    <p className="text-[11px] text-gray-500">
+                      Los filtros afectan la tabla y el PDF, pero no modifican la paridad.
+                    </p>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEventoDesde('')
+                      setEventoHasta('')
+                      setEventoTipo('')
+                      setEventoBusqueda('')
+                    }}
+                    className="bg-gray-200 hover:bg-gray-300 text-gray-900 px-3 py-1 rounded text-xs"
+                  >
+                    Limpiar filtros
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-3 text-xs">
+                  <div>
+                    <label className="block font-semibold mb-1">Desde</label>
+                    <input
+                      type="date"
+                      className="border rounded p-1 w-full"
+                      value={eventoDesde}
+                      onChange={(e) => setEventoDesde(e.target.value)}
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block font-semibold mb-1">Hasta</label>
+                    <input
+                      type="date"
+                      className="border rounded p-1 w-full"
+                      value={eventoHasta}
+                      onChange={(e) => setEventoHasta(e.target.value)}
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block font-semibold mb-1">Tipo</label>
+                    <select
+                      className="border rounded p-1 w-full"
+                      value={eventoTipo}
+                      onChange={(e) => setEventoTipo(e.target.value)}
+                    >
+                      <option value="">Todos</option>
+                      {tiposEventosDisponibles.map((tipo) => (
+                        <option key={tipo} value={tipo}>
+                          {tipo}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block font-semibold mb-1">Buscar evento</label>
+                    <input
+                      className="border rounded p-1 w-full"
+                      placeholder="Resultado, obs., ubicación..."
+                      value={eventoBusqueda}
+                      onChange={(e) => setEventoBusqueda(e.target.value)}
+                    />
+                  </div>
+                </div>
+
+                <div className="text-[11px] text-gray-500 mb-2">
+                  Mostrando {eventosCerdaSeleccionadaFiltrados.length} de{' '}
+                  {eventosCerdaSeleccionadaTodos.length} eventos.
+                </div>
 
                 <div className="border rounded overflow-auto max-h-[300px]">
                   <table className="w-full text-xs">
@@ -917,14 +1124,14 @@ export default function CerdasReportesPage() {
                     </thead>
 
                     <tbody>
-                      {eventosCerdaSeleccionada.length === 0 ? (
+                      {eventosCerdaSeleccionadaFiltrados.length === 0 ? (
                         <tr>
                           <td colSpan={5} className="p-3 text-gray-500">
-                            Esta cerda no tiene eventos registrados.
+                            No hay eventos con los filtros aplicados.
                           </td>
                         </tr>
                       ) : (
-                        eventosCerdaSeleccionada.map((ev) => (
+                        eventosCerdaSeleccionadaFiltrados.map((ev) => (
                           <tr key={ev.id} className="border-t">
                             <td className="p-2">{formatFecha(ev.fecha)}</td>
                             <td className="p-2">{ev.tipo}</td>
