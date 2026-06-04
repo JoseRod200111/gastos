@@ -34,7 +34,7 @@ type EventoRow = {
   tipo: string
   resultado: string | null
   observaciones: string | null
-  granja_cerdas?: {
+  granja_?: {
     arete: string | null
     nombre: string | null
   } | null
@@ -147,7 +147,7 @@ const isCerdaDisponible = (cerda: Cerda, incluirInactivas: boolean) => {
 }
 
 export default function EventoCerdaPage() {
-  const [cerdas, setCerdas] = useState<Cerda[]>([])
+  const [, set] = useState<Cerda[]>([])
   const [ubicaciones, setUbicaciones] = useState<Ubicacion[]>([])
   const [lotes, setLotes] = useState<Lote[]>([])
   const [eventos, setEventos] = useState<EventoRow[]>([])
@@ -320,13 +320,7 @@ export default function EventoCerdaPage() {
     return []
   }, [fecha, tipo])
 
-  const eventosCerdaSeleccionada = useMemo(() => {
-    if (!cerdaSeleccionada) return []
 
-    return eventos.filter(
-      (evento) => Number(evento.cerda_id) === Number(cerdaSeleccionada.id)
-    )
-  }, [eventos, cerdaSeleccionada])
 
   const puedeRegularizarPrenada = useMemo(() => {
     if (!cerdaSeleccionada) return false
