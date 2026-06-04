@@ -13,6 +13,7 @@ type Cerda = {
   ubicacion_id: number | null
   lote_id: number | null
   activa: boolean
+  paridad: number | null
 }
 
 type Ubicacion = {
@@ -82,6 +83,8 @@ const sumarDias = (fecha: string, dias: number) => {
 
   const [y, m, d] = fecha.split('-').map(Number)
   const date = new Date(y, (m || 1) - 1, d || 1)
+
+  date.setHours(0, 0, 0, 0)
   date.setDate(date.getDate() + dias)
 
   const yyyy = date.getFullYear()
@@ -99,6 +102,18 @@ const formatFecha = (fecha?: string | null) => {
   return String(fecha).slice(0, 10)
 }
 
+const isCerdaDisponible = (cerda: Cerda, incluirInactivas: boolean) => {
+  const estado = normalizar(cerda.estado)
+
+  if (incluirInactivas) return true
+
+  if (!cerda.activa) return false
+  if (estado === 'MUERTA') return false
+  if (estado === 'BAJA') return false
+
+  return true
+}
+
 export default function EventoCerdaPage() {
   const [cerdas, setCerdas] = useState<Cerda[]>([])
   const [ubicaciones, setUbicaciones] = useState<Ubicacion[]>([])
@@ -110,7 +125,7 @@ export default function EventoCerdaPage() {
   const [msg, setMsg] = useState<string | null>(null)
 
   const [cerdaId, setCerdaId] = useState('')
-  const [fecha, setFecha] = useState(todayYYYYMMDD())
+  const [fecha, setFecha] = useState('')
   const [tipo, setTipo] = useState('MONTA')
   const [resultado, setResultado] = useState('')
   const [ubicacionId, setUbicacionId] = useState('')
@@ -118,10 +133,21 @@ export default function EventoCerdaPage() {
   const [macho, setMacho] = useState('')
   const [observaciones, setObservaciones] = useState('')
 
-  const [filtroDesde, setFiltroDesde] = useState(sumarDias(todayYYYYMMDD(), -14))
-  const [filtroHasta, setFiltroHasta] = useState(todayYYYYMMDD())
+  const [cerdaBusqueda, setCerdaBusqueda] = useState('')
+  const [incluirInactivasSelector, setIncluirInactivasSelector] = useState(false)
+
+  const [filtroDesde, setFiltroDesde] = useState('')
+  const [filtroHasta, setFiltroHasta] = useState('')
   const [filtroBusqueda, setFiltroBusqueda] = useState('')
   const [filtroTipo, setFiltroTipo] = useState('')
+
+  useEffect(() => {
+    const hoy = todayYYYYMMDD()
+
+    setFecha(hoy)
+    setFiltroDesde(sumarDias(hoy, -14))
+    setFiltroHasta(hoy)
+  }, [])
 
   const cerdaSeleccionada = useMemo(() => {
     const id = Number(cerdaId || 0)
@@ -129,6 +155,37 @@ export default function EventoCerdaPage() {
 
     return cerdas.find((cerda) => Number(cerda.id) === id) || null
   }, [cerdaId, cerdas])
+
+  const cerdasDisponiblesSelector = useMemo(() => {
+    const q = cerdaBusqueda.trim().toLowerCase()
+
+    return cerdas
+      .filter((cerda) => isCerdaDisponible(cerda, incluirInactivasSelector))
+      .filter((cerda) => {
+        if (!q) return true
+
+        const texto = [
+          cerda.arete,
+          cerda.nombre,
+          cerda.estado,
+          cerda.activa ? 'activa' : 'inactiva',
+          cerda.paridad !== null && cerda.paridad !== undefined
+            ? `paridad ${cerda.paridad}`
+            : '',
+        ]
+          .filter(Boolean)
+          .join(' ')
+          .toLowerCase()
+
+        return texto.includes(q)
+      })
+      .sort((a, b) =>
+        String(a.arete || '').localeCompare(String(b.arete || ''), 'es', {
+          numeric: true,
+          sensitivity: 'base',
+        })
+      )
+  }, [cerdas, cerdaBusqueda, incluirInactivasSelector])
 
   const ubicacionActualCerda = useMemo(() => {
     if (!cerdaSeleccionada?.ubicacion_id) return null
@@ -208,8 +265,7 @@ export default function EventoCerdaPage() {
       const [cRes, uRes, lRes] = await Promise.all([
         supabase
           .from('granja_cerdas')
-          .select('id,arete,nombre,estado,ubicacion_id,lote_id,activa')
-          .eq('activa', true)
+          .select('id,arete,nombre,estado,ubicacion_id,lote_id,activa,paridad')
           .order('arete', { ascending: true }),
 
         supabase
@@ -238,18 +294,15 @@ export default function EventoCerdaPage() {
         console.error('Error cargando lotes', lRes.error)
       }
 
-      const cerdasActivas = ((cRes.data ?? []) as Cerda[]).filter((cerda) => {
-        const estado = normalizar(cerda.estado)
-        return estado !== 'MUERTA' && estado !== 'BAJA'
-      })
-
-      setCerdas(cerdasActivas)
+      setCerdas((cRes.data ?? []) as Cerda[])
       setUbicaciones((uRes.data ?? []) as Ubicacion[])
       setLotes((lRes.data ?? []) as Lote[])
     } catch (error) {
       console.error('Error cargando catálogos', error)
+
       const message =
         error instanceof Error ? error.message : 'Error cargando catálogos.'
+
       setMsg(message)
       alert(message)
     } finally {
@@ -258,8 +311,7 @@ export default function EventoCerdaPage() {
   }, [])
 
   const cargarEventos = useCallback(async () => {
-    const desde = filtroDesde || sumarDias(todayYYYYMMDD(), -30)
-    const hasta = filtroHasta || todayYYYYMMDD()
+    if (!filtroDesde || !filtroHasta) return
 
     let query = supabase
       .from('granja_cerda_eventos')
@@ -277,8 +329,8 @@ export default function EventoCerdaPage() {
         )
       `
       )
-      .gte('fecha', desde)
-      .lte('fecha', hasta)
+      .gte('fecha', filtroDesde)
+      .lte('fecha', filtroHasta)
       .order('fecha', { ascending: false })
 
     if (filtroTipo) {
@@ -298,8 +350,13 @@ export default function EventoCerdaPage() {
 
   useEffect(() => {
     cargarCatalogos()
-    cargarEventos()
-  }, [cargarCatalogos, cargarEventos])
+  }, [cargarCatalogos])
+
+  useEffect(() => {
+    if (filtroDesde && filtroHasta) {
+      cargarEventos()
+    }
+  }, [filtroDesde, filtroHasta, filtroTipo, cargarEventos])
 
   const eventosFiltrados = useMemo(() => {
     const q = filtroBusqueda.trim().toLowerCase()
@@ -342,6 +399,7 @@ export default function EventoCerdaPage() {
 
     if (tipo === 'REVISION_EMBARAZO') {
       const r = normalizar(resultado)
+
       if (r !== 'POSITIVO' && r !== 'NEGATIVO') {
         return 'Para revisión de embarazo, selecciona resultado POSITIVO o NEGATIVO.'
       }
@@ -450,50 +508,66 @@ export default function EventoCerdaPage() {
       }
 
       if (tipo === 'MUERTE') {
-        const { error: movError } = await supabase.from('granja_movimientos').insert({
-          fecha: `${fecha}T12:00:00.000Z`,
-          ubicacion_id: ubicacionFinal,
-          tipo: 'SALIDA_MUERTE',
-          cantidad: 1,
-          hembras: 1,
-          machos: 0,
-          referencia_tabla: 'granja_cerdas',
-          referencia_id: Number(cerdaId),
-          user_id: userId,
-          observaciones: `MUERTE CERDA ARETE ${cerda.arete}. ${
-            observaciones.trim() || ''
-          }`,
-        })
-
-        if (movError) {
-          console.error('Error registrando salida por muerte', movError)
+        if (!ubicacionFinal) {
           alert(
-            `El evento fue registrado, pero no se pudo registrar la salida de inventario: ${movError.message}`
+            'El evento fue registrado, pero no se registró salida de inventario porque la cerda no tiene ubicación.'
           )
+        } else {
+          const { error: movError } = await supabase
+            .from('granja_movimientos')
+            .insert({
+              fecha: `${fecha}T12:00:00.000Z`,
+              ubicacion_id: ubicacionFinal,
+              tipo: 'SALIDA_MUERTE',
+              cantidad: 1,
+              hembras: 1,
+              machos: 0,
+              referencia_tabla: 'granja_cerdas',
+              referencia_id: Number(cerdaId),
+              user_id: userId,
+              observaciones: `MUERTE CERDA ARETE ${cerda.arete}. ${
+                observaciones.trim() || ''
+              }`,
+            })
+
+          if (movError) {
+            console.error('Error registrando salida por muerte', movError)
+            alert(
+              `El evento fue registrado, pero no se pudo registrar la salida de inventario: ${movError.message}`
+            )
+          }
         }
       }
 
       if (tipo === 'BAJA') {
-        const { error: movError } = await supabase.from('granja_movimientos').insert({
-          fecha: `${fecha}T12:00:00.000Z`,
-          ubicacion_id: ubicacionFinal,
-          tipo: 'AJUSTE',
-          cantidad: -1,
-          hembras: -1,
-          machos: 0,
-          referencia_tabla: 'granja_cerdas',
-          referencia_id: Number(cerdaId),
-          user_id: userId,
-          observaciones: `BAJA CERDA ARETE ${cerda.arete}. ${
-            observaciones.trim() || ''
-          }`,
-        })
-
-        if (movError) {
-          console.error('Error registrando baja en inventario', movError)
+        if (!ubicacionFinal) {
           alert(
-            `El evento fue registrado, pero no se pudo registrar el ajuste de inventario: ${movError.message}`
+            'El evento fue registrado, pero no se registró ajuste de inventario porque la cerda no tiene ubicación.'
           )
+        } else {
+          const { error: movError } = await supabase
+            .from('granja_movimientos')
+            .insert({
+              fecha: `${fecha}T12:00:00.000Z`,
+              ubicacion_id: ubicacionFinal,
+              tipo: 'AJUSTE',
+              cantidad: -1,
+              hembras: -1,
+              machos: 0,
+              referencia_tabla: 'granja_cerdas',
+              referencia_id: Number(cerdaId),
+              user_id: userId,
+              observaciones: `BAJA CERDA ARETE ${cerda.arete}. ${
+                observaciones.trim() || ''
+              }`,
+            })
+
+          if (movError) {
+            console.error('Error registrando baja en inventario', movError)
+            alert(
+              `El evento fue registrado, pero no se pudo registrar el ajuste de inventario: ${movError.message}`
+            )
+          }
         }
       }
 
@@ -517,7 +591,8 @@ export default function EventoCerdaPage() {
         <div>
           <h1 className="text-2xl font-bold">Granja — Eventos de cerdas</h1>
           <p className="text-xs text-gray-600">
-            Registro de monta, revisión, parto, destete, aborto, medicación, muerte y descarte.
+            Registro de monta, revisión, parto, destete, aborto, medicación,
+            muerte y descarte.
           </p>
         </div>
 
@@ -553,6 +628,14 @@ export default function EventoCerdaPage() {
           <div className="grid gap-3 text-sm">
             <div className="grid md:grid-cols-2 gap-3">
               <div>
+                <label className="block text-xs font-semibold mb-1">Buscar cerda</label>
+                <input
+                  className="w-full border rounded px-2 py-2 mb-2"
+                  placeholder="Arete, nombre o estado"
+                  value={cerdaBusqueda}
+                  onChange={(e) => setCerdaBusqueda(e.target.value)}
+                />
+
                 <label className="block text-xs font-semibold mb-1">Cerda</label>
                 <select
                   className="w-full border rounded px-2 py-2"
@@ -560,20 +643,31 @@ export default function EventoCerdaPage() {
                   onChange={(e) => setCerdaId(e.target.value)}
                 >
                   <option value="">
-                    {cerdas.length === 0
-                      ? 'No hay cerdas activas cargadas'
+                    {cerdasDisponiblesSelector.length === 0
+                      ? 'No hay cerdas con este filtro'
                       : '— Selecciona —'}
                   </option>
 
-                  {cerdas.map((cerda) => (
+                  {cerdasDisponiblesSelector.map((cerda) => (
                     <option key={cerda.id} value={String(cerda.id)}>
-                      {cerda.arete} — {cerda.nombre ?? 'Sin nombre'} — {cerda.estado}
+                      {cerda.arete} — {cerda.nombre ?? 'Sin nombre'} —{' '}
+                      {cerda.estado} — {cerda.activa ? 'Activa' : 'Inactiva'}
                     </option>
                   ))}
                 </select>
 
+                <label className="mt-2 flex items-center gap-2 text-[11px] text-gray-600">
+                  <input
+                    type="checkbox"
+                    checked={incluirInactivasSelector}
+                    onChange={(e) => setIncluirInactivasSelector(e.target.checked)}
+                  />
+                  Incluir inactivas / bajas en el selector
+                </label>
+
                 <div className="text-[11px] text-gray-500 mt-1">
-                  Cerdas activas disponibles: {cerdas.length}
+                  Cerdas cargadas: {cerdas.length} · Disponibles con filtro:{' '}
+                  {cerdasDisponiblesSelector.length}
                 </div>
               </div>
 
@@ -585,6 +679,24 @@ export default function EventoCerdaPage() {
                   value={fecha}
                   onChange={(e) => setFecha(e.target.value)}
                 />
+
+                {cerdaSeleccionada ? (
+                  <div className="mt-3 border rounded bg-gray-50 p-2 text-xs">
+                    <div>
+                      <b>Seleccionada:</b> {cerdaSeleccionada.arete} —{' '}
+                      {cerdaSeleccionada.nombre || 'Sin nombre'}
+                    </div>
+                    <div>
+                      <b>Estado:</b> {cerdaSeleccionada.estado}
+                    </div>
+                    <div>
+                      <b>Activa:</b> {cerdaSeleccionada.activa ? 'Sí' : 'No'}
+                    </div>
+                    <div>
+                      <b>Paridad:</b> {cerdaSeleccionada.paridad ?? 0}
+                    </div>
+                  </div>
+                ) : null}
               </div>
             </div>
 
@@ -685,7 +797,7 @@ export default function EventoCerdaPage() {
               </div>
             </div>
 
-            {(tipo === 'MONTA' || tipo === 'INSEMINACION') ? (
+            {tipo === 'MONTA' || tipo === 'INSEMINACION' ? (
               <div>
                 <label className="block text-xs font-semibold mb-1">Macho</label>
                 <input
@@ -732,6 +844,7 @@ export default function EventoCerdaPage() {
 
             <div className="flex gap-2">
               <button
+                type="button"
                 onClick={guardarEvento}
                 disabled={guardando || loading}
                 className="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white px-4 py-2 rounded"
@@ -755,6 +868,7 @@ export default function EventoCerdaPage() {
             <h2 className="font-semibold">Eventos registrados</h2>
 
             <button
+              type="button"
               onClick={cargarEventos}
               className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded text-sm"
             >
@@ -854,8 +968,7 @@ export default function EventoCerdaPage() {
           </div>
 
           <div className="mt-3 text-xs text-gray-500">
-            Si acabas de registrar una cerda nueva y no aparece en el selector,
-            presiona <b>Recargar cerdas</b>.
+            
           </div>
         </div>
       </div>
