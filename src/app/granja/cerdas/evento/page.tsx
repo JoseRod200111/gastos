@@ -54,8 +54,6 @@ const TIPOS_EVENTO = [
   'OTRO',
 ]
 
-const RESULTADOS_REVISION = ['POSITIVO', 'NEGATIVO']
-
 const ESTADOS_POR_EVENTO: Record<string, string | null> = {
   MONTA: 'SERVIDA',
   INSEMINACION: 'SERVIDA',
@@ -94,6 +92,22 @@ const sumarDias = (fecha: string, dias: number) => {
   return `${yyyy}-${mm}-${dd}`
 }
 
+const restarDias = (fecha: string, dias: number) => {
+  if (!fecha) return ''
+
+  const [y, m, d] = fecha.split('-').map(Number)
+  const date = new Date(y, (m || 1) - 1, d || 1)
+
+  date.setHours(0, 0, 0, 0)
+  date.setDate(date.getDate() - dias)
+
+  const yyyy = date.getFullYear()
+  const mm = String(date.getMonth() + 1).padStart(2, '0')
+  const dd = String(date.getDate()).padStart(2, '0')
+
+  return `${yyyy}-${mm}-${dd}`
+}
+
 const normalizar = (value: string | null | undefined) =>
   String(value || '').trim().toUpperCase()
 
@@ -101,6 +115,24 @@ const formatFecha = (fecha?: string | null) => {
   if (!fecha) return '—'
   return String(fecha).slice(0, 10)
 }
+
+const toInt = (value: string) => {
+  const clean = String(value || '').trim()
+  if (clean === '') return 0
+
+  const n = Number(clean)
+  return Number.isFinite(n) ? Math.trunc(n) : NaN
+}
+
+const toNumOrNull = (value: string) => {
+  const clean = String(value || '').trim()
+  if (clean === '') return null
+
+  const n = Number(clean)
+  return Number.isFinite(n) ? n : NaN
+}
+
+const fechaTimestamp = (fecha: string) => `${fecha}T12:00:00.000Z`
 
 const isCerdaDisponible = (cerda: Cerda, incluirInactivas: boolean) => {
   const estado = normalizar(cerda.estado)
@@ -127,10 +159,8 @@ export default function EventoCerdaPage() {
   const [cerdaId, setCerdaId] = useState('')
   const [fecha, setFecha] = useState('')
   const [tipo, setTipo] = useState('MONTA')
-  const [resultado, setResultado] = useState('')
   const [ubicacionId, setUbicacionId] = useState('')
   const [loteId, setLoteId] = useState('')
-  const [macho, setMacho] = useState('')
   const [observaciones, setObservaciones] = useState('')
 
   const [cerdaBusqueda, setCerdaBusqueda] = useState('')
@@ -140,6 +170,42 @@ export default function EventoCerdaPage() {
   const [filtroHasta, setFiltroHasta] = useState('')
   const [filtroBusqueda, setFiltroBusqueda] = useState('')
   const [filtroTipo, setFiltroTipo] = useState('')
+
+  const [macho, setMacho] = useState('')
+  const [revisionResultado, setRevisionResultado] = useState('')
+
+  const [partoVivos, setPartoVivos] = useState('')
+  const [partoMuertos, setPartoMuertos] = useState('')
+  const [partoMomias, setPartoMomias] = useState('')
+  const [partoHembras, setPartoHembras] = useState('')
+  const [partoMachos, setPartoMachos] = useState('')
+  const [partoPesoCamadaKg, setPartoPesoCamadaKg] = useState('')
+
+  const [desteteCantidad, setDesteteCantidad] = useState('')
+  const [desteteHembras, setDesteteHembras] = useState('')
+  const [desteteMachos, setDesteteMachos] = useState('')
+  const [destetePesoTotalKg, setDestetePesoTotalKg] = useState('')
+  const [desteteDestinoId, setDesteteDestinoId] = useState('')
+
+  const [abortoFetos, setAbortoFetos] = useState('')
+  const [abortoMotivo, setAbortoMotivo] = useState('')
+
+  const [medicamento, setMedicamento] = useState('')
+  const [dosis, setDosis] = useState('')
+  const [viaAplicacion, setViaAplicacion] = useState('')
+  const [responsable, setResponsable] = useState('')
+
+  const [muerteMotivo, setMuerteMotivo] = useState('')
+  const [bajaMotivo, setBajaMotivo] = useState('')
+
+  const [trasladoDestinoId, setTrasladoDestinoId] = useState('')
+
+  const [modoRegularizarPrenada, setModoRegularizarPrenada] = useState(false)
+  const [fechaPartoEstimada, setFechaPartoEstimada] = useState('')
+  const [fechaMontaEstimada, setFechaMontaEstimada] = useState('')
+  const [tipoServicioEstimado, setTipoServicioEstimado] = useState<
+    'MONTA' | 'INSEMINACION'
+  >('MONTA')
 
   useEffect(() => {
     const hoy = todayYYYYMMDD()
@@ -209,16 +275,13 @@ export default function EventoCerdaPage() {
 
   const estadoSugerido = useMemo(() => {
     if (tipo === 'REVISION_EMBARAZO') {
-      const r = normalizar(resultado)
-
-      if (r === 'POSITIVO') return 'PRENADA'
-      if (r === 'NEGATIVO') return 'VACIA'
-
+      if (revisionResultado === 'POSITIVO') return 'PRENADA'
+      if (revisionResultado === 'NEGATIVO') return 'VACIA'
       return null
     }
 
     return ESTADOS_POR_EVENTO[tipo] || null
-  }, [tipo, resultado])
+  }, [tipo, revisionResultado])
 
   const fechasSugeridas = useMemo(() => {
     if (!fecha) return []
@@ -256,6 +319,19 @@ export default function EventoCerdaPage() {
 
     return []
   }, [fecha, tipo])
+
+  const eventosCerdaSeleccionada = useMemo(() => {
+    if (!cerdaSeleccionada) return []
+
+    return eventos.filter(
+      (evento) => Number(evento.cerda_id) === Number(cerdaSeleccionada.id)
+    )
+  }, [eventos, cerdaSeleccionada])
+
+  const puedeRegularizarPrenada = useMemo(() => {
+    if (!cerdaSeleccionada) return false
+    return normalizar(cerdaSeleccionada.estado) === 'PRENADA'
+  }, [cerdaSeleccionada])
 
   const cargarCatalogos = useCallback(async () => {
     setLoading(true)
@@ -380,16 +456,49 @@ export default function EventoCerdaPage() {
     })
   }, [eventos, filtroBusqueda])
 
+  const limpiarCamposEvento = () => {
+    setRevisionResultado('')
+    setMacho('')
+
+    setPartoVivos('')
+    setPartoMuertos('')
+    setPartoMomias('')
+    setPartoHembras('')
+    setPartoMachos('')
+    setPartoPesoCamadaKg('')
+
+    setDesteteCantidad('')
+    setDesteteHembras('')
+    setDesteteMachos('')
+    setDestetePesoTotalKg('')
+    setDesteteDestinoId('')
+
+    setAbortoFetos('')
+    setAbortoMotivo('')
+
+    setMedicamento('')
+    setDosis('')
+    setViaAplicacion('')
+    setResponsable('')
+
+    setMuerteMotivo('')
+    setBajaMotivo('')
+    setTrasladoDestinoId('')
+  }
+
   const limpiarFormulario = () => {
     setCerdaId('')
     setFecha(todayYYYYMMDD())
     setTipo('MONTA')
-    setResultado('')
     setUbicacionId('')
     setLoteId('')
-    setMacho('')
     setObservaciones('')
     setMsg(null)
+    setModoRegularizarPrenada(false)
+    setFechaPartoEstimada('')
+    setFechaMontaEstimada('')
+    setTipoServicioEstimado('MONTA')
+    limpiarCamposEvento()
   }
 
   const validar = () => {
@@ -398,14 +507,195 @@ export default function EventoCerdaPage() {
     if (!tipo) return 'Selecciona un tipo de evento.'
 
     if (tipo === 'REVISION_EMBARAZO') {
-      const r = normalizar(resultado)
+      if (revisionResultado !== 'POSITIVO' && revisionResultado !== 'NEGATIVO') {
+        return 'Selecciona si la revisión fue POSITIVO o NEGATIVO.'
+      }
+    }
 
-      if (r !== 'POSITIVO' && r !== 'NEGATIVO') {
-        return 'Para revisión de embarazo, selecciona resultado POSITIVO o NEGATIVO.'
+    if (tipo === 'PARTO') {
+      const vivos = toInt(partoVivos)
+      const muertos = toInt(partoMuertos)
+      const momias = toInt(partoMomias)
+      const hembras = toInt(partoHembras)
+      const machos = toInt(partoMachos)
+      const peso = toNumOrNull(partoPesoCamadaKg)
+
+      if ([vivos, muertos, momias, hembras, machos].some((n) => Number.isNaN(n))) {
+        return 'Los datos del parto deben ser números válidos.'
+      }
+
+      if ([vivos, muertos, momias, hembras, machos].some((n) => n < 0)) {
+        return 'Los datos del parto no pueden ser negativos.'
+      }
+
+      if (peso !== null && Number.isNaN(peso)) {
+        return 'El peso de camada debe ser válido.'
+      }
+
+      if (vivos + muertos + momias <= 0) {
+        return 'Ingresa al menos un nacido vivo, muerto o momia.'
+      }
+
+      if (hembras + machos > vivos) {
+        return 'Hembras + machos no puede ser mayor que nacidos vivos.'
+      }
+    }
+
+    if (tipo === 'DESTETE') {
+      const cantidad = toInt(desteteCantidad)
+      const hembras = toInt(desteteHembras)
+      const machos = toInt(desteteMachos)
+      const peso = toNumOrNull(destetePesoTotalKg)
+
+      if ([cantidad, hembras, machos].some((n) => Number.isNaN(n))) {
+        return 'Los datos del destete deben ser números válidos.'
+      }
+
+      if ([cantidad, hembras, machos].some((n) => n < 0)) {
+        return 'Los datos del destete no pueden ser negativos.'
+      }
+
+      if (cantidad <= 0) {
+        return 'Ingresa la cantidad de lechones destetados.'
+      }
+
+      if (hembras + machos > cantidad) {
+        return 'Hembras + machos no puede ser mayor que la cantidad destetada.'
+      }
+
+      if (peso !== null && Number.isNaN(peso)) {
+        return 'El peso total de destete debe ser válido.'
+      }
+    }
+
+    if (tipo === 'ABORTO') {
+      const fetos = toInt(abortoFetos)
+
+      if (Number.isNaN(fetos)) {
+        return 'El número de fetos debe ser válido.'
+      }
+
+      if (fetos < 0) {
+        return 'El número de fetos no puede ser negativo.'
+      }
+    }
+
+    if (tipo === 'MEDICACION') {
+      if (!medicamento.trim()) {
+        return 'Ingresa el medicamento aplicado.'
+      }
+    }
+
+    if (tipo === 'MUERTE') {
+      if (!muerteMotivo.trim()) {
+        return 'Ingresa el motivo de muerte.'
+      }
+    }
+
+    if (tipo === 'BAJA') {
+      if (!bajaMotivo.trim()) {
+        return 'Ingresa el motivo de baja.'
+      }
+    }
+
+    if (tipo === 'TRASLADO') {
+      if (!trasladoDestinoId) {
+        return 'Selecciona la ubicación destino del traslado.'
+      }
+
+      if (cerdaSeleccionada?.ubicacion_id && Number(trasladoDestinoId) === Number(cerdaSeleccionada.ubicacion_id)) {
+        return 'El destino no puede ser igual a la ubicación actual.'
       }
     }
 
     return null
+  }
+
+  const getResultadoEvento = () => {
+    if (tipo === 'REVISION_EMBARAZO') return revisionResultado
+    if (tipo === 'PARTO') return 'REGISTRADO'
+    if (tipo === 'DESTETE') return 'REGISTRADO'
+    if (tipo === 'ABORTO') return 'REGISTRADO'
+    if (tipo === 'MEDICACION') return 'APLICADA'
+    if (tipo === 'MUERTE') return 'COMPLETADA'
+    if (tipo === 'BAJA') return 'COMPLETADA'
+    if (tipo === 'TRASLADO') return 'COMPLETADO'
+    return null
+  }
+
+  const getDatosEvento = () => {
+    if (tipo === 'MONTA' || tipo === 'INSEMINACION') {
+      return {
+        macho: macho.trim() || null,
+        fechas_sugeridas: fechasSugeridas,
+      }
+    }
+
+    if (tipo === 'REVISION_EMBARAZO') {
+      return {
+        resultado_revision: revisionResultado,
+      }
+    }
+
+    if (tipo === 'PARTO') {
+      return {
+        nacidos_vivos: toInt(partoVivos),
+        nacidos_muertos: toInt(partoMuertos),
+        momias: toInt(partoMomias),
+        hembras: toInt(partoHembras),
+        machos: toInt(partoMachos),
+        peso_camda_kg: toNumOrNull(partoPesoCamadaKg),
+        destete_sugerido: sumarDias(fecha, 21),
+      }
+    }
+
+    if (tipo === 'DESTETE') {
+      return {
+        cantidad_destetada: toInt(desteteCantidad),
+        hembras: toInt(desteteHembras),
+        machos: toInt(desteteMachos),
+        peso_total_kg: toNumOrNull(destetePesoTotalKg),
+        destino_ubicacion_id: desteteDestinoId ? Number(desteteDestinoId) : null,
+        celo_post_destete_sugerido: sumarDias(fecha, 5),
+      }
+    }
+
+    if (tipo === 'ABORTO') {
+      return {
+        fetos: toInt(abortoFetos),
+        motivo: abortoMotivo.trim() || null,
+      }
+    }
+
+    if (tipo === 'MEDICACION') {
+      return {
+        medicamento: medicamento.trim(),
+        dosis: dosis.trim() || null,
+        via_aplicacion: viaAplicacion.trim() || null,
+        responsable: responsable.trim() || null,
+      }
+    }
+
+    if (tipo === 'MUERTE') {
+      return {
+        motivo: muerteMotivo.trim(),
+      }
+    }
+
+    if (tipo === 'BAJA') {
+      return {
+        motivo: bajaMotivo.trim(),
+      }
+    }
+
+    if (tipo === 'TRASLADO') {
+      return {
+        origen_ubicacion_id: cerdaSeleccionada?.ubicacion_id ?? null,
+        destino_ubicacion_id: Number(trasladoDestinoId),
+      }
+    }
+
+    return {}
   }
 
   const guardarEvento = async () => {
@@ -443,31 +733,34 @@ export default function EventoCerdaPage() {
           : null
 
       const datos = {
-        macho: macho.trim() || null,
+        ...getDatosEvento(),
         estado_anterior: cerda.estado,
         estado_sugerido: estadoSugerido,
-        fechas_sugeridas: fechasSugeridas,
       }
 
-      const { error: eventoError } = await supabase
+      const { data: eventoInsertado, error: eventoError } = await supabase
         .from('granja_cerda_eventos')
         .insert({
           cerda_id: Number(cerdaId),
           fecha,
           tipo,
-          resultado: resultado.trim() || null,
-          ubicacion_id: ubicacionFinal,
+          resultado: getResultadoEvento(),
+          ubicacion_id: tipo === 'TRASLADO' && trasladoDestinoId ? Number(trasladoDestinoId) : ubicacionFinal,
           lote_id: loteFinal,
           datos,
           observaciones: observaciones.trim() || null,
           user_id: userId,
         })
+        .select('id')
+        .single()
 
       if (eventoError) {
         console.error('Error guardando evento', eventoError)
         alert(`No se pudo guardar el evento: ${eventoError.message}`)
         return
       }
+
+      const eventoId = Number(eventoInsertado?.id || 0)
 
       const updateCerda: {
         estado?: string
@@ -491,6 +784,10 @@ export default function EventoCerdaPage() {
         updateCerda.lote_id = loteFinal
       }
 
+      if (tipo === 'TRASLADO') {
+        updateCerda.ubicacion_id = Number(trasladoDestinoId)
+      }
+
       if (tipo === 'MUERTE' || tipo === 'BAJA') {
         updateCerda.activa = false
       }
@@ -503,20 +800,115 @@ export default function EventoCerdaPage() {
       if (updateError) {
         console.error('Error actualizando cerda', updateError)
         alert(
-          `El evento fue registrado, pero no se pudo actualizar el estado de la cerda: ${updateError.message}`
+          `El evento fue registrado, pero no se pudo actualizar la cerda: ${updateError.message}`
         )
       }
 
+      if (tipo === 'PARTO') {
+        const vivos = toInt(partoVivos)
+        const hembras = toInt(partoHembras)
+        const machos = toInt(partoMachos)
+
+        const { error: partoError } = await supabase.from('granja_partos').insert({
+          fecha,
+          ubicacion_id: ubicacionFinal,
+          lote_id: loteFinal,
+          cerda_id: cerda.arete,
+          nacidos_vivos: vivos,
+          nacidos_muertos: toInt(partoMuertos),
+          momias: toInt(partoMomias),
+          peso_camda_kg: toNumOrNull(partoPesoCamadaKg),
+          hembras,
+          machos,
+          observaciones: observaciones.trim() || null,
+          user_id: userId,
+        })
+
+        if (partoError) {
+          console.error('Error registrando parto', partoError)
+          alert(`El evento fue guardado, pero no se pudo registrar en granja_partos: ${partoError.message}`)
+        }
+
+        if (ubicacionFinal && vivos > 0) {
+          const { error: movPartoError } = await supabase
+            .from('granja_movimientos')
+            .insert({
+              fecha: fechaTimestamp(fecha),
+              ubicacion_id: ubicacionFinal,
+              tipo: 'ENTRADA_PARTO',
+              lote_id: loteFinal,
+              cantidad: vivos,
+              hembras,
+              machos,
+              peso_total_kg: toNumOrNull(partoPesoCamadaKg),
+              referencia_tabla: 'granja_cerda_eventos',
+              referencia_id: eventoId || null,
+              user_id: userId,
+              observaciones: `PARTO CERDA ${cerda.arete}. Vivos: ${vivos}.`,
+            })
+
+          if (movPartoError) {
+            console.error('Error registrando entrada por parto', movPartoError)
+            alert(`El parto fue guardado, pero no se pudo registrar la entrada de inventario: ${movPartoError.message}`)
+          }
+        }
+      }
+
+      if (tipo === 'DESTETE') {
+        const cantidad = toInt(desteteCantidad)
+        const hembras = toInt(desteteHembras)
+        const machos = toInt(desteteMachos)
+        const destino = desteteDestinoId ? Number(desteteDestinoId) : null
+
+        if (ubicacionFinal && destino && cantidad > 0) {
+          const obs = `DESTETE CERDA ${cerda.arete}. Traslado de lechones destetados.`
+
+          const { error: movDesteteError } = await supabase
+            .from('granja_movimientos')
+            .insert([
+              {
+                fecha: fechaTimestamp(fecha),
+                ubicacion_id: ubicacionFinal,
+                tipo: 'AJUSTE',
+                lote_id: loteFinal,
+                cantidad: -Math.abs(cantidad),
+                hembras: hembras > 0 ? -Math.abs(hembras) : null,
+                machos: machos > 0 ? -Math.abs(machos) : null,
+                peso_total_kg: toNumOrNull(destetePesoTotalKg),
+                referencia_tabla: 'granja_cerda_eventos',
+                referencia_id: eventoId || null,
+                user_id: userId,
+                observaciones: obs,
+              },
+              {
+                fecha: fechaTimestamp(fecha),
+                ubicacion_id: destino,
+                tipo: 'AJUSTE',
+                lote_id: loteFinal,
+                cantidad: Math.abs(cantidad),
+                hembras: hembras > 0 ? Math.abs(hembras) : null,
+                machos: machos > 0 ? Math.abs(machos) : null,
+                peso_total_kg: toNumOrNull(destetePesoTotalKg),
+                referencia_tabla: 'granja_cerda_eventos',
+                referencia_id: eventoId || null,
+                user_id: userId,
+                observaciones: obs,
+              },
+            ])
+
+          if (movDesteteError) {
+            console.error('Error registrando movimiento de destete', movDesteteError)
+            alert(`El destete fue guardado, pero no se pudo registrar el traslado de inventario: ${movDesteteError.message}`)
+          }
+        }
+      }
+
       if (tipo === 'MUERTE') {
-        if (!ubicacionFinal) {
-          alert(
-            'El evento fue registrado, pero no se registró salida de inventario porque la cerda no tiene ubicación.'
-          )
-        } else {
+        if (ubicacionFinal) {
           const { error: movError } = await supabase
             .from('granja_movimientos')
             .insert({
-              fecha: `${fecha}T12:00:00.000Z`,
+              fecha: fechaTimestamp(fecha),
               ubicacion_id: ubicacionFinal,
               tipo: 'SALIDA_MUERTE',
               cantidad: 1,
@@ -525,30 +917,22 @@ export default function EventoCerdaPage() {
               referencia_tabla: 'granja_cerdas',
               referencia_id: Number(cerdaId),
               user_id: userId,
-              observaciones: `MUERTE CERDA ARETE ${cerda.arete}. ${
-                observaciones.trim() || ''
-              }`,
+              observaciones: `MUERTE CERDA ${cerda.arete}. Motivo: ${muerteMotivo.trim()}`,
             })
 
           if (movError) {
             console.error('Error registrando salida por muerte', movError)
-            alert(
-              `El evento fue registrado, pero no se pudo registrar la salida de inventario: ${movError.message}`
-            )
+            alert(`El evento fue registrado, pero no se pudo registrar la salida de inventario: ${movError.message}`)
           }
         }
       }
 
       if (tipo === 'BAJA') {
-        if (!ubicacionFinal) {
-          alert(
-            'El evento fue registrado, pero no se registró ajuste de inventario porque la cerda no tiene ubicación.'
-          )
-        } else {
+        if (ubicacionFinal) {
           const { error: movError } = await supabase
             .from('granja_movimientos')
             .insert({
-              fecha: `${fecha}T12:00:00.000Z`,
+              fecha: fechaTimestamp(fecha),
               ubicacion_id: ubicacionFinal,
               tipo: 'AJUSTE',
               cantidad: -1,
@@ -557,16 +941,57 @@ export default function EventoCerdaPage() {
               referencia_tabla: 'granja_cerdas',
               referencia_id: Number(cerdaId),
               user_id: userId,
-              observaciones: `BAJA CERDA ARETE ${cerda.arete}. ${
-                observaciones.trim() || ''
-              }`,
+              observaciones: `BAJA CERDA ${cerda.arete}. Motivo: ${bajaMotivo.trim()}`,
             })
 
           if (movError) {
             console.error('Error registrando baja en inventario', movError)
-            alert(
-              `El evento fue registrado, pero no se pudo registrar el ajuste de inventario: ${movError.message}`
-            )
+            alert(`El evento fue registrado, pero no se pudo registrar el ajuste de inventario: ${movError.message}`)
+          }
+        }
+      }
+
+      if (tipo === 'TRASLADO') {
+        const origen = cerda.ubicacion_id ? Number(cerda.ubicacion_id) : null
+        const destino = Number(trasladoDestinoId)
+
+        if (origen && destino) {
+          const obs = `TRASLADO CERDA ${cerda.arete}.`
+
+          const { error: movTrasladoError } = await supabase
+            .from('granja_movimientos')
+            .insert([
+              {
+                fecha: fechaTimestamp(fecha),
+                ubicacion_id: origen,
+                tipo: 'AJUSTE',
+                lote_id: loteFinal,
+                cantidad: -1,
+                hembras: -1,
+                machos: 0,
+                referencia_tabla: 'granja_cerda_eventos',
+                referencia_id: eventoId || null,
+                user_id: userId,
+                observaciones: obs,
+              },
+              {
+                fecha: fechaTimestamp(fecha),
+                ubicacion_id: destino,
+                tipo: 'AJUSTE',
+                lote_id: loteFinal,
+                cantidad: 1,
+                hembras: 1,
+                machos: 0,
+                referencia_tabla: 'granja_cerda_eventos',
+                referencia_id: eventoId || null,
+                user_id: userId,
+                observaciones: obs,
+              },
+            ])
+
+          if (movTrasladoError) {
+            console.error('Error registrando traslado', movTrasladoError)
+            alert(`El evento fue guardado, pero no se pudo registrar el movimiento de inventario: ${movTrasladoError.message}`)
           }
         }
       }
@@ -581,6 +1006,428 @@ export default function EventoCerdaPage() {
     }
   }
 
+  const calcularMontaDesdeParto = () => {
+    if (!fechaPartoEstimada) {
+      alert('Ingresa la fecha estimada de parto.')
+      return
+    }
+
+    setFechaMontaEstimada(restarDias(fechaPartoEstimada, 115))
+  }
+
+  const guardarRegularizacionPrenada = async () => {
+    const cerda = cerdaSeleccionada
+
+    if (!cerda) {
+      alert('Selecciona una cerda.')
+      return
+    }
+
+    if (normalizar(cerda.estado) !== 'PRENADA') {
+      alert('Esta opción es solo para cerdas con estado PRENADA.')
+      return
+    }
+
+    if (!fechaMontaEstimada) {
+      alert('Ingresa o calcula la fecha estimada de monta/inseminación.')
+      return
+    }
+
+    const confirmar = confirm(
+      `Se registrará un evento ${tipoServicioEstimado} estimado para ${cerda.arete} con fecha ${fechaMontaEstimada}. ¿Continuar?`
+    )
+
+    if (!confirmar) return
+
+    setGuardando(true)
+    setMsg(null)
+
+    try {
+      const { data: userData } = await supabase.auth.getUser()
+      const userId = userData?.user?.id ?? null
+
+      const ubicacionFinal = cerda.ubicacion_id ? Number(cerda.ubicacion_id) : null
+      const loteFinal = cerda.lote_id ? Number(cerda.lote_id) : null
+
+      const { error: servicioError } = await supabase
+        .from('granja_cerda_eventos')
+        .insert({
+          cerda_id: cerda.id,
+          fecha: fechaMontaEstimada,
+          tipo: tipoServicioEstimado,
+          resultado: 'ESTIMADO',
+          ubicacion_id: ubicacionFinal,
+          lote_id: loteFinal,
+          datos: {
+            regularizacion: true,
+            motivo:
+              'Cerda ingresada directamente como PRENADA sin evento reproductivo previo.',
+            fecha_parto_estimada: fechaPartoEstimada || null,
+            fecha_revision_estimada: sumarDias(fechaMontaEstimada, 21),
+            fecha_parto_calculada: sumarDias(fechaMontaEstimada, 115),
+          },
+          observaciones:
+            'Evento estimado creado para regularizar cerda ingresada como PRENADA.',
+          user_id: userId,
+        })
+
+      if (servicioError) {
+        console.error('Error registrando regularización', servicioError)
+        alert(`No se pudo registrar la regularización: ${servicioError.message}`)
+        return
+      }
+
+      const fechaRevision = sumarDias(fechaMontaEstimada, 21)
+
+      const { error: revisionError } = await supabase
+        .from('granja_cerda_eventos')
+        .insert({
+          cerda_id: cerda.id,
+          fecha: fechaRevision,
+          tipo: 'REVISION_EMBARAZO',
+          resultado: 'POSITIVO',
+          ubicacion_id: ubicacionFinal,
+          lote_id: loteFinal,
+          datos: {
+            regularizacion: true,
+            origen: tipoServicioEstimado,
+            fecha_servicio_estimada: fechaMontaEstimada,
+          },
+          observaciones:
+            'Revisión positiva estimada creada automáticamente por regularización de cerda preñada.',
+          user_id: userId,
+        })
+
+      if (revisionError) {
+        console.error('Error registrando revisión positiva estimada', revisionError)
+        alert(
+          `Se registró el servicio estimado, pero no la revisión positiva: ${revisionError.message}`
+        )
+      }
+
+      const { error: updateError } = await supabase
+        .from('granja_cerdas')
+        .update({
+          estado: 'PRENADA',
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', cerda.id)
+
+      if (updateError) {
+        console.error('Error actualizando estado de cerda', updateError)
+      }
+
+      alert('Regularización de embarazo registrada correctamente.')
+
+      setModoRegularizarPrenada(false)
+      setFechaPartoEstimada('')
+      setFechaMontaEstimada('')
+      await cargarCatalogos()
+      await cargarEventos()
+    } finally {
+      setGuardando(false)
+    }
+  }
+
+  const renderCamposEvento = () => {
+    if (tipo === 'MONTA' || tipo === 'INSEMINACION') {
+      return (
+        <div>
+          <label className="block text-xs font-semibold mb-1">Macho</label>
+          <input
+            className="w-full border rounded px-2 py-2"
+            value={macho}
+            onChange={(e) => setMacho(e.target.value)}
+            placeholder="Ej: M-330"
+          />
+        </div>
+      )
+    }
+
+    if (tipo === 'REVISION_EMBARAZO') {
+      return (
+        <div>
+          <label className="block text-xs font-semibold mb-1">Resultado</label>
+          <select
+            className="w-full border rounded px-2 py-2"
+            value={revisionResultado}
+            onChange={(e) => setRevisionResultado(e.target.value)}
+          >
+            <option value="">— Selecciona —</option>
+            <option value="POSITIVO">POSITIVO</option>
+            <option value="NEGATIVO">NEGATIVO</option>
+          </select>
+        </div>
+      )
+    }
+
+    if (tipo === 'PARTO') {
+      return (
+        <div className="grid gap-3">
+          <div className="grid md:grid-cols-3 gap-3">
+            <div>
+              <label className="block text-xs font-semibold mb-1">Nacidos vivos</label>
+              <input
+                type="number"
+                min="0"
+                className="w-full border rounded px-2 py-2"
+                value={partoVivos}
+                onChange={(e) => setPartoVivos(e.target.value)}
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold mb-1">Nacidos muertos</label>
+              <input
+                type="number"
+                min="0"
+                className="w-full border rounded px-2 py-2"
+                value={partoMuertos}
+                onChange={(e) => setPartoMuertos(e.target.value)}
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold mb-1">Momias</label>
+              <input
+                type="number"
+                min="0"
+                className="w-full border rounded px-2 py-2"
+                value={partoMomias}
+                onChange={(e) => setPartoMomias(e.target.value)}
+              />
+            </div>
+          </div>
+
+          <div className="grid md:grid-cols-3 gap-3">
+            <div>
+              <label className="block text-xs font-semibold mb-1">Hembras vivas</label>
+              <input
+                type="number"
+                min="0"
+                className="w-full border rounded px-2 py-2"
+                value={partoHembras}
+                onChange={(e) => setPartoHembras(e.target.value)}
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold mb-1">Machos vivos</label>
+              <input
+                type="number"
+                min="0"
+                className="w-full border rounded px-2 py-2"
+                value={partoMachos}
+                onChange={(e) => setPartoMachos(e.target.value)}
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold mb-1">Peso camada kg</label>
+              <input
+                type="number"
+                min="0"
+                className="w-full border rounded px-2 py-2"
+                value={partoPesoCamadaKg}
+                onChange={(e) => setPartoPesoCamadaKg(e.target.value)}
+              />
+            </div>
+          </div>
+        </div>
+      )
+    }
+
+    if (tipo === 'DESTETE') {
+      return (
+        <div className="grid gap-3">
+          <div className="grid md:grid-cols-4 gap-3">
+            <div>
+              <label className="block text-xs font-semibold mb-1">Cantidad destetada</label>
+              <input
+                type="number"
+                min="0"
+                className="w-full border rounded px-2 py-2"
+                value={desteteCantidad}
+                onChange={(e) => setDesteteCantidad(e.target.value)}
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold mb-1">Hembras</label>
+              <input
+                type="number"
+                min="0"
+                className="w-full border rounded px-2 py-2"
+                value={desteteHembras}
+                onChange={(e) => setDesteteHembras(e.target.value)}
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold mb-1">Machos</label>
+              <input
+                type="number"
+                min="0"
+                className="w-full border rounded px-2 py-2"
+                value={desteteMachos}
+                onChange={(e) => setDesteteMachos(e.target.value)}
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold mb-1">Peso total kg</label>
+              <input
+                type="number"
+                min="0"
+                className="w-full border rounded px-2 py-2"
+                value={destetePesoTotalKg}
+                onChange={(e) => setDestetePesoTotalKg(e.target.value)}
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold mb-1">
+              Destino de lechones destetados
+            </label>
+            <select
+              className="w-full border rounded px-2 py-2"
+              value={desteteDestinoId}
+              onChange={(e) => setDesteteDestinoId(e.target.value)}
+            >
+              <option value="">— Solo registrar evento, sin mover inventario —</option>
+              {ubicaciones.map((ubicacion) => (
+                <option key={ubicacion.id} value={ubicacion.id}>
+                  {ubicacion.codigo}
+                  {ubicacion.nombre ? ` — ${ubicacion.nombre}` : ''}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+      )
+    }
+
+    if (tipo === 'ABORTO') {
+      return (
+        <div className="grid md:grid-cols-2 gap-3">
+          <div>
+            <label className="block text-xs font-semibold mb-1">Cantidad de fetos</label>
+            <input
+              type="number"
+              min="0"
+              className="w-full border rounded px-2 py-2"
+              value={abortoFetos}
+              onChange={(e) => setAbortoFetos(e.target.value)}
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold mb-1">Motivo</label>
+            <input
+              className="w-full border rounded px-2 py-2"
+              value={abortoMotivo}
+              onChange={(e) => setAbortoMotivo(e.target.value)}
+            />
+          </div>
+        </div>
+      )
+    }
+
+    if (tipo === 'MEDICACION') {
+      return (
+        <div className="grid md:grid-cols-2 gap-3">
+          <div>
+            <label className="block text-xs font-semibold mb-1">Medicamento</label>
+            <input
+              className="w-full border rounded px-2 py-2"
+              value={medicamento}
+              onChange={(e) => setMedicamento(e.target.value)}
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold mb-1">Dosis</label>
+            <input
+              className="w-full border rounded px-2 py-2"
+              value={dosis}
+              onChange={(e) => setDosis(e.target.value)}
+              placeholder="Ej: 5 ml"
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold mb-1">Vía de aplicación</label>
+            <input
+              className="w-full border rounded px-2 py-2"
+              value={viaAplicacion}
+              onChange={(e) => setViaAplicacion(e.target.value)}
+              placeholder="Ej: IM, oral, etc."
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold mb-1">Responsable</label>
+            <input
+              className="w-full border rounded px-2 py-2"
+              value={responsable}
+              onChange={(e) => setResponsable(e.target.value)}
+            />
+          </div>
+        </div>
+      )
+    }
+
+    if (tipo === 'MUERTE') {
+      return (
+        <div>
+          <label className="block text-xs font-semibold mb-1">Motivo de muerte</label>
+          <input
+            className="w-full border rounded px-2 py-2"
+            value={muerteMotivo}
+            onChange={(e) => setMuerteMotivo(e.target.value)}
+          />
+        </div>
+      )
+    }
+
+    if (tipo === 'BAJA') {
+      return (
+        <div>
+          <label className="block text-xs font-semibold mb-1">Motivo de baja</label>
+          <input
+            className="w-full border rounded px-2 py-2"
+            value={bajaMotivo}
+            onChange={(e) => setBajaMotivo(e.target.value)}
+          />
+        </div>
+      )
+    }
+
+    if (tipo === 'TRASLADO') {
+      return (
+        <div>
+          <label className="block text-xs font-semibold mb-1">Destino</label>
+          <select
+            className="w-full border rounded px-2 py-2"
+            value={trasladoDestinoId}
+            onChange={(e) => setTrasladoDestinoId(e.target.value)}
+          >
+            <option value="">— Selecciona destino —</option>
+            {ubicaciones.map((ubicacion) => (
+              <option key={ubicacion.id} value={ubicacion.id}>
+                {ubicacion.codigo}
+                {ubicacion.nombre ? ` — ${ubicacion.nombre}` : ''}
+              </option>
+            ))}
+          </select>
+        </div>
+      )
+    }
+
+    return null
+  }
+
   return (
     <div className="p-6 max-w-6xl mx-auto">
       <div className="flex justify-center mb-4">
@@ -591,8 +1438,7 @@ export default function EventoCerdaPage() {
         <div>
           <h1 className="text-2xl font-bold">Granja — Eventos de cerdas</h1>
           <p className="text-xs text-gray-600">
-            Registro de monta, revisión, parto, destete, aborto, medicación,
-            muerte y descarte.
+            Registro de monta, revisión, parto, destete, aborto, medicación, muerte, baja y traslado.
           </p>
         </div>
 
@@ -640,7 +1486,12 @@ export default function EventoCerdaPage() {
                 <select
                   className="w-full border rounded px-2 py-2"
                   value={cerdaId}
-                  onChange={(e) => setCerdaId(e.target.value)}
+                  onChange={(e) => {
+                    setCerdaId(e.target.value)
+                    setModoRegularizarPrenada(false)
+                    setFechaPartoEstimada('')
+                    setFechaMontaEstimada('')
+                  }}
                 >
                   <option value="">
                     {cerdasDisponiblesSelector.length === 0
@@ -695,10 +1546,103 @@ export default function EventoCerdaPage() {
                     <div>
                       <b>Paridad:</b> {cerdaSeleccionada.paridad ?? 0}
                     </div>
+                    {ubicacionActualCerda ? (
+                      <div>
+                        <b>Ubicación actual:</b> {ubicacionActualCerda.codigo}
+                        {ubicacionActualCerda.nombre
+                          ? ` — ${ubicacionActualCerda.nombre}`
+                          : ''}
+                      </div>
+                    ) : null}
                   </div>
                 ) : null}
               </div>
             </div>
+
+            {puedeRegularizarPrenada ? (
+              <div className="border rounded bg-amber-50 border-amber-300 p-3 text-xs text-amber-900">
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <b>Esta cerda está marcada como PRENADA.</b>
+                    <div>
+                      Puedes crear un evento reproductivo estimado si fue ingresada ya preñada.
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => setModoRegularizarPrenada((prev) => !prev)}
+                    className="bg-amber-600 hover:bg-amber-700 text-white px-3 py-1 rounded text-xs"
+                  >
+                    {modoRegularizarPrenada ? 'Ocultar' : 'Regularizar embarazo'}
+                  </button>
+                </div>
+
+                {modoRegularizarPrenada ? (
+                  <div className="grid md:grid-cols-2 gap-3 mt-3">
+                    <div>
+                      <label className="block font-semibold mb-1">
+                        Tipo de servicio estimado
+                      </label>
+                      <select
+                        className="border rounded p-2 w-full"
+                        value={tipoServicioEstimado}
+                        onChange={(e) =>
+                          setTipoServicioEstimado(e.target.value as 'MONTA' | 'INSEMINACION')
+                        }
+                      >
+                        <option value="MONTA">MONTA</option>
+                        <option value="INSEMINACION">INSEMINACION</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block font-semibold mb-1">
+                        Fecha estimada de parto
+                      </label>
+                      <div className="flex gap-2">
+                        <input
+                          type="date"
+                          className="border rounded p-2 w-full"
+                          value={fechaPartoEstimada}
+                          onChange={(e) => setFechaPartoEstimada(e.target.value)}
+                        />
+                        <button
+                          type="button"
+                          onClick={calcularMontaDesdeParto}
+                          className="bg-slate-700 hover:bg-slate-800 text-white px-3 rounded"
+                        >
+                          Calcular
+                        </button>
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block font-semibold mb-1">
+                        Fecha estimada de monta/inseminación
+                      </label>
+                      <input
+                        type="date"
+                        className="border rounded p-2 w-full"
+                        value={fechaMontaEstimada}
+                        onChange={(e) => setFechaMontaEstimada(e.target.value)}
+                      />
+                    </div>
+
+                    <div className="flex items-end">
+                      <button
+                        type="button"
+                        onClick={guardarRegularizacionPrenada}
+                        disabled={guardando}
+                        className="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white px-4 py-2 rounded w-full"
+                      >
+                        {guardando ? 'Guardando...' : 'Guardar regularización'}
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
 
             <div className="grid md:grid-cols-2 gap-3">
               <div>
@@ -708,7 +1652,7 @@ export default function EventoCerdaPage() {
                   value={tipo}
                   onChange={(e) => {
                     setTipo(e.target.value)
-                    setResultado('')
+                    limpiarCamposEvento()
                   }}
                 >
                   {TIPOS_EVENTO.map((tipoEvento) => (
@@ -717,61 +1661,6 @@ export default function EventoCerdaPage() {
                     </option>
                   ))}
                 </select>
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold mb-1">Resultado</label>
-
-                {tipo === 'REVISION_EMBARAZO' ? (
-                  <select
-                    className="w-full border rounded px-2 py-2"
-                    value={resultado}
-                    onChange={(e) => setResultado(e.target.value)}
-                  >
-                    <option value="">— Selecciona —</option>
-                    {RESULTADOS_REVISION.map((r) => (
-                      <option key={r} value={r}>
-                        {r}
-                      </option>
-                    ))}
-                  </select>
-                ) : (
-                  <input
-                    className="w-full border rounded px-2 py-2"
-                    value={resultado}
-                    onChange={(e) => setResultado(e.target.value)}
-                    placeholder="Opcional"
-                  />
-                )}
-              </div>
-            </div>
-
-            <div className="grid md:grid-cols-2 gap-3">
-              <div>
-                <label className="block text-xs font-semibold mb-1">Ubicación</label>
-                <select
-                  className="w-full border rounded px-2 py-2"
-                  value={ubicacionId}
-                  onChange={(e) => setUbicacionId(e.target.value)}
-                >
-                  <option value="">— Usar ubicación actual —</option>
-                  {ubicaciones.map((ubicacion) => (
-                    <option key={ubicacion.id} value={ubicacion.id}>
-                      {ubicacion.codigo}
-                      {ubicacion.nombre ? ` — ${ubicacion.nombre}` : ''}
-                    </option>
-                  ))}
-                </select>
-
-                {ubicacionActualCerda ? (
-                  <div className="text-[11px] text-gray-500 mt-1">
-                    Actual:{' '}
-                    {ubicacionActualCerda.codigo}
-                    {ubicacionActualCerda.nombre
-                      ? ` — ${ubicacionActualCerda.nombre}`
-                      : ''}
-                  </div>
-                ) : null}
               </div>
 
               <div>
@@ -797,17 +1686,26 @@ export default function EventoCerdaPage() {
               </div>
             </div>
 
-            {tipo === 'MONTA' || tipo === 'INSEMINACION' ? (
+            {tipo !== 'TRASLADO' ? (
               <div>
-                <label className="block text-xs font-semibold mb-1">Macho</label>
-                <input
+                <label className="block text-xs font-semibold mb-1">Ubicación del evento</label>
+                <select
                   className="w-full border rounded px-2 py-2"
-                  value={macho}
-                  onChange={(e) => setMacho(e.target.value)}
-                  placeholder="Ej: M-330"
-                />
+                  value={ubicacionId}
+                  onChange={(e) => setUbicacionId(e.target.value)}
+                >
+                  <option value="">— Usar ubicación actual —</option>
+                  {ubicaciones.map((ubicacion) => (
+                    <option key={ubicacion.id} value={ubicacion.id}>
+                      {ubicacion.codigo}
+                      {ubicacion.nombre ? ` — ${ubicacion.nombre}` : ''}
+                    </option>
+                  ))}
+                </select>
               </div>
             ) : null}
+
+            {renderCamposEvento()}
 
             <div>
               <label className="block text-xs font-semibold mb-1">Observaciones</label>
@@ -836,11 +1734,6 @@ export default function EventoCerdaPage() {
                 <span className="font-semibold">{estadoSugerido}</span>
               </div>
             ) : null}
-
-            <div className="border rounded bg-slate-50 p-3 text-xs text-slate-700">
-              <b>Nota:</b> MUERTE registra una salida de inventario con tipo
-              SALIDA_MUERTE y cantidad 1. BAJA registra un AJUSTE con cantidad -1.
-            </div>
 
             <div className="flex gap-2">
               <button
@@ -965,10 +1858,6 @@ export default function EventoCerdaPage() {
                 )}
               </tbody>
             </table>
-          </div>
-
-          <div className="mt-3 text-xs text-gray-500">
-            
           </div>
         </div>
       </div>
