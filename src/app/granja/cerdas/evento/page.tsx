@@ -34,7 +34,7 @@ type EventoRow = {
   tipo: string
   resultado: string | null
   observaciones: string | null
-  granja_?: {
+  granja_cerdas?: {
     arete: string | null
     nombre: string | null
   } | null
@@ -147,7 +147,7 @@ const isCerdaDisponible = (cerda: Cerda, incluirInactivas: boolean) => {
 }
 
 export default function EventoCerdaPage() {
-  const [, set] = useState<Cerda[]>([])
+  const [cerdas, setCerdas] = useState<Cerda[]>([])
   const [ubicaciones, setUbicaciones] = useState<Ubicacion[]>([])
   const [lotes, setLotes] = useState<Lote[]>([])
   const [eventos, setEventos] = useState<EventoRow[]>([])
@@ -320,8 +320,6 @@ export default function EventoCerdaPage() {
     return []
   }, [fecha, tipo])
 
-
-
   const puedeRegularizarPrenada = useMemo(() => {
     if (!cerdaSeleccionada) return false
     return normalizar(cerdaSeleccionada.estado) === 'PRENADA'
@@ -351,12 +349,10 @@ export default function EventoCerdaPage() {
       ])
 
       if (cRes.error) {
-        console.error('Error cargando cerdas', cRes.error)
         throw new Error(`Error cargando cerdas: ${cRes.error.message}`)
       }
 
       if (uRes.error) {
-        console.error('Error cargando ubicaciones', uRes.error)
         throw new Error(`Error cargando ubicaciones: ${uRes.error.message}`)
       }
 
@@ -368,11 +364,10 @@ export default function EventoCerdaPage() {
       setUbicaciones((uRes.data ?? []) as Ubicacion[])
       setLotes((lRes.data ?? []) as Lote[])
     } catch (error) {
-      console.error('Error cargando catálogos', error)
-
       const message =
         error instanceof Error ? error.message : 'Error cargando catálogos.'
 
+      console.error(error)
       setMsg(message)
       alert(message)
     } finally {
@@ -382,6 +377,8 @@ export default function EventoCerdaPage() {
 
   const cargarEventos = useCallback(async () => {
     if (!filtroDesde || !filtroHasta) return
+
+    setMsg(null)
 
     let query = supabase
       .from('granja_cerda_eventos')
@@ -565,39 +562,29 @@ export default function EventoCerdaPage() {
     if (tipo === 'ABORTO') {
       const fetos = toInt(abortoFetos)
 
-      if (Number.isNaN(fetos)) {
-        return 'El número de fetos debe ser válido.'
-      }
-
-      if (fetos < 0) {
-        return 'El número de fetos no puede ser negativo.'
-      }
+      if (Number.isNaN(fetos)) return 'El número de fetos debe ser válido.'
+      if (fetos < 0) return 'El número de fetos no puede ser negativo.'
     }
 
     if (tipo === 'MEDICACION') {
-      if (!medicamento.trim()) {
-        return 'Ingresa el medicamento aplicado.'
-      }
+      if (!medicamento.trim()) return 'Ingresa el medicamento aplicado.'
     }
 
     if (tipo === 'MUERTE') {
-      if (!muerteMotivo.trim()) {
-        return 'Ingresa el motivo de muerte.'
-      }
+      if (!muerteMotivo.trim()) return 'Ingresa el motivo de muerte.'
     }
 
     if (tipo === 'BAJA') {
-      if (!bajaMotivo.trim()) {
-        return 'Ingresa el motivo de baja.'
-      }
+      if (!bajaMotivo.trim()) return 'Ingresa el motivo de baja.'
     }
 
     if (tipo === 'TRASLADO') {
-      if (!trasladoDestinoId) {
-        return 'Selecciona la ubicación destino del traslado.'
-      }
+      if (!trasladoDestinoId) return 'Selecciona la ubicación destino del traslado.'
 
-      if (cerdaSeleccionada?.ubicacion_id && Number(trasladoDestinoId) === Number(cerdaSeleccionada.ubicacion_id)) {
+      if (
+        cerdaSeleccionada?.ubicacion_id &&
+        Number(trasladoDestinoId) === Number(cerdaSeleccionada.ubicacion_id)
+      ) {
         return 'El destino no puede ser igual a la ubicación actual.'
       }
     }
@@ -638,7 +625,7 @@ export default function EventoCerdaPage() {
         momias: toInt(partoMomias),
         hembras: toInt(partoHembras),
         machos: toInt(partoMachos),
-        peso_camda_kg: toNumOrNull(partoPesoCamadaKg),
+        peso_camada_kg: toNumOrNull(partoPesoCamadaKg),
         destete_sugerido: sumarDias(fecha, 21),
       }
     }
@@ -732,6 +719,11 @@ export default function EventoCerdaPage() {
         estado_sugerido: estadoSugerido,
       }
 
+      const ubicacionEvento =
+        tipo === 'TRASLADO' && trasladoDestinoId
+          ? Number(trasladoDestinoId)
+          : ubicacionFinal
+
       const { data: eventoInsertado, error: eventoError } = await supabase
         .from('granja_cerda_eventos')
         .insert({
@@ -739,7 +731,7 @@ export default function EventoCerdaPage() {
           fecha,
           tipo,
           resultado: getResultadoEvento(),
-          ubicacion_id: tipo === 'TRASLADO' && trasladoDestinoId ? Number(trasladoDestinoId) : ubicacionFinal,
+          ubicacion_id: ubicacionEvento,
           lote_id: loteFinal,
           datos,
           observaciones: observaciones.trim() || null,
@@ -793,9 +785,7 @@ export default function EventoCerdaPage() {
 
       if (updateError) {
         console.error('Error actualizando cerda', updateError)
-        alert(
-          `El evento fue registrado, pero no se pudo actualizar la cerda: ${updateError.message}`
-        )
+        alert(`El evento fue registrado, pero no se pudo actualizar la cerda: ${updateError.message}`)
       }
 
       if (tipo === 'PARTO') {
@@ -897,51 +887,47 @@ export default function EventoCerdaPage() {
         }
       }
 
-      if (tipo === 'MUERTE') {
-        if (ubicacionFinal) {
-          const { error: movError } = await supabase
-            .from('granja_movimientos')
-            .insert({
-              fecha: fechaTimestamp(fecha),
-              ubicacion_id: ubicacionFinal,
-              tipo: 'SALIDA_MUERTE',
-              cantidad: 1,
-              hembras: 1,
-              machos: 0,
-              referencia_tabla: 'granja_cerdas',
-              referencia_id: Number(cerdaId),
-              user_id: userId,
-              observaciones: `MUERTE CERDA ${cerda.arete}. Motivo: ${muerteMotivo.trim()}`,
-            })
+      if (tipo === 'MUERTE' && ubicacionFinal) {
+        const { error: movError } = await supabase
+          .from('granja_movimientos')
+          .insert({
+            fecha: fechaTimestamp(fecha),
+            ubicacion_id: ubicacionFinal,
+            tipo: 'SALIDA_MUERTE',
+            cantidad: 1,
+            hembras: 1,
+            machos: 0,
+            referencia_tabla: 'granja_cerdas',
+            referencia_id: Number(cerdaId),
+            user_id: userId,
+            observaciones: `MUERTE CERDA ${cerda.arete}. Motivo: ${muerteMotivo.trim()}`,
+          })
 
-          if (movError) {
-            console.error('Error registrando salida por muerte', movError)
-            alert(`El evento fue registrado, pero no se pudo registrar la salida de inventario: ${movError.message}`)
-          }
+        if (movError) {
+          console.error('Error registrando salida por muerte', movError)
+          alert(`El evento fue registrado, pero no se pudo registrar la salida de inventario: ${movError.message}`)
         }
       }
 
-      if (tipo === 'BAJA') {
-        if (ubicacionFinal) {
-          const { error: movError } = await supabase
-            .from('granja_movimientos')
-            .insert({
-              fecha: fechaTimestamp(fecha),
-              ubicacion_id: ubicacionFinal,
-              tipo: 'AJUSTE',
-              cantidad: -1,
-              hembras: -1,
-              machos: 0,
-              referencia_tabla: 'granja_cerdas',
-              referencia_id: Number(cerdaId),
-              user_id: userId,
-              observaciones: `BAJA CERDA ${cerda.arete}. Motivo: ${bajaMotivo.trim()}`,
-            })
+      if (tipo === 'BAJA' && ubicacionFinal) {
+        const { error: movError } = await supabase
+          .from('granja_movimientos')
+          .insert({
+            fecha: fechaTimestamp(fecha),
+            ubicacion_id: ubicacionFinal,
+            tipo: 'AJUSTE',
+            cantidad: -1,
+            hembras: -1,
+            machos: 0,
+            referencia_tabla: 'granja_cerdas',
+            referencia_id: Number(cerdaId),
+            user_id: userId,
+            observaciones: `BAJA CERDA ${cerda.arete}. Motivo: ${bajaMotivo.trim()}`,
+          })
 
-          if (movError) {
-            console.error('Error registrando baja en inventario', movError)
-            alert(`El evento fue registrado, pero no se pudo registrar el ajuste de inventario: ${movError.message}`)
-          }
+        if (movError) {
+          console.error('Error registrando baja en inventario', movError)
+          alert(`El evento fue registrado, pero no se pudo registrar el ajuste de inventario: ${movError.message}`)
         }
       }
 
@@ -1054,14 +1040,12 @@ export default function EventoCerdaPage() {
           lote_id: loteFinal,
           datos: {
             regularizacion: true,
-            motivo:
-              'Cerda ingresada directamente como PRENADA sin evento reproductivo previo.',
+            motivo: 'Cerda ingresada directamente como PRENADA sin evento reproductivo previo.',
             fecha_parto_estimada: fechaPartoEstimada || null,
             fecha_revision_estimada: sumarDias(fechaMontaEstimada, 21),
             fecha_parto_calculada: sumarDias(fechaMontaEstimada, 115),
           },
-          observaciones:
-            'Evento estimado creado para regularizar cerda ingresada como PRENADA.',
+          observaciones: 'Evento estimado creado para regularizar cerda ingresada como PRENADA.',
           user_id: userId,
         })
 
@@ -1087,16 +1071,13 @@ export default function EventoCerdaPage() {
             origen: tipoServicioEstimado,
             fecha_servicio_estimada: fechaMontaEstimada,
           },
-          observaciones:
-            'Revisión positiva estimada creada automáticamente por regularización de cerda preñada.',
+          observaciones: 'Revisión positiva estimada creada automáticamente por regularización de cerda preñada.',
           user_id: userId,
         })
 
       if (revisionError) {
         console.error('Error registrando revisión positiva estimada', revisionError)
-        alert(
-          `Se registró el servicio estimado, pero no la revisión positiva: ${revisionError.message}`
-        )
+        alert(`Se registró el servicio estimado, pero no la revisión positiva: ${revisionError.message}`)
       }
 
       const { error: updateError } = await supabase
@@ -1582,7 +1563,9 @@ export default function EventoCerdaPage() {
                         className="border rounded p-2 w-full"
                         value={tipoServicioEstimado}
                         onChange={(e) =>
-                          setTipoServicioEstimado(e.target.value as 'MONTA' | 'INSEMINACION')
+                          setTipoServicioEstimado(
+                            e.target.value as 'MONTA' | 'INSEMINACION'
+                          )
                         }
                       >
                         <option value="MONTA">MONTA</option>
@@ -1682,7 +1665,9 @@ export default function EventoCerdaPage() {
 
             {tipo !== 'TRASLADO' ? (
               <div>
-                <label className="block text-xs font-semibold mb-1">Ubicación del evento</label>
+                <label className="block text-xs font-semibold mb-1">
+                  Ubicación del evento
+                </label>
                 <select
                   className="w-full border rounded px-2 py-2"
                   value={ubicacionId}
