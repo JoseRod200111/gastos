@@ -1,7 +1,5 @@
 'use client'
 
-export const dynamic = 'force-dynamic'
-
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import Image from 'next/image'
@@ -9,25 +7,53 @@ import { supabase } from '@/lib/supabaseClient'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
 
-type Seccion =
-  | 'TODOS'
-  | 'GRANJA'
-  | 'VEHICULOS'
-  | 'VENTAS'
-  | 'EROGACIONES'
-  | 'INVENTARIO_PLANTA'
+type MovimientoGranja = {
+  id: number
+  fecha: string
+  tipo: string
+  cantidad: number | null
+  hembras: number | null
+  machos: number | null
+  peso_total_kg: number | null
+  ubicacion_id: number | null
+  lote_id: number | null
+  referencia_tabla: string | null
+  referencia_id: number | null
+  observaciones: string | null
+  user_id: string | null
+  created_at?: string | null
+  granja_ubicaciones?: {
+    codigo: string | null
+    nombre: string | null
+  } | null
+  granja_lotes?: {
+    codigo: string | null
+  } | null
+}
 
-type TipoGranja =
-  | 'TODOS'
-  | 'ENTRADA_COMPRA'
-  | 'ENTRADA_PARTO'
-  | 'SALIDA_VENTA'
-  | 'SALIDA_MUERTE'
-  | 'AJUSTE'
-
-type Profile = {
-  id: string
-  email: string | null
+type EventoCerda = {
+  id: number
+  cerda_id: number
+  fecha: string
+  tipo: string
+  resultado: string | null
+  ubicacion_id: number | null
+  lote_id: number | null
+  datos: Record<string, unknown> | null
+  observaciones: string | null
+  user_id: string | null
+  created_at?: string | null
+  granja_cerdas?: {
+    arete: string | null
+    nombre: string | null
+  } | null
+  granja_ubicaciones?: {
+    codigo: string | null
+    nombre: string | null
+  } | null
+  granja_lotes?: {
+    codigo: string | null
+  } | null
 }
 
 type Ubicacion = {
@@ -36,24 +62,35 @@ type Ubicacion = {
   nombre: string | null
 }
 
-type MovItem = {
-  ts: string
-  seccion: 'GRANJA' | 'VEHICULOS' | 'VENTAS' | 'EROGACIONES' | 'INVENTARIO_PLANTA'
-  accion: string
-  accion_label: string
-  usuario: string
-  usuario_label: string
+type Usuario = {
+  id: string
+  email: string | null
+  nombre?: string | null
+}
+
+type AccionEmpleado = {
+  id: string
+  origen: 'MOVIMIENTO_INVENTARIO' | 'EVENTO_CERDA'
+  fecha: string
+  hora: string
+  fechaHoraOrden: string
+  usuarioId: string | null
+  usuarioTexto: string
+  seccion: string
+  tipoAccion: string
+  ubicacionId: number | null
+  ubicacionCodigo: string
+  ubicacionTexto: string
+  loteTexto: string
   referencia: string
-  detalle: string
-  descripcion_corta: string
+  cantidad: number
+  entradas: number
+  salidas: number
+  ajustes: number
+  cambioNeto: number
   observaciones: string
-  ubicacion_id?: number | null
-  ubicacion_codigo?: string | null
-  ubicacion_nombre?: string | null
-  tipo_granja?: string | null
-  cantidad?: number | null
-  impacto?: number | null
-  origen?: string | null
+  detalle: string
+  busqueda: string
 }
 
 type ResumenUbicacion = {
@@ -61,1251 +98,1016 @@ type ResumenUbicacion = {
   entradas: number
   salidas: number
   ajustes: number
-  neto: number
+  cambioNeto: number
   movimientos: number
 }
 
-const pad = (n: number) => (n < 10 ? `0${n}` : `${n}`)
+const pad = (n: number) => String(n).padStart(2, '0')
 
-const hoyISO = () => {
+const hoyYYYYMMDD = () => {
   const d = new Date()
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
 }
 
-const fmtFecha = (iso: string) => {
-  if (!iso) return '—'
+const restarDias = (fecha: string, dias: number) => {
+  const [y, m, d] = fecha.split('-').map(Number)
+  const date = new Date(y, (m || 1) - 1, d || 1)
+  date.setDate(date.getDate() - dias)
 
-  const d = new Date(iso)
-
-  if (Number.isNaN(d.getTime())) {
-    return String(iso).slice(0, 19)
-  }
-
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(
-    d.getHours()
-  )}:${pad(d.getMinutes())}`
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
 }
 
-const inicioDia = (yyyyMMdd: string) => `${yyyyMMdd}T00:00:00.000Z`
-const finDia = (yyyyMMdd: string) => `${yyyyMMdd}T23:59:59.999Z`
-
-const clamp = (s: string) => (s || '').trim()
-
-function moneyQ(n: unknown) {
-  const x = Number(n || 0)
-
-  if (Number.isNaN(x)) {
-    return 'Q0.00'
-  }
-
-  return `Q${x.toFixed(2)}`
-}
-
-function num(n: unknown) {
-  const x = Number(n)
-
-  if (Number.isNaN(x)) {
-    return '—'
-  }
-
-  return String(x)
-}
-
-function safeJsonParse(v: unknown): any {
-  try {
-    if (v == null) return null
-    if (typeof v === 'object') return v
-    if (typeof v === 'string') return JSON.parse(v)
-    return null
-  } catch {
-    return null
-  }
-}
-
-function quitarAcentos(valor: string) {
-  return valor.normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-}
-
-function normalizarBusqueda(valor: string) {
-  return quitarAcentos(String(valor || ''))
+const normalizar = (value: unknown) =>
+  String(value ?? '')
+    .trim()
     .toLowerCase()
-    .replace(/\s+/g, '')
-    .replace(/-/g, '')
-    .replace(/_/g, '')
-    .replace(/tr0+(\d+)/g, 'tr$1')
-    .replace(/g0+(\d+)/g, 'g$1')
-    .replace(/m1j0+(\d+)/g, 'm1j$1')
-    .replace(/m2j0+(\d+)/g, 'm2j$1')
+
+const formatFecha = (value?: string | null) => {
+  if (!value) return '—'
+  return String(value).slice(0, 10)
 }
 
-function codigoAlternoUbicacion(codigo: string) {
-  const limpio = String(codigo || '').toUpperCase()
+const formatHora = (value?: string | null) => {
+  if (!value) return '—'
 
-  const tr = limpio.match(/^TR0*(\d+)$/)
-  if (tr) {
-    return `TR${Number(tr[1])}`
+  const raw = String(value)
+
+  if (raw.includes('T')) {
+    const hora = raw.split('T')[1]?.slice(0, 8)
+    return hora || '—'
   }
 
-  const g = limpio.match(/^G0*(\d+)J0*(\d+)$/)
-  if (g) {
-    return `G${Number(g[1])}J${Number(g[2])}`
+  if (raw.length >= 19) {
+    return raw.slice(11, 19)
   }
 
-  const m1 = limpio.match(/^M1J0*(\d+)$/)
-  if (m1) {
-    return `M1J${Number(m1[1])}`
-  }
-
-  const m2 = limpio.match(/^M2J0*(\d+)$/)
-  if (m2) {
-    return `M2J${Number(m2[1])}`
-  }
-
-  return limpio
+  return '—'
 }
 
-function parseTR(codigo: string) {
-  const m = String(codigo || '').match(/^TR0*(\d+)$/i)
-  return m ? Number(m[1]) : null
+const fechaHoraValor = (fecha?: string | null, createdAt?: string | null) => {
+  if (createdAt) return String(createdAt)
+  if (fecha) return String(fecha)
+  return ''
 }
 
-function naturalUbicacionSort(a: Ubicacion, b: Ubicacion) {
-  const ta = parseTR(a.codigo)
-  const tb = parseTR(b.codigo)
+const toNum = (value: unknown) => {
+  const n = Number(value)
+  return Number.isFinite(n) ? n : 0
+}
 
-  if (ta !== null && tb !== null) {
-    return ta - tb
+const ubicacionTexto = (
+  u?: { codigo: string | null; nombre: string | null } | null
+) => {
+  if (!u) return '—'
+
+  const codigo = u.codigo || ''
+  const nombre = u.nombre || ''
+
+  if (!codigo && !nombre) return '—'
+
+  return `${codigo}${nombre ? ` — ${nombre}` : ''}`
+}
+
+const loteTexto = (l?: { codigo: string | null } | null) => {
+  if (!l?.codigo) return '—'
+  return l.codigo
+}
+
+const limpiarTramo = (value: string) => {
+  const v = value.trim().toUpperCase()
+
+  if (!v) return ''
+
+  return v.replace(/^TR0+/, 'TR')
+}
+
+const tipoMovimientoLegible = (tipo: string) => {
+  const t = String(tipo || '').toUpperCase()
+
+  if (t === 'ENTRADA_COMPRA') return 'Entrada por compra'
+  if (t === 'ENTRADA_PARTO') return 'Entrada por parto'
+  if (t === 'SALIDA_VENTA') return 'Salida por venta'
+  if (t === 'SALIDA_MUERTE') return 'Salida por muerte'
+  if (t === 'AJUSTE') return 'Ajuste / traslado'
+  if (t === 'TRASLADO') return 'Traslado'
+
+  return t || 'Movimiento'
+}
+
+const tipoEventoLegible = (tipo: string) => {
+  const t = String(tipo || '').toUpperCase()
+
+  if (t === 'MONTA') return 'Monta'
+  if (t === 'INSEMINACION') return 'Inseminación'
+  if (t === 'REVISION_EMBARAZO') return 'Revisión embarazo'
+  if (t === 'PARTO') return 'Parto'
+  if (t === 'DESTETE') return 'Destete'
+  if (t === 'ABORTO') return 'Aborto'
+  if (t === 'MEDICACION') return 'Medicación'
+  if (t === 'MUERTE') return 'Muerte'
+  if (t === 'BAJA') return 'Baja'
+  if (t === 'TRASLADO') return 'Traslado de cerda'
+
+  return t || 'Evento'
+}
+
+const clasificarMovimiento = (mov: MovimientoGranja) => {
+  const tipo = String(mov.tipo || '').toUpperCase()
+  const cantidad = toNum(mov.cantidad)
+
+  if (tipo.startsWith('ENTRADA')) {
+    return {
+      entradas: Math.abs(cantidad),
+      salidas: 0,
+      ajustes: 0,
+      cambioNeto: Math.abs(cantidad),
+    }
   }
 
-  if (ta !== null) return -1
-  if (tb !== null) return 1
-
-  return a.codigo.localeCompare(b.codigo)
-}
-
-function impactoGranja(tipo: string | null | undefined, cantidad: number | null | undefined) {
-  const cant = Math.abs(Number(cantidad || 0))
-
-  if (tipo === 'ENTRADA_COMPRA' || tipo === 'ENTRADA_PARTO') return cant
-  if (tipo === 'SALIDA_VENTA' || tipo === 'SALIDA_MUERTE') return -cant
-  if (tipo === 'AJUSTE') return Number(cantidad || 0)
-
-  return Number(cantidad || 0)
-}
-
-function formatoImpacto(v: number | null | undefined) {
-  const n = Number(v || 0)
-
-  if (n > 0) return `+${n}`
-  return String(n)
-}
-
-function labelTipoGranja(tipo: string | null | undefined) {
-  if (tipo === 'ENTRADA_COMPRA') return 'Entrada por compra'
-  if (tipo === 'ENTRADA_PARTO') return 'Entrada por parto'
-  if (tipo === 'SALIDA_VENTA') return 'Salida por venta'
-  if (tipo === 'SALIDA_MUERTE') return 'Salida por muerte'
-  if (tipo === 'AJUSTE') return 'Ajuste manual'
-  return tipo || 'Movimiento'
-}
-
-function explicarMovimiento(tipo: string | null | undefined, impacto: number, cantidad: number) {
-  if (tipo === 'ENTRADA_COMPRA') {
-    return `Se agregaron ${cantidad} cerdo(s) por compra.`
-  }
-
-  if (tipo === 'ENTRADA_PARTO') {
-    return `Se agregaron ${cantidad} cerdo(s) por parto.`
-  }
-
-  if (tipo === 'SALIDA_VENTA') {
-    return `Se restaron ${cantidad} cerdo(s) por venta.`
-  }
-
-  if (tipo === 'SALIDA_MUERTE') {
-    return `Se restaron ${cantidad} cerdo(s) por muerte.`
+  if (tipo.startsWith('SALIDA')) {
+    return {
+      entradas: 0,
+      salidas: Math.abs(cantidad),
+      ajustes: 0,
+      cambioNeto: -Math.abs(cantidad),
+    }
   }
 
   if (tipo === 'AJUSTE') {
-    if (impacto > 0) return `Ajuste aumentó el inventario en ${impacto}.`
-    if (impacto < 0) return `Ajuste redujo el inventario en ${Math.abs(impacto)}.`
-    return 'Ajuste sin cambio neto.'
+    return {
+      entradas: 0,
+      salidas: 0,
+      ajustes: cantidad,
+      cambioNeto: cantidad,
+    }
   }
 
-  if (impacto > 0) return `El inventario aumentó en ${impacto}.`
-  if (impacto < 0) return `El inventario bajó en ${Math.abs(impacto)}.`
+  if (cantidad > 0) {
+    return {
+      entradas: cantidad,
+      salidas: 0,
+      ajustes: 0,
+      cambioNeto: cantidad,
+    }
+  }
 
-  return 'Movimiento sin cambio neto.'
+  if (cantidad < 0) {
+    return {
+      entradas: 0,
+      salidas: Math.abs(cantidad),
+      ajustes: 0,
+      cambioNeto: cantidad,
+    }
+  }
+
+  return {
+    entradas: 0,
+    salidas: 0,
+    ajustes: 0,
+    cambioNeto: 0,
+  }
 }
 
-function extraerObservacion(texto: unknown) {
-  const s = String(texto || '').trim()
-  if (!s) return '—'
-  return s
+const detalleDatosEvento = (ev: EventoCerda) => {
+  const datos = ev.datos || {}
+  const tipo = String(ev.tipo || '').toUpperCase()
+
+  if (tipo === 'PARTO') {
+    return [
+      `Vivos: ${datos.nacidos_vivos ?? '—'}`,
+      `Muertos: ${datos.nacidos_muertos ?? '—'}`,
+      `Momias: ${datos.momias ?? '—'}`,
+      `Hembras: ${datos.hembras ?? '—'}`,
+      `Machos: ${datos.machos ?? '—'}`,
+    ].join(' · ')
+  }
+
+  if (tipo === 'DESTETE') {
+    return [
+      `Destetados: ${datos.cantidad_destetada ?? '—'}`,
+      `Hembras: ${datos.hembras ?? '—'}`,
+      `Machos: ${datos.machos ?? '—'}`,
+      datos.destino_ubicacion_id ? `Destino ID: ${datos.destino_ubicacion_id}` : '',
+    ]
+      .filter(Boolean)
+      .join(' · ')
+  }
+
+  if (tipo === 'MONTA' || tipo === 'INSEMINACION') {
+    return `Macho: ${datos.macho ?? '—'}`
+  }
+
+  if (tipo === 'REVISION_EMBARAZO') {
+    return `Resultado: ${ev.resultado || datos.resultado_revision || '—'}`
+  }
+
+  if (tipo === 'ABORTO') {
+    return `Fetos: ${datos.fetos ?? '—'} · Motivo: ${datos.motivo ?? '—'}`
+  }
+
+  if (tipo === 'MEDICACION') {
+    return [
+      `Medicamento: ${datos.medicamento ?? '—'}`,
+      `Dosis: ${datos.dosis ?? '—'}`,
+      `Vía: ${datos.via_aplicacion ?? '—'}`,
+      `Responsable: ${datos.responsable ?? '—'}`,
+    ].join(' · ')
+  }
+
+  if (tipo === 'MUERTE' || tipo === 'BAJA') {
+    return `Motivo: ${datos.motivo ?? ev.observaciones ?? '—'}`
+  }
+
+  if (tipo === 'TRASLADO') {
+    return [
+      `Origen ID: ${datos.origen_ubicacion_id ?? '—'}`,
+      `Destino ID: ${datos.destino_ubicacion_id ?? ev.ubicacion_id ?? '—'}`,
+    ].join(' · ')
+  }
+
+  return ''
 }
 
-function prettySnapshot(table: string, action: string, snapshotAny: unknown): string {
-  const t = String(table || '').split('.').pop() || String(table || '')
-  const s = safeJsonParse(snapshotAny)
+function generarPdf(
+  acciones: AccionEmpleado[],
+  resumen: ResumenUbicacion[],
+  filtros: {
+    desdeFecha: string
+    desdeHora: string
+    hastaFecha: string
+    hastaHora: string
+    seccion: string
+    usuario: string
+    ubicacion: string
+    tipo: string
+    texto: string
+  }
+) {
+  const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' })
 
-  if (!s) return '—'
+  doc.setFontSize(15)
+  doc.text('Reporte de movimientos de empleados', 14, 14)
 
-  const fecha = s.fecha || s.created_at || s.at || null
-  const obs = s.observaciones || s.descripcion || s.motivo || null
+  doc.setFontSize(9)
+  doc.text(
+    `Rango: ${filtros.desdeFecha} ${filtros.desdeHora || '00:00'} a ${filtros.hastaFecha} ${
+      filtros.hastaHora || '23:59'
+    }`,
+    14,
+    21
+  )
 
-  if (t === 'erogaciones') {
-    const total = s.cantidad ?? s.total ?? s.monto ?? null
+  doc.text(
+    `Sección: ${filtros.seccion || 'Todas'} · Usuario: ${
+      filtros.usuario || 'Todos'
+    } · Ubicación: ${filtros.ubicacion || 'Todas'} · Tipo: ${
+      filtros.tipo || 'Todos'
+    }`,
+    14,
+    27
+  )
 
-    const bits = [
-      fecha ? `Fecha ${String(fecha).slice(0, 10)}` : null,
-      total != null ? `Total ${moneyQ(total)}` : null,
-      s.proveedor_id ? `ProveedorID ${s.proveedor_id}` : null,
-      s.empresa_id ? `EmpresaID ${s.empresa_id}` : null,
-      s.division_id ? `DivisiónID ${s.division_id}` : null,
-      obs ? `Obs: ${String(obs)}` : null,
-      s.editado_por ? `Editado por: ${s.editado_por}` : null,
-    ].filter(Boolean)
-
-    return bits.length ? bits.join(' · ') : `${action} erogaciones`
+  if (filtros.texto.trim()) {
+    doc.text(`Búsqueda: ${filtros.texto}`, 14, 33)
   }
 
-  if (t === 'detalle_compra') {
-    const bits = [
-      s.erogacion_id ? `Erogación #${s.erogacion_id}` : null,
-      s.concepto ? `Concepto: ${s.concepto}` : null,
-      s.producto_id ? `ProductoID ${s.producto_id}` : null,
-      s.cantidad != null ? `Cant ${num(s.cantidad)}` : null,
-      s.precio_unitario != null ? `P.Unit ${moneyQ(s.precio_unitario)}` : null,
-      s.importe != null ? `Importe ${moneyQ(s.importe)}` : null,
-      s.forma_pago_id ? `PagoID ${s.forma_pago_id}` : null,
-      s.documento ? `Doc: ${s.documento}` : null,
-    ].filter(Boolean)
+  autoTable(doc, {
+    startY: filtros.texto.trim() ? 39 : 34,
+    head: [['Ubicación', 'Entradas', 'Salidas', 'Ajustes', 'Cambio neto', 'Movimientos']],
+    body: resumen.map((row) => [
+      row.ubicacion,
+      String(row.entradas),
+      String(row.salidas),
+      String(row.ajustes),
+      String(row.cambioNeto),
+      String(row.movimientos),
+    ]),
+    styles: { fontSize: 8 },
+    headStyles: { fillColor: [220, 220, 220] },
+    columnStyles: {
+      1: { halign: 'right' },
+      2: { halign: 'right' },
+      3: { halign: 'right' },
+      4: { halign: 'right' },
+      5: { halign: 'right' },
+    },
+    margin: { left: 14, right: 14 },
+  })
 
-    return bits.length ? bits.join(' · ') : `${action} detalle_compra`
-  }
+  const y =
+    (doc as jsPDF & { lastAutoTable?: { finalY: number } }).lastAutoTable
+      ?.finalY || 50
 
-  if (t === 'ventas') {
-    const total = s.cantidad ?? s.total ?? null
+  autoTable(doc, {
+    startY: y + 8,
+    head: [
+      [
+        'Fecha',
+        'Hora',
+        'Usuario',
+        'Sección',
+        'Tipo',
+        'Ubicación',
+        'Referencia',
+        'Cambio',
+        'Detalle / observación',
+      ],
+    ],
+    body: acciones.map((a) => [
+      a.fecha,
+      a.hora,
+      a.usuarioTexto,
+      a.seccion,
+      a.tipoAccion,
+      a.ubicacionCodigo,
+      a.referencia,
+      String(a.cambioNeto),
+      `${a.detalle}${a.observaciones ? ` · ${a.observaciones}` : ''}`,
+    ]),
+    styles: { fontSize: 7 },
+    headStyles: { fillColor: [230, 230, 230] },
+    margin: { left: 14, right: 14 },
+    columnStyles: {
+      0: { cellWidth: 20 },
+      1: { cellWidth: 18 },
+      2: { cellWidth: 35 },
+      3: { cellWidth: 28 },
+      4: { cellWidth: 34 },
+      5: { cellWidth: 26 },
+      6: { cellWidth: 35 },
+      7: { cellWidth: 16, halign: 'right' },
+      8: { cellWidth: 75 },
+    },
+  })
 
-    const bits = [
-      fecha ? `Fecha ${String(fecha).slice(0, 10)}` : null,
-      total != null ? `Total ${moneyQ(total)}` : null,
-      s.cliente_id ? `ClienteID ${s.cliente_id}` : null,
-      s.empresa_id ? `EmpresaID ${s.empresa_id}` : null,
-      s.division_id ? `DivisiónID ${s.division_id}` : null,
-      obs ? `Obs: ${String(obs)}` : null,
-    ].filter(Boolean)
+  const now = new Date()
+  const name = `reporte_movimientos_empleados_${now
+    .toISOString()
+    .replace(/[:.]/g, '-')
+    .slice(0, 19)}.pdf`
 
-    return bits.length ? bits.join(' · ') : `${action} ventas`
-  }
-
-  if (t === 'detalle_venta') {
-    const bits = [
-      s.venta_id ? `Venta #${s.venta_id}` : null,
-      s.concepto ? `Concepto: ${s.concepto}` : null,
-      s.producto_id ? `ProductoID ${s.producto_id}` : null,
-      s.cantidad != null ? `Cant ${num(s.cantidad)}` : null,
-      s.precio_unitario != null ? `P.Unit ${moneyQ(s.precio_unitario)}` : null,
-      s.importe != null ? `Importe ${moneyQ(s.importe)}` : null,
-      s.forma_pago_id ? `PagoID ${s.forma_pago_id}` : null,
-      s.documento ? `Doc: ${s.documento}` : null,
-    ].filter(Boolean)
-
-    return bits.length ? bits.join(' · ') : `${action} detalle_venta`
-  }
-
-  if (t === 'inventario_movimientos') {
-    const bits = [
-      s.producto_id ? `ProductoID ${s.producto_id}` : null,
-      s.tipo ? `Tipo ${s.tipo}` : null,
-      s.cantidad != null ? `Cant ${num(s.cantidad)}` : null,
-      s.erogacion_detalle_id ? `ErogDet #${s.erogacion_detalle_id}` : null,
-      s.venta_detalle_id ? `VentaDet #${s.venta_detalle_id}` : null,
-      s.created_at ? `Creado ${fmtFecha(s.created_at)}` : null,
-    ].filter(Boolean)
-
-    return bits.length ? bits.join(' · ') : `${action} inventario_movimientos`
-  }
-
-  if (t === 'granja_movimientos') {
-    const bits = [
-      s.tipo ? `Tipo ${s.tipo}` : null,
-      s.ubicacion_id ? `UbicaciónID ${s.ubicacion_id}` : null,
-      s.cantidad != null ? `Cant ${num(s.cantidad)}` : null,
-      s.lote_id ? `LoteID ${s.lote_id}` : null,
-      s.referencia_tabla ? `Ref ${s.referencia_tabla}` : null,
-      s.referencia_id ? `#${s.referencia_id}` : null,
-      obs ? `Obs: ${String(obs)}` : null,
-    ].filter(Boolean)
-
-    return bits.length ? bits.join(' · ') : `${action} granja_movimientos`
-  }
-
-  if (t === 'viajes') {
-    const bits = [
-      s.vehiculo_id ? `VehículoID ${s.vehiculo_id}` : null,
-      s.origen ? `Origen ${s.origen}` : null,
-      s.destino ? `Destino ${s.destino}` : null,
-      s.fecha_inicio ? `Inicio ${s.fecha_inicio}` : null,
-      s.fecha_fin ? `Fin ${s.fecha_fin}` : null,
-      s.conductor ? `Conductor ${s.conductor}` : null,
-    ].filter(Boolean)
-
-    return bits.length ? bits.join(' · ') : `${action} viajes`
-  }
-
-  const keys = Object.keys(s).slice(0, 10)
-
-  const mini = keys
-    .map((k) => {
-      const v = s[k]
-
-      if (v == null) return null
-
-      const value = typeof v === 'object' ? '[obj]' : String(v)
-
-      return `${k}:${value}`
-    })
-    .filter(Boolean)
-    .join(' · ')
-
-  return mini || '—'
-}
-
-async function fetchLogoDataUrl(): Promise<string | null> {
-  try {
-    const res = await fetch('/logo.png')
-    const blob = await res.blob()
-
-    return await new Promise((resolve) => {
-      const reader = new FileReader()
-
-      reader.onload = () => resolve(String(reader.result))
-      reader.onerror = () => resolve(null)
-      reader.readAsDataURL(blob)
-    })
-  } catch {
-    return null
-  }
+  doc.save(name)
 }
 
 export default function MovimientosEmpleadosPage() {
-  const [loading, setLoading] = useState(false)
-  const [generando, setGenerando] = useState(false)
-
-  const [profiles, setProfiles] = useState<Profile[]>([])
+  const [movimientos, setMovimientos] = useState<MovimientoGranja[]>([])
+  const [eventosCerdas, setEventosCerdas] = useState<EventoCerda[]>([])
   const [ubicaciones, setUbicaciones] = useState<Ubicacion[]>([])
-  const [items, setItems] = useState<MovItem[]>([])
+  const [usuarios, setUsuarios] = useState<Usuario[]>([])
 
-  const [filtros, setFiltros] = useState({
-    desde: '',
-    hasta: '',
-    seccion: 'GRANJA' as Seccion,
-    usuario_id: '',
-    ubicacion_id: '',
-    tipo_granja: 'TODOS' as TipoGranja,
-    texto: '',
-  })
+  const [loading, setLoading] = useState(false)
 
-  useEffect(() => {
-    const hasta = hoyISO()
-    const d = new Date()
-    d.setDate(d.getDate() - 7)
+  const [desdeFecha, setDesdeFecha] = useState('')
+  const [hastaFecha, setHastaFecha] = useState('')
+  const [desdeHora, setDesdeHora] = useState('00:00')
+  const [hastaHora, setHastaHora] = useState('23:59')
 
-    const desde = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
-
-    setFiltros((prev) => ({
-      ...prev,
-      desde,
-      hasta,
-    }))
-  }, [])
+  const [seccion, setSeccion] = useState('GRANJA')
+  const [usuarioFiltro, setUsuarioFiltro] = useState('')
+  const [ubicacionFiltro, setUbicacionFiltro] = useState('')
+  const [tipoFiltro, setTipoFiltro] = useState('')
+  const [textoFiltro, setTextoFiltro] = useState('')
 
   useEffect(() => {
-    ;(async () => {
-      const profilesRes = await supabase
-        .from('profiles')
-        .select('id, email')
-        .order('email', { ascending: true })
-
-      if (!profilesRes.error) {
-        setProfiles((profilesRes.data ?? []) as Profile[])
-      }
-
-      const ubicacionesRes = await supabase
-        .from('granja_ubicaciones')
-        .select('id,codigo,nombre')
-        .order('codigo', { ascending: true })
-
-      if (!ubicacionesRes.error) {
-        const data = ((ubicacionesRes.data ?? []) as Ubicacion[]).sort(naturalUbicacionSort)
-        setUbicaciones(data)
-      }
-    })()
+    const hoy = hoyYYYYMMDD()
+    setHastaFecha(hoy)
+    setDesdeFecha(restarDias(hoy, 7))
   }, [])
 
-  const ubicacionById = useMemo(() => {
-    const map = new Map<number, Ubicacion>()
+  const desdeISO = useMemo(() => {
+    if (!desdeFecha) return ''
+    return `${desdeFecha}T${desdeHora || '00:00'}:00`
+  }, [desdeFecha, desdeHora])
 
-    ubicaciones.forEach((u) => {
-      map.set(Number(u.id), u)
-    })
+  const hastaISO = useMemo(() => {
+    if (!hastaFecha) return ''
+    return `${hastaFecha}T${hastaHora || '23:59'}:59`
+  }, [hastaFecha, hastaHora])
 
-    return map
-  }, [ubicaciones])
+  const usuarioTexto = useCallback(
+    (userId: string | null) => {
+      if (!userId) return 'Sin usuario'
 
-  const emailById = useMemo(() => {
-    const map = new Map<string, string>()
+      const encontrado = usuarios.find((u) => u.id === userId)
 
-    profiles.forEach((profile) => {
-      map.set(profile.id, profile.email || profile.id)
-    })
+      if (encontrado?.email) return encontrado.email
+      if (encontrado?.nombre) return encontrado.nombre
 
-    return map
-  }, [profiles])
-
-  const userLabel = useCallback(
-    (uid: string) => {
-      if (!uid || uid === '—') return '—'
-      return emailById.get(uid) || uid
+      return userId.slice(0, 8)
     },
-    [emailById]
+    [usuarios]
   )
 
-  const cargar = useCallback(async () => {
+  const cargarDatos = useCallback(async () => {
+    if (!desdeISO || !hastaISO) return
+
     setLoading(true)
 
     try {
-      const desdeISO = filtros.desde ? inicioDia(filtros.desde) : ''
-      const hastaISO = filtros.hasta ? finDia(filtros.hasta) : ''
-      const seccion = filtros.seccion
-      const usuarioId = clamp(filtros.usuario_id)
-      const texto = clamp(filtros.texto)
-      const textoNormalizado = normalizarBusqueda(texto)
-
-      const salida: MovItem[] = []
-      const quiereTodo = seccion === 'TODOS'
-
-      if (quiereTodo || seccion === 'GRANJA') {
-        let query = supabase
+      const [movRes, eventosRes, ubicacionesRes] = await Promise.all([
+        supabase
           .from('granja_movimientos')
           .select(
-            'id, fecha, tipo, ubicacion_id, cantidad, lote_id, referencia_tabla, referencia_id, user_id, observaciones, created_at'
-          )
-          .order('fecha', { ascending: false })
-          .limit(3000)
-
-        if (desdeISO) query = query.gte('fecha', desdeISO)
-        if (hastaISO) query = query.lte('fecha', hastaISO)
-        if (filtros.ubicacion_id) query = query.eq('ubicacion_id', Number(filtros.ubicacion_id))
-        if (filtros.tipo_granja !== 'TODOS') query = query.eq('tipo', filtros.tipo_granja)
-
-        const { data, error } = await query
-
-        if (!error) {
-          for (const row of (data ?? []) as any[]) {
-            const usuario = row.user_id ? String(row.user_id) : '—'
-
-            if (usuarioId && usuario !== usuarioId) continue
-
-            const ubicacion = ubicacionById.get(Number(row.ubicacion_id))
-
-            const codigo = ubicacion?.codigo || `Ubicación ${row.ubicacion_id}`
-            const codigoAlterno = codigoAlternoUbicacion(codigo)
-            const nombre = ubicacion?.nombre || ''
-
-            const cantidad = Number(row.cantidad || 0)
-            const impacto = impactoGranja(String(row.tipo || ''), cantidad)
-            const tipo = String(row.tipo || '')
-
-            const referenciaTabla = row.referencia_tabla || 'granja_movimientos'
-            const referenciaId = row.referencia_id ? `#${row.referencia_id}` : `#${row.id}`
-
-            const descripcionCorta = explicarMovimiento(tipo, impacto, Math.abs(cantidad))
-            const observaciones = extraerObservacion(row.observaciones)
-
-            const detalle = [
-              `${codigo}${nombre ? ` — ${nombre}` : ''}`,
-              labelTipoGranja(tipo),
-              `Cantidad ${Math.abs(cantidad)}`,
-              `Impacto ${formatoImpacto(impacto)}`,
-              row.lote_id != null ? `LoteID ${row.lote_id}` : null,
-              observaciones !== '—' ? `Obs: ${observaciones}` : null,
-            ]
-              .filter(Boolean)
-              .join(' · ')
-
-            const item: MovItem = {
-              ts: String(row.fecha || row.created_at || ''),
-              seccion: 'GRANJA',
-              accion: tipo || 'MOVIMIENTO',
-              accion_label: labelTipoGranja(tipo),
-              usuario,
-              usuario_label: userLabel(usuario),
-              referencia: `${referenciaTabla}${referenciaId}`,
-              detalle,
-              descripcion_corta: descripcionCorta,
-              observaciones,
-              ubicacion_id: Number(row.ubicacion_id),
-              ubicacion_codigo: codigo,
-              ubicacion_nombre: nombre,
-              tipo_granja: tipo,
-              cantidad: Math.abs(cantidad),
-              impacto,
-              origen: referenciaTabla,
-            }
-
-            const textoItem = normalizarBusqueda(
-              [
-                item.seccion,
-                item.accion,
-                item.accion_label,
-                item.usuario_label,
-                item.referencia,
-                item.detalle,
-                item.descripcion_corta,
-                item.observaciones,
-                item.ubicacion_codigo,
-                codigoAlterno,
-                item.ubicacion_nombre,
-                item.tipo_granja,
-                item.origen,
-              ].join(' ')
+            `
+            id,
+            fecha,
+            tipo,
+            cantidad,
+            hembras,
+            machos,
+            peso_total_kg,
+            ubicacion_id,
+            lote_id,
+            referencia_tabla,
+            referencia_id,
+            observaciones,
+            user_id,
+            created_at,
+            granja_ubicaciones (
+              codigo,
+              nombre
+            ),
+            granja_lotes (
+              codigo
             )
+          `
+          )
+          .gte('created_at', desdeISO)
+          .lte('created_at', hastaISO)
+          .order('created_at', { ascending: false }),
 
-            if (!textoNormalizado || textoItem.includes(textoNormalizado)) {
-              salida.push(item)
-            }
-          }
-        } else {
-          console.error('Error cargando granja_movimientos', error)
-        }
-      }
-
-      if (quiereTodo || seccion === 'VEHICULOS') {
-        let query = supabase
-          .from('viajes')
+        supabase
+          .from('granja_cerda_eventos')
           .select(
-            'id, vehiculo_id, fecha_inicio, fecha_fin, origen, destino, creado_en, editado_en, editado_por, conductor'
+            `
+            id,
+            cerda_id,
+            fecha,
+            tipo,
+            resultado,
+            ubicacion_id,
+            lote_id,
+            datos,
+            observaciones,
+            user_id,
+            created_at,
+            granja_cerdas (
+              arete,
+              nombre
+            ),
+            granja_ubicaciones (
+              codigo,
+              nombre
+            ),
+            granja_lotes (
+              codigo
+            )
+          `
           )
-          .order('creado_en', { ascending: false })
-          .limit(500)
+          .gte('created_at', desdeISO)
+          .lte('created_at', hastaISO)
+          .order('created_at', { ascending: false }),
 
-        if (desdeISO) query = query.gte('creado_en', desdeISO)
-        if (hastaISO) query = query.lte('creado_en', hastaISO)
+        supabase
+          .from('granja_ubicaciones')
+          .select('id,codigo,nombre')
+          .eq('activo', true)
+          .order('codigo', { ascending: true }),
+      ])
 
-        const { data, error } = await query
-
-        if (!error) {
-          for (const row of (data ?? []) as any[]) {
-            const usuario = row.editado_por ? String(row.editado_por) : '—'
-            const ts = String(row.editado_en || row.creado_en || '')
-
-            const item: MovItem = {
-              ts,
-              seccion: 'VEHICULOS',
-              accion: row.editado_en ? 'UPDATE (viajes)' : 'INSERT (viajes)',
-              accion_label: row.editado_en ? 'Edición de viaje' : 'Nuevo viaje',
-              usuario,
-              usuario_label: usuario,
-              referencia: `viajes#${row.id}`,
-              detalle: `Vehículo ${row.vehiculo_id ?? '—'} · ${row.origen || '—'} → ${
-                row.destino || '—'
-              } · ${row.fecha_inicio || '—'} / ${row.fecha_fin || '—'} · Conductor ${
-                row.conductor || '—'
-              }`,
-              descripcion_corta: row.editado_en ? 'Se editó un viaje.' : 'Se creó un viaje.',
-              observaciones: '—',
-            }
-
-            const textoItem = normalizarBusqueda(
-              [
-                item.seccion,
-                item.accion,
-                item.accion_label,
-                item.usuario_label,
-                item.referencia,
-                item.detalle,
-              ].join(' ')
-            )
-
-            if (!textoNormalizado || textoItem.includes(textoNormalizado)) {
-              salida.push(item)
-            }
-          }
-        }
+      if (movRes.error) {
+        console.error('Error movimientos', movRes.error)
+        alert(`Error cargando movimientos: ${movRes.error.message}`)
+        return
       }
 
-      if (quiereTodo || seccion === 'VENTAS' || seccion === 'INVENTARIO_PLANTA') {
-        let query = supabase
-          .from('ventas')
-          .select('id, fecha, cantidad, observaciones, user_id, created_at')
-          .order('created_at', { ascending: false })
-          .limit(800)
-
-        if (desdeISO) query = query.gte('created_at', desdeISO)
-        if (hastaISO) query = query.lte('created_at', hastaISO)
-
-        const { data, error } = await query
-
-        if (!error) {
-          for (const row of (data ?? []) as any[]) {
-            const usuario = row.user_id ? String(row.user_id) : '—'
-            if (usuarioId && usuario !== usuarioId) continue
-
-            const item: MovItem = {
-              ts: String(row.created_at || ''),
-              seccion: seccion === 'INVENTARIO_PLANTA' ? 'INVENTARIO_PLANTA' : 'VENTAS',
-              accion: 'INSERT (ventas)',
-              accion_label: 'Nueva venta',
-              usuario,
-              usuario_label: userLabel(usuario),
-              referencia: `ventas#${row.id}`,
-              detalle: `${row.fecha || '—'} · Total ${moneyQ(row.cantidad)}${
-                row.observaciones ? ` · Obs: ${row.observaciones}` : ''
-              }`,
-              descripcion_corta: `Se registró una venta por ${moneyQ(row.cantidad)}.`,
-              observaciones: row.observaciones || '—',
-            }
-
-            const textoItem = normalizarBusqueda(
-              [
-                item.seccion,
-                item.accion,
-                item.accion_label,
-                item.usuario_label,
-                item.referencia,
-                item.detalle,
-              ].join(' ')
-            )
-
-            if (!textoNormalizado || textoItem.includes(textoNormalizado)) {
-              salida.push(item)
-            }
-          }
-        }
+      if (eventosRes.error) {
+        console.error('Error eventos cerdas', eventosRes.error)
+        alert(`Error cargando eventos de cerdas: ${eventosRes.error.message}`)
+        return
       }
 
-      if (quiereTodo || seccion === 'EROGACIONES' || seccion === 'INVENTARIO_PLANTA') {
-        let query = supabase
-          .from('erogaciones')
-          .select('id, fecha, cantidad, observaciones, user_id, created_at, editado_en, editado_por')
-          .order('created_at', { ascending: false })
-          .limit(1000)
-
-        if (desdeISO) query = query.gte('created_at', desdeISO)
-        if (hastaISO) query = query.lte('created_at', hastaISO)
-
-        const { data, error } = await query
-
-        if (!error) {
-          for (const row of (data ?? []) as any[]) {
-            const usuarioCreacion = row.user_id
-              ? String(row.user_id)
-              : row.editado_por
-                ? String(row.editado_por)
-                : '—'
-
-            if (!usuarioId || usuarioCreacion === usuarioId) {
-              const item: MovItem = {
-                ts: String(row.created_at || ''),
-                seccion: seccion === 'INVENTARIO_PLANTA' ? 'INVENTARIO_PLANTA' : 'EROGACIONES',
-                accion: 'INSERT (erogaciones)',
-                accion_label: 'Nueva erogación',
-                usuario: usuarioCreacion,
-                usuario_label: userLabel(usuarioCreacion),
-                referencia: `erogaciones#${row.id}`,
-                detalle: `${row.fecha || '—'} · Total ${moneyQ(row.cantidad)}${
-                  row.observaciones ? ` · Obs: ${row.observaciones}` : ''
-                }`,
-                descripcion_corta: `Se registró una erogación por ${moneyQ(row.cantidad)}.`,
-                observaciones: row.observaciones || '—',
-              }
-
-              const textoItem = normalizarBusqueda(
-                [
-                  item.seccion,
-                  item.accion,
-                  item.accion_label,
-                  item.usuario_label,
-                  item.referencia,
-                  item.detalle,
-                ].join(' ')
-              )
-
-              if (!textoNormalizado || textoItem.includes(textoNormalizado)) {
-                salida.push(item)
-              }
-            }
-
-            if (row.editado_en) {
-              const usuarioEdicion = row.editado_por
-                ? String(row.editado_por)
-                : row.user_id
-                  ? String(row.user_id)
-                  : '—'
-
-              if (usuarioId && usuarioEdicion !== usuarioId) continue
-
-              const item: MovItem = {
-                ts: String(row.editado_en),
-                seccion: seccion === 'INVENTARIO_PLANTA' ? 'INVENTARIO_PLANTA' : 'EROGACIONES',
-                accion: 'UPDATE (erogaciones)',
-                accion_label: 'Edición de erogación',
-                usuario: usuarioEdicion,
-                usuario_label: userLabel(usuarioEdicion),
-                referencia: `erogaciones#${row.id}`,
-                detalle: `Editado · ${row.fecha || '—'} · Total ${moneyQ(row.cantidad)}${
-                  row.observaciones ? ` · Obs: ${row.observaciones}` : ''
-                }`,
-                descripcion_corta: `Se editó una erogación por ${moneyQ(row.cantidad)}.`,
-                observaciones: row.observaciones || '—',
-              }
-
-              const textoItem = normalizarBusqueda(
-                [
-                  item.seccion,
-                  item.accion,
-                  item.accion_label,
-                  item.usuario_label,
-                  item.referencia,
-                  item.detalle,
-                ].join(' ')
-              )
-
-              if (!textoNormalizado || textoItem.includes(textoNormalizado)) {
-                salida.push(item)
-              }
-            }
-          }
-        }
+      if (ubicacionesRes.error) {
+        console.error('Error ubicaciones', ubicacionesRes.error)
       }
 
-      if (quiereTodo || seccion === 'INVENTARIO_PLANTA') {
-        let query = supabase
-          .from('inventario_movimientos')
-          .select('id, producto_id, tipo, cantidad, erogacion_detalle_id, venta_detalle_id, created_at')
-          .order('created_at', { ascending: false })
-          .limit(1200)
+      const movs = (movRes.data || []) as unknown as MovimientoGranja[]
+      const evs = (eventosRes.data || []) as unknown as EventoCerda[]
 
-        if (desdeISO) query = query.gte('created_at', desdeISO)
-        if (hastaISO) query = query.lte('created_at', hastaISO)
+      setMovimientos(movs)
+      setEventosCerdas(evs)
+      setUbicaciones((ubicacionesRes.data || []) as Ubicacion[])
 
-        const { data, error } = await query
+      const userIds = Array.from(
+        new Set(
+          [...movs.map((m) => m.user_id), ...evs.map((e) => e.user_id)].filter(
+            Boolean
+          ) as string[]
+        )
+      )
 
-        if (!error) {
-          for (const row of (data ?? []) as any[]) {
-            if (usuarioId) continue
+      if (userIds.length > 0) {
+        const { data: perfiles, error: perfilesError } = await supabase
+          .from('profiles')
+          .select('id,email,nombre')
+          .in('id', userIds)
 
-            const detalle = [
-              `ProductoID ${row.producto_id ?? '—'}`,
-              row.tipo ? `Tipo ${row.tipo}` : null,
-              row.cantidad != null ? `Cant ${num(row.cantidad)}` : null,
-              row.erogacion_detalle_id ? `ErogDet #${row.erogacion_detalle_id}` : null,
-              row.venta_detalle_id ? `VentaDet #${row.venta_detalle_id}` : null,
-            ]
-              .filter(Boolean)
-              .join(' · ')
-
-            const item: MovItem = {
-              ts: String(row.created_at || ''),
-              seccion: 'INVENTARIO_PLANTA',
-              accion: 'MOVIMIENTO (inventario_movimientos)',
-              accion_label: 'Movimiento inventario planta',
-              usuario: '—',
-              usuario_label: '—',
-              referencia: `inventario_movimientos#${row.id}`,
-              detalle: detalle || '—',
-              descripcion_corta: `Movimiento de inventario planta: ${row.tipo || '—'} ${
-                row.cantidad ?? '—'
-              }.`,
-              observaciones: '—',
-            }
-
-            const textoItem = normalizarBusqueda(
-              [
-                item.seccion,
-                item.accion,
-                item.accion_label,
-                item.referencia,
-                item.detalle,
-              ].join(' ')
-            )
-
-            if (!textoNormalizado || textoItem.includes(textoNormalizado)) {
-              salida.push(item)
-            }
-          }
+        if (!perfilesError && perfiles) {
+          setUsuarios(perfiles as Usuario[])
+        } else {
+          setUsuarios(userIds.map((id) => ({ id, email: null })))
         }
+      } else {
+        setUsuarios([])
       }
-
-      if (quiereTodo || seccion !== 'GRANJA') {
-        let query = supabase
-          .from('audit_log')
-          .select('at, table_name, action, record_id, section, actor, actor_text, snapshot')
-          .order('at', { ascending: false })
-          .limit(1500)
-
-        if (desdeISO) query = query.gte('at', desdeISO)
-        if (hastaISO) query = query.lte('at', hastaISO)
-
-        if (seccion !== 'TODOS' && seccion !== 'INVENTARIO_PLANTA') {
-          query = query.eq('section', seccion)
-        }
-
-        if (usuarioId) query = query.eq('actor', usuarioId)
-
-        const { data, error } = await query
-
-        if (!error) {
-          for (const row of (data ?? []) as any[]) {
-            const tableName =
-              String(row.table_name || '').split('.').pop() || String(row.table_name || '')
-            const action = String(row.action || '').toUpperCase()
-            const seccionRaw = String(row.section || 'GRANJA').toUpperCase()
-
-            const seccionFinal =
-              seccionRaw === 'VEHICULOS'
-                ? 'VEHICULOS'
-                : seccionRaw === 'VENTAS'
-                  ? 'VENTAS'
-                  : seccionRaw === 'EROGACIONES'
-                    ? 'EROGACIONES'
-                    : seccionRaw === 'INVENTARIO_PLANTA'
-                      ? 'INVENTARIO_PLANTA'
-                      : 'GRANJA'
-
-            const usuario = row.actor
-              ? String(row.actor)
-              : row.actor_text
-                ? String(row.actor_text)
-                : '—'
-
-            const detalle = prettySnapshot(tableName, action, row.snapshot)
-
-            const item: MovItem = {
-              ts: String(row.at),
-              seccion: seccionFinal,
-              accion: `${action} (${tableName})`,
-              accion_label: `${action} en ${tableName}`,
-              usuario,
-              usuario_label: userLabel(usuario),
-              referencia: `${tableName}#${row.record_id || '—'}`,
-              detalle,
-              descripcion_corta: `${action} en ${tableName}.`,
-              observaciones: '—',
-            }
-
-            const textoItem = normalizarBusqueda(
-              [
-                item.seccion,
-                item.accion,
-                item.accion_label,
-                item.usuario_label,
-                item.referencia,
-                item.detalle,
-              ].join(' ')
-            )
-
-            if (!textoNormalizado || textoItem.includes(textoNormalizado)) {
-              salida.push(item)
-            }
-          }
-        }
-      }
-
-      const sinDuplicados = new Map<string, MovItem>()
-
-      salida.forEach((item) => {
-        const key = `${item.seccion}|${item.accion}|${item.referencia}|${item.ts}|${item.detalle}`
-
-        if (!sinDuplicados.has(key)) {
-          sinDuplicados.set(key, item)
-        }
-      })
-
-      const lista = Array.from(sinDuplicados.values()).sort((a, b) => {
-        if (a.ts < b.ts) return 1
-        if (a.ts > b.ts) return -1
-        return 0
-      })
-
-      setItems(lista)
     } finally {
       setLoading(false)
     }
-  }, [
-    filtros.desde,
-    filtros.hasta,
-    filtros.seccion,
-    filtros.tipo_granja,
-    filtros.ubicacion_id,
-    filtros.usuario_id,
-    filtros.texto,
-    ubicacionById,
-    userLabel,
-  ])
+  }, [desdeISO, hastaISO])
 
   useEffect(() => {
-    if (filtros.desde && filtros.hasta) {
-      cargar()
+    if (desdeISO && hastaISO) {
+      cargarDatos()
     }
-  }, [cargar, filtros.desde, filtros.hasta])
+  }, [desdeISO, hastaISO, cargarDatos])
 
-  const resumenGranja = useMemo(() => {
-    const map = new Map<string, ResumenUbicacion>()
+  const accionesBase = useMemo(() => {
+    const accionesMovimientos: AccionEmpleado[] = movimientos.map((mov) => {
+      const clase = clasificarMovimiento(mov)
+      const fechaHora = fechaHoraValor(mov.fecha, mov.created_at)
+      const ubicacion = ubicacionTexto(mov.granja_ubicaciones)
+      const codigo = mov.granja_ubicaciones?.codigo || '—'
+      const tipoLegible = tipoMovimientoLegible(mov.tipo)
 
-    items
-      .filter((item) => item.seccion === 'GRANJA')
-      .forEach((item) => {
-        const codigo = item.ubicacion_codigo || `Ubicación ${item.ubicacion_id ?? '—'}`
-        const impacto = Number(item.impacto || 0)
+      const referencia = [
+        mov.referencia_tabla || '',
+        mov.referencia_id ? `#${mov.referencia_id}` : '',
+      ]
+        .filter(Boolean)
+        .join(' ')
 
-        const actual =
-          map.get(codigo) ||
-          ({
-            ubicacion: codigo,
-            entradas: 0,
-            salidas: 0,
-            ajustes: 0,
-            neto: 0,
-            movimientos: 0,
-          } as ResumenUbicacion)
+      const detalle = [
+        `Cantidad: ${mov.cantidad ?? 0}`,
+        mov.hembras !== null && mov.hembras !== undefined
+          ? `Hembras: ${mov.hembras}`
+          : '',
+        mov.machos !== null && mov.machos !== undefined ? `Machos: ${mov.machos}` : '',
+        mov.peso_total_kg !== null && mov.peso_total_kg !== undefined
+          ? `Peso: ${mov.peso_total_kg} kg`
+          : '',
+        mov.granja_lotes?.codigo ? `Lote: ${mov.granja_lotes.codigo}` : '',
+      ]
+        .filter(Boolean)
+        .join(' · ')
 
-        if (item.tipo_granja === 'AJUSTE') {
-          actual.ajustes += impacto
-        } else if (impacto > 0) {
-          actual.entradas += impacto
-        } else if (impacto < 0) {
-          actual.salidas += Math.abs(impacto)
-        }
+      const busqueda = [
+        mov.tipo,
+        tipoLegible,
+        ubicacion,
+        codigo,
+        mov.observaciones,
+        referencia,
+        detalle,
+        usuarioTexto(mov.user_id),
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase()
 
-        actual.neto += impacto
-        actual.movimientos += 1
-
-        map.set(codigo, actual)
-      })
-
-    return Array.from(map.values()).sort((a, b) => {
-      const ua = { id: 0, codigo: a.ubicacion, nombre: null }
-      const ub = { id: 0, codigo: b.ubicacion, nombre: null }
-      return naturalUbicacionSort(ua, ub)
+      return {
+        id: `mov-${mov.id}`,
+        origen: 'MOVIMIENTO_INVENTARIO',
+        fecha: formatFecha(fechaHora),
+        hora: formatHora(fechaHora),
+        fechaHoraOrden: fechaHora,
+        usuarioId: mov.user_id,
+        usuarioTexto: usuarioTexto(mov.user_id),
+        seccion: 'Inventario granja',
+        tipoAccion: tipoLegible,
+        ubicacionId: mov.ubicacion_id,
+        ubicacionCodigo: codigo,
+        ubicacionTexto: ubicacion,
+        loteTexto: loteTexto(mov.granja_lotes),
+        referencia,
+        cantidad: toNum(mov.cantidad),
+        entradas: clase.entradas,
+        salidas: clase.salidas,
+        ajustes: clase.ajustes,
+        cambioNeto: clase.cambioNeto,
+        observaciones: mov.observaciones || '',
+        detalle,
+        busqueda,
+      }
     })
-  }, [items])
 
-  const totalEntradas = useMemo(() => {
-    return resumenGranja.reduce((sum, row) => sum + row.entradas, 0)
-  }, [resumenGranja])
+    const accionesEventos: AccionEmpleado[] = eventosCerdas.map((ev) => {
+      const fechaHora = fechaHoraValor(ev.fecha, ev.created_at)
+      const ubicacion = ubicacionTexto(ev.granja_ubicaciones)
+      const codigo = ev.granja_ubicaciones?.codigo || '—'
+      const tipoLegible = tipoEventoLegible(ev.tipo)
 
-  const totalSalidas = useMemo(() => {
-    return resumenGranja.reduce((sum, row) => sum + row.salidas, 0)
-  }, [resumenGranja])
+      const arete = ev.granja_cerdas?.arete || '—'
+      const nombre = ev.granja_cerdas?.nombre || ''
 
-  const totalAjustes = useMemo(() => {
-    return resumenGranja.reduce((sum, row) => sum + row.ajustes, 0)
-  }, [resumenGranja])
+      const referencia = `Cerda ${arete}${nombre ? ` — ${nombre}` : ''}`
+      const detalle = detalleDatosEvento(ev)
 
-  const totalNeto = useMemo(() => {
-    return resumenGranja.reduce((sum, row) => sum + row.neto, 0)
-  }, [resumenGranja])
+      let entradas = 0
+      let salidas = 0
+      let ajustes = 0
+      let cambioNeto = 0
 
-  const generarPDF = useCallback(async () => {
-    setGenerando(true)
+      const tipo = String(ev.tipo || '').toUpperCase()
+      const datos = ev.datos || {}
 
-    try {
-      const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' })
-      const logo = await fetchLogoDataUrl()
-
-      if (logo) {
-        doc.addImage(logo, 'PNG', 10, 8, 30, 12)
+      if (tipo === 'PARTO') {
+        entradas = toNum(datos.nacidos_vivos)
+        cambioNeto = entradas
       }
 
-      doc.setFontSize(14)
-      doc.text('Reporte de movimientos de empleados', 45, 15)
+      if (tipo === 'DESTETE') {
+        ajustes = 0
+        cambioNeto = 0
+      }
 
-      doc.setFontSize(9)
+      if (tipo === 'MUERTE' || tipo === 'BAJA') {
+        salidas = 1
+        cambioNeto = -1
+      }
 
-      const usuarioTxt = filtros.usuario_id ? userLabel(filtros.usuario_id) : 'Todos'
-      const ubicacionTxt = filtros.ubicacion_id
-        ? ubicacionById.get(Number(filtros.ubicacion_id))?.codigo || filtros.ubicacion_id
-        : 'Todas'
+      if (tipo === 'TRASLADO') {
+        ajustes = 0
+        cambioNeto = 0
+      }
 
-      doc.text(
-        `Desde: ${filtros.desde || '—'}   Hasta: ${filtros.hasta || '—'}   Sección: ${
-          filtros.seccion
-        }   Usuario: ${usuarioTxt}   Ubicación: ${ubicacionTxt}   Tipo: ${
-          filtros.tipo_granja
-        }`,
-        10,
-        25
-      )
+      const busqueda = [
+        ev.tipo,
+        tipoLegible,
+        ev.resultado,
+        ubicacion,
+        codigo,
+        ev.observaciones,
+        referencia,
+        detalle,
+        usuarioTexto(ev.user_id),
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase()
 
-      autoTable(doc, {
-        startY: 30,
-        head: [
-          [
-            'Fecha/Hora',
-            'Sección',
-            'Ubicación',
-            'Movimiento',
-            'Cantidad',
-            'Impacto',
-            'Usuario',
-            'Referencia',
-            'Qué pasó',
-            'Observación',
-          ],
-        ],
-        body: items.slice(0, 1400).map((item) => [
-          fmtFecha(item.ts),
-          item.seccion,
-          item.ubicacion_codigo || '—',
-          item.accion_label,
-          item.cantidad != null ? String(item.cantidad) : '—',
-          item.seccion === 'GRANJA' ? formatoImpacto(item.impacto) : '—',
-          item.usuario_label,
-          item.referencia,
-          item.descripcion_corta,
-          item.observaciones,
-        ]),
-        styles: { fontSize: 7, cellPadding: 1.3, valign: 'top' },
-        columnStyles: {
-          0: { cellWidth: 26 },
-          1: { cellWidth: 20 },
-          2: { cellWidth: 22 },
-          3: { cellWidth: 32 },
-          4: { cellWidth: 18 },
-          5: { cellWidth: 18 },
-          6: { cellWidth: 40 },
-          7: { cellWidth: 35 },
-          8: { cellWidth: 55 },
-          9: { cellWidth: 35 },
-        },
+      return {
+        id: `cerda-evento-${ev.id}`,
+        origen: 'EVENTO_CERDA',
+        fecha: formatFecha(fechaHora),
+        hora: formatHora(fechaHora),
+        fechaHoraOrden: fechaHora,
+        usuarioId: ev.user_id,
+        usuarioTexto: usuarioTexto(ev.user_id),
+        seccion: 'Eventos de cerdas',
+        tipoAccion: tipoLegible,
+        ubicacionId: ev.ubicacion_id,
+        ubicacionCodigo: codigo,
+        ubicacionTexto: ubicacion,
+        loteTexto: loteTexto(ev.granja_lotes),
+        referencia,
+        cantidad: cambioNeto,
+        entradas,
+        salidas,
+        ajustes,
+        cambioNeto,
+        observaciones: ev.observaciones || '',
+        detalle,
+        busqueda,
+      }
+    })
+
+    return [...accionesMovimientos, ...accionesEventos].sort((a, b) =>
+      b.fechaHoraOrden.localeCompare(a.fechaHoraOrden)
+    )
+  }, [movimientos, eventosCerdas, usuarioTexto])
+
+  const tiposDisponibles = useMemo(() => {
+    return Array.from(new Set(accionesBase.map((a) => a.tipoAccion))).sort((a, b) =>
+      a.localeCompare(b, 'es')
+    )
+  }, [accionesBase])
+
+  const accionesFiltradas = useMemo(() => {
+    const texto = normalizar(textoFiltro)
+    const tramoBuscado = limpiarTramo(textoFiltro)
+
+    return accionesBase.filter((a) => {
+      if (seccion && seccion !== 'TODAS') {
+        if (seccion === 'GRANJA' && !a.seccion.toLowerCase().includes('granja')) {
+          return false
+        }
+
+        if (seccion === 'EVENTOS_CERDAS' && a.origen !== 'EVENTO_CERDA') {
+          return false
+        }
+
+        if (seccion === 'INVENTARIO' && a.origen !== 'MOVIMIENTO_INVENTARIO') {
+          return false
+        }
+      }
+
+      if (usuarioFiltro && a.usuarioId !== usuarioFiltro) return false
+
+      if (ubicacionFiltro && String(a.ubicacionId || '') !== ubicacionFiltro) {
+        return false
+      }
+
+      if (tipoFiltro && a.tipoAccion !== tipoFiltro) return false
+
+      if (texto) {
+        const normal = a.busqueda
+        const codigoUbicacion = limpiarTramo(a.ubicacionCodigo)
+
+        if (
+          !normal.includes(texto) &&
+          !(tramoBuscado && codigoUbicacion.includes(tramoBuscado))
+        ) {
+          return false
+        }
+      }
+
+      return true
+    })
+  }, [
+    accionesBase,
+    seccion,
+    usuarioFiltro,
+    ubicacionFiltro,
+    tipoFiltro,
+    textoFiltro,
+  ])
+
+  const resumen = useMemo(() => {
+    const map = new Map<string, ResumenUbicacion>()
+
+    accionesFiltradas.forEach((a) => {
+      const key = a.ubicacionCodigo || '—'
+
+      if (!map.has(key)) {
+        map.set(key, {
+          ubicacion: key,
+          entradas: 0,
+          salidas: 0,
+          ajustes: 0,
+          cambioNeto: 0,
+          movimientos: 0,
+        })
+      }
+
+      const row = map.get(key)!
+
+      row.entradas += a.entradas
+      row.salidas += a.salidas
+      row.ajustes += a.ajustes
+      row.cambioNeto += a.cambioNeto
+      row.movimientos += 1
+    })
+
+    return Array.from(map.values()).sort((a, b) =>
+      a.ubicacion.localeCompare(b.ubicacion, 'es', {
+        numeric: true,
+        sensitivity: 'base',
       })
+    )
+  }, [accionesFiltradas])
 
-      const now = new Date()
-      const name = `reporte_movimientos_empleados_${now.getFullYear()}${pad(
-        now.getMonth() + 1
-      )}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(
-        now.getSeconds()
-      )}.pdf`
+  const totalEntradas = accionesFiltradas.reduce((sum, a) => sum + a.entradas, 0)
+  const totalSalidas = accionesFiltradas.reduce((sum, a) => sum + a.salidas, 0)
+  const totalAjustes = accionesFiltradas.reduce((sum, a) => sum + a.ajustes, 0)
+  const totalCambio = accionesFiltradas.reduce((sum, a) => sum + a.cambioNeto, 0)
 
-      doc.save(name)
-    } finally {
-      setGenerando(false)
-    }
-  }, [filtros, items, ubicacionById, userLabel])
+  const imprimirPdf = () => {
+    generarPdf(accionesFiltradas, resumen, {
+      desdeFecha,
+      desdeHora,
+      hastaFecha,
+      hastaHora,
+      seccion,
+      usuario: usuarioFiltro,
+      ubicacion: ubicacionFiltro,
+      tipo: tipoFiltro,
+      texto: textoFiltro,
+    })
+  }
 
   return (
     <div className="p-6 max-w-7xl mx-auto">
       <div className="flex justify-center mb-4">
-        <Image src="/logo.png" alt="Logo" width={180} height={72} />
+        <Image src="/logo.png" alt="Logo" width={150} height={60} />
       </div>
 
-      <div className="flex items-center gap-3 mb-4">
+      <div className="mb-4 flex items-center gap-3">
         <div>
           <h1 className="text-2xl font-bold">Movimientos de empleados</h1>
-          <p className="text-sm text-gray-600">
-            Busca cambios por fecha, usuario, tramo, tipo de movimiento y referencia.
+          <p className="text-xs text-gray-600">
+            Busca cambios por fecha, hora, usuario, ubicación, tipo de acción y referencia.
           </p>
         </div>
 
         <Link
-          href="/granja/reportes"
+          href="/granja"
           className="ml-auto inline-block bg-slate-700 hover:bg-slate-800 text-white px-4 py-2 rounded text-sm"
         >
           ← Volver
         </Link>
       </div>
 
-      <section className="border rounded bg-white p-4 mb-4">
+      <div className="border rounded-lg bg-white p-4 mb-4">
         <h2 className="font-semibold mb-3">Filtros de búsqueda</h2>
 
-        <div className="grid grid-cols-1 md:grid-cols-4 xl:grid-cols-8 gap-3">
+        <div className="grid md:grid-cols-6 gap-3 text-sm">
           <div>
-            <label className="block text-xs text-gray-600 mb-1">Desde</label>
+            <label className="block text-xs font-semibold mb-1">Desde fecha</label>
             <input
               type="date"
-              className="border p-2 w-full rounded"
-              value={filtros.desde}
-              onChange={(e) => setFiltros((prev) => ({ ...prev, desde: e.target.value }))}
+              className="border rounded p-2 w-full"
+              value={desdeFecha}
+              onChange={(e) => setDesdeFecha(e.target.value)}
             />
           </div>
 
           <div>
-            <label className="block text-xs text-gray-600 mb-1">Hasta</label>
+            <label className="block text-xs font-semibold mb-1">Desde hora</label>
             <input
-              type="date"
-              className="border p-2 w-full rounded"
-              value={filtros.hasta}
-              onChange={(e) => setFiltros((prev) => ({ ...prev, hasta: e.target.value }))}
+              type="time"
+              className="border rounded p-2 w-full"
+              value={desdeHora}
+              onChange={(e) => setDesdeHora(e.target.value)}
             />
           </div>
 
           <div>
-            <label className="block text-xs text-gray-600 mb-1">Sección</label>
+            <label className="block text-xs font-semibold mb-1">Hasta fecha</label>
+            <input
+              type="date"
+              className="border rounded p-2 w-full"
+              value={hastaFecha}
+              onChange={(e) => setHastaFecha(e.target.value)}
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold mb-1">Hasta hora</label>
+            <input
+              type="time"
+              className="border rounded p-2 w-full"
+              value={hastaHora}
+              onChange={(e) => setHastaHora(e.target.value)}
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold mb-1">Sección</label>
             <select
-              className="border p-2 w-full rounded"
-              value={filtros.seccion}
-              onChange={(e) =>
-                setFiltros((prev) => ({
-                  ...prev,
-                  seccion: e.target.value as Seccion,
-                }))
-              }
+              className="border rounded p-2 w-full"
+              value={seccion}
+              onChange={(e) => setSeccion(e.target.value)}
             >
-              <option value="TODOS">Todas</option>
+              <option value="TODAS">Todas</option>
               <option value="GRANJA">Granja</option>
-              <option value="VEHICULOS">Vehículos</option>
-              <option value="VENTAS">Ventas</option>
-              <option value="EROGACIONES">Erogaciones</option>
-              <option value="INVENTARIO_PLANTA">Inventario planta</option>
+              <option value="INVENTARIO">Inventario granja</option>
+              <option value="EVENTOS_CERDAS">Eventos de cerdas</option>
             </select>
           </div>
 
           <div>
-            <label className="block text-xs text-gray-600 mb-1">Usuario</label>
+            <label className="block text-xs font-semibold mb-1">Usuario</label>
             <select
-              className="border p-2 w-full rounded"
-              value={filtros.usuario_id}
-              onChange={(e) =>
-                setFiltros((prev) => ({
-                  ...prev,
-                  usuario_id: e.target.value,
-                }))
-              }
+              className="border rounded p-2 w-full"
+              value={usuarioFiltro}
+              onChange={(e) => setUsuarioFiltro(e.target.value)}
             >
               <option value="">Todos los usuarios</option>
-              {profiles.map((profile) => (
-                <option key={profile.id} value={profile.id}>
-                  {profile.email || profile.id}
+              {usuarios.map((u) => (
+                <option key={u.id} value={u.id}>
+                  {u.email || u.nombre || u.id.slice(0, 8)}
                 </option>
               ))}
             </select>
           </div>
+        </div>
 
+        <div className="grid md:grid-cols-[180px_220px_1fr] gap-3 text-sm mt-3">
           <div>
-            <label className="block text-xs text-gray-600 mb-1">Tramo / ubicación</label>
+            <label className="block text-xs font-semibold mb-1">Tramo / ubicación</label>
             <select
-              className="border p-2 w-full rounded"
-              value={filtros.ubicacion_id}
-              onChange={(e) =>
-                setFiltros((prev) => ({
-                  ...prev,
-                  ubicacion_id: e.target.value,
-                  seccion: prev.seccion === 'TODOS' ? 'GRANJA' : prev.seccion,
-                }))
-              }
+              className="border rounded p-2 w-full"
+              value={ubicacionFiltro}
+              onChange={(e) => setUbicacionFiltro(e.target.value)}
             >
               <option value="">Todas</option>
-              {ubicaciones.map((ubicacion) => (
-                <option key={ubicacion.id} value={String(ubicacion.id)}>
-                  {ubicacion.codigo} {ubicacion.nombre ? `— ${ubicacion.nombre}` : ''}
+              {ubicaciones.map((u) => (
+                <option key={u.id} value={u.id}>
+                  {u.codigo}
+                  {u.nombre ? ` — ${u.nombre}` : ''}
                 </option>
               ))}
             </select>
           </div>
 
           <div>
-            <label className="block text-xs text-gray-600 mb-1">Tipo granja</label>
+            <label className="block text-xs font-semibold mb-1">Tipo de acción</label>
             <select
-              className="border p-2 w-full rounded"
-              value={filtros.tipo_granja}
-              onChange={(e) =>
-                setFiltros((prev) => ({
-                  ...prev,
-                  tipo_granja: e.target.value as TipoGranja,
-                  seccion: prev.seccion === 'TODOS' ? 'GRANJA' : prev.seccion,
-                }))
-              }
+              className="border rounded p-2 w-full"
+              value={tipoFiltro}
+              onChange={(e) => setTipoFiltro(e.target.value)}
             >
-              <option value="TODOS">Todos</option>
-              <option value="ENTRADA_COMPRA">Entrada compra</option>
-              <option value="ENTRADA_PARTO">Entrada parto</option>
-              <option value="SALIDA_VENTA">Salida venta</option>
-              <option value="SALIDA_MUERTE">Salida muerte</option>
-              <option value="AJUSTE">Ajuste</option>
+              <option value="">Todos</option>
+              {tiposDisponibles.map((tipo) => (
+                <option key={tipo} value={tipo}>
+                  {tipo}
+                </option>
+              ))}
             </select>
           </div>
 
-          <div className="xl:col-span-2">
-            <label className="block text-xs text-gray-600 mb-1">
-              Buscar texto, referencia, tramo u observación
+          <div>
+            <label className="block text-xs font-semibold mb-1">
+              Buscar texto, referencia, arete, tramo u observación
             </label>
             <input
-              className="border p-2 w-full rounded"
-              placeholder="Ej: TR8, TR08, venta, muerte, baja..."
-              value={filtros.texto}
-              onChange={(e) =>
-                setFiltros((prev) => ({
-                  ...prev,
-                  texto: e.target.value,
-                }))
-              }
+              className="border rounded p-2 w-full"
+              value={textoFiltro}
+              onChange={(e) => setTextoFiltro(e.target.value)}
+              placeholder="Ej: AR1023, parto, destete, TR8, traslado, baja..."
             />
-            <p className="text-[11px] text-gray-500 mt-1">
+            <div className="text-[11px] text-gray-500 mt-1">
               TR8 y TR08 se buscan como el mismo tramo.
-            </p>
-          </div>
-        </div>
-
-        <div className="flex gap-3 mt-4">
-          <button
-            onClick={cargar}
-            disabled={loading}
-            className="bg-teal-700 hover:bg-teal-800 disabled:opacity-60 text-white px-4 py-2 rounded"
-          >
-            {loading ? 'Cargando…' : 'Buscar'}
-          </button>
-
-          <button
-            onClick={generarPDF}
-            disabled={generando || items.length === 0}
-            className="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white px-4 py-2 rounded"
-          >
-            {generando ? 'Generando…' : 'Imprimir PDF'}
-          </button>
-        </div>
-      </section>
-
-      {filtros.seccion === 'GRANJA' || filtros.seccion === 'TODOS' ? (
-        <section className="grid grid-cols-1 md:grid-cols-4 gap-3 mb-4">
-          <div className="border rounded bg-white p-3">
-            <div className="text-xs text-gray-600">Entradas</div>
-            <div className="text-xl font-bold text-emerald-700">+{totalEntradas}</div>
-          </div>
-
-          <div className="border rounded bg-white p-3">
-            <div className="text-xs text-gray-600">Salidas</div>
-            <div className="text-xl font-bold text-red-700">-{totalSalidas}</div>
-          </div>
-
-          <div className="border rounded bg-white p-3">
-            <div className="text-xs text-gray-600">Ajustes</div>
-            <div className="text-xl font-bold">{formatoImpacto(totalAjustes)}</div>
-          </div>
-
-          <div className="border rounded bg-white p-3">
-            <div className="text-xs text-gray-600">Cambio neto</div>
-            <div
-              className={`text-xl font-bold ${
-                totalNeto > 0 ? 'text-emerald-700' : totalNeto < 0 ? 'text-red-700' : ''
-              }`}
-            >
-              {formatoImpacto(totalNeto)}
             </div>
           </div>
-        </section>
-      ) : null}
+        </div>
 
-      {resumenGranja.length > 0 ? (
-        <section className="border rounded bg-white overflow-auto mb-4">
-          <div className="p-3 border-b bg-gray-50 font-semibold text-sm">
-            Resumen por tramo / ubicación
+        <div className="flex gap-2 mt-4">
+          <button
+            onClick={cargarDatos}
+            disabled={loading}
+            className="bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white px-4 py-2 rounded"
+          >
+            {loading ? 'Buscando...' : 'Buscar'}
+          </button>
+
+          <button
+            onClick={imprimirPdf}
+            className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded"
+          >
+            Imprimir PDF
+          </button>
+        </div>
+      </div>
+
+      <div className="grid md:grid-cols-4 gap-3 mb-4">
+        <div className="border rounded bg-white p-3">
+          <div className="text-xs text-gray-600">Entradas</div>
+          <div className="text-xl font-bold text-emerald-700">+{totalEntradas}</div>
+        </div>
+
+        <div className="border rounded bg-white p-3">
+          <div className="text-xs text-gray-600">Salidas</div>
+          <div className="text-xl font-bold text-red-700">-{totalSalidas}</div>
+        </div>
+
+        <div className="border rounded bg-white p-3">
+          <div className="text-xs text-gray-600">Ajustes</div>
+          <div
+            className={`text-xl font-bold ${
+              totalAjustes > 0
+                ? 'text-emerald-700'
+                : totalAjustes < 0
+                  ? 'text-red-700'
+                  : ''
+            }`}
+          >
+            {totalAjustes > 0 ? `+${totalAjustes}` : totalAjustes}
           </div>
+        </div>
 
+        <div className="border rounded bg-white p-3">
+          <div className="text-xs text-gray-600">Cambio neto</div>
+          <div
+            className={`text-xl font-bold ${
+              totalCambio > 0
+                ? 'text-emerald-700'
+                : totalCambio < 0
+                  ? 'text-red-700'
+                  : ''
+            }`}
+          >
+            {totalCambio > 0 ? `+${totalCambio}` : totalCambio}
+          </div>
+        </div>
+      </div>
+
+      <div className="border rounded-lg bg-white mb-4 overflow-hidden">
+        <h2 className="font-semibold p-3 border-b">Resumen por tramo / ubicación</h2>
+
+        <div className="overflow-auto max-h-[360px]">
           <table className="w-full text-sm">
-            <thead className="bg-gray-100">
+            <thead className="bg-gray-200 sticky top-0">
               <tr>
                 <th className="p-2 text-left">Ubicación</th>
                 <th className="p-2 text-right">Entradas</th>
@@ -1317,111 +1119,115 @@ export default function MovimientosEmpleadosPage() {
             </thead>
 
             <tbody>
-              {resumenGranja.map((row) => (
-                <tr key={row.ubicacion} className="border-t">
-                  <td className="p-2 font-medium">{row.ubicacion}</td>
-                  <td className="p-2 text-right text-emerald-700">+{row.entradas}</td>
-                  <td className="p-2 text-right text-red-700">-{row.salidas}</td>
-                  <td className="p-2 text-right">{formatoImpacto(row.ajustes)}</td>
-                  <td
-                    className={`p-2 text-right font-semibold ${
-                      row.neto > 0 ? 'text-emerald-700' : row.neto < 0 ? 'text-red-700' : ''
-                    }`}
-                  >
-                    {formatoImpacto(row.neto)}
+              {resumen.length === 0 ? (
+                <tr>
+                  <td colSpan={6} className="p-3 text-gray-500">
+                    No hay datos para mostrar.
                   </td>
-                  <td className="p-2 text-right">{row.movimientos}</td>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </section>
-      ) : null}
-
-      <section className="border rounded bg-white overflow-auto">
-        <div className="p-3 border-b bg-gray-50 flex items-center justify-between">
-          <div className="font-semibold text-sm">Detalle de movimientos</div>
-          <div className="text-xs text-gray-600">
-            {loading ? 'Cargando…' : `Mostrando ${items.length} movimiento(s)`}
-          </div>
-        </div>
-
-        <table className="w-full text-sm min-w-[1200px]">
-          <thead className="bg-gray-200">
-            <tr>
-              <th className="p-2 text-left">Fecha/Hora</th>
-              <th className="p-2 text-left">Ubicación</th>
-              <th className="p-2 text-left">Movimiento</th>
-              <th className="p-2 text-right">Cantidad</th>
-              <th className="p-2 text-right">Impacto</th>
-              <th className="p-2 text-left">Qué pasó</th>
-              <th className="p-2 text-left">Usuario</th>
-              <th className="p-2 text-left">Referencia</th>
-              <th className="p-2 text-left">Observación</th>
-            </tr>
-          </thead>
-
-          <tbody>
-            {items.length === 0 ? (
-              <tr>
-                <td className="p-4 text-gray-500" colSpan={9}>
-                  {loading ? 'Cargando…' : 'No hay movimientos con esos filtros.'}
-                </td>
-              </tr>
-            ) : (
-              items.map((item, index) => {
-                const impacto = Number(item.impacto || 0)
-
-                return (
-                  <tr key={`${item.seccion}-${item.referencia}-${index}`} className="border-t align-top">
-                    <td className="p-2 whitespace-nowrap">{fmtFecha(item.ts)}</td>
-
-                    <td className="p-2 font-medium">
-                      {item.ubicacion_codigo || '—'}
-                      {item.ubicacion_nombre ? (
-                        <div className="text-[11px] text-gray-500">
-                          {item.ubicacion_nombre}
-                        </div>
-                      ) : null}
+              ) : (
+                resumen.map((row) => (
+                  <tr key={row.ubicacion} className="border-t">
+                    <td className="p-2">{row.ubicacion}</td>
+                    <td className="p-2 text-right text-emerald-700">
+                      +{row.entradas}
                     </td>
-
-                    <td className="p-2">
-                      <div className="font-medium">{item.accion_label}</div>
-                      <div className="text-[11px] text-gray-500">{item.accion}</div>
+                    <td className="p-2 text-right text-red-700">
+                      -{row.salidas}
                     </td>
-
-                    <td className="p-2 text-right">
-                      {item.cantidad != null ? item.cantidad : '—'}
-                    </td>
-
                     <td
-                      className={`p-2 text-right font-semibold ${
-                        impacto > 0 ? 'text-emerald-700' : impacto < 0 ? 'text-red-700' : ''
+                      className={`p-2 text-right ${
+                        row.ajustes > 0
+                          ? 'text-emerald-700'
+                          : row.ajustes < 0
+                            ? 'text-red-700'
+                            : ''
                       }`}
                     >
-                      {item.seccion === 'GRANJA' ? formatoImpacto(item.impacto) : '—'}
+                      {row.ajustes > 0 ? `+${row.ajustes}` : row.ajustes}
                     </td>
-
-                    <td className="p-2">{item.descripcion_corta}</td>
-
-                    <td className="p-2 break-all">{item.usuario_label}</td>
-
-                    <td className="p-2 break-all">{item.referencia}</td>
-
-                    <td className="p-2">{item.observaciones}</td>
+                    <td
+                      className={`p-2 text-right font-semibold ${
+                        row.cambioNeto > 0
+                          ? 'text-emerald-700'
+                          : row.cambioNeto < 0
+                            ? 'text-red-700'
+                            : ''
+                      }`}
+                    >
+                      {row.cambioNeto > 0 ? `+${row.cambioNeto}` : row.cambioNeto}
+                    </td>
+                    <td className="p-2 text-right">{row.movimientos}</td>
                   </tr>
-                )
-              })
-            )}
-          </tbody>
-        </table>
-      </section>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
 
-      <p className="text-xs text-gray-500 mt-3">
-        Para investigar diferencias entre inventario e inventario diario, usa sección “Granja”,
-        selecciona el tramo específico y el rango de fechas. La columna “Impacto” indica cuánto
-        subió o bajó el inventario teórico.
-      </p>
+      <div className="border rounded-lg bg-white overflow-hidden">
+        <h2 className="font-semibold p-3 border-b">
+          Detalle de acciones realizadas
+        </h2>
+
+        <div className="overflow-auto max-h-[620px]">
+          <table className="w-full text-xs">
+            <thead className="bg-gray-200 sticky top-0">
+              <tr>
+                <th className="p-2 text-left">Fecha</th>
+                <th className="p-2 text-left">Hora</th>
+                <th className="p-2 text-left">Usuario</th>
+                <th className="p-2 text-left">Sección</th>
+                <th className="p-2 text-left">Tipo</th>
+                <th className="p-2 text-left">Ubicación</th>
+                <th className="p-2 text-left">Referencia</th>
+                <th className="p-2 text-right">Cambio</th>
+                <th className="p-2 text-left">Detalle / observación</th>
+              </tr>
+            </thead>
+
+            <tbody>
+              {accionesFiltradas.length === 0 ? (
+                <tr>
+                  <td colSpan={9} className="p-3 text-gray-500">
+                    No hay acciones con los filtros aplicados.
+                  </td>
+                </tr>
+              ) : (
+                accionesFiltradas.map((a) => (
+                  <tr key={a.id} className="border-t align-top">
+                    <td className="p-2">{a.fecha}</td>
+                    <td className="p-2">{a.hora}</td>
+                    <td className="p-2">{a.usuarioTexto}</td>
+                    <td className="p-2">{a.seccion}</td>
+                    <td className="p-2 font-semibold">{a.tipoAccion}</td>
+                    <td className="p-2">{a.ubicacionTexto}</td>
+                    <td className="p-2">{a.referencia || '—'}</td>
+                    <td
+                      className={`p-2 text-right font-semibold ${
+                        a.cambioNeto > 0
+                          ? 'text-emerald-700'
+                          : a.cambioNeto < 0
+                            ? 'text-red-700'
+                            : ''
+                      }`}
+                    >
+                      {a.cambioNeto > 0 ? `+${a.cambioNeto}` : a.cambioNeto}
+                    </td>
+                    <td className="p-2">
+                      <div>{a.detalle || '—'}</div>
+                      {a.observaciones ? (
+                        <div className="text-gray-500 mt-1">{a.observaciones}</div>
+                      ) : null}
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
   )
 }
