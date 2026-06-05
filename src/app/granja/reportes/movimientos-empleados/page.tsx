@@ -64,8 +64,11 @@ type Ubicacion = {
 
 type Usuario = {
   id: string
-  email: string | null
+  email?: string | null
   nombre?: string | null
+  full_name?: string | null
+  name?: string | null
+  [key: string]: unknown
 }
 
 type AccionEmpleado = {
@@ -328,6 +331,19 @@ const detalleDatosEvento = (ev: EventoCerda) => {
   return ''
 }
 
+const obtenerTextoUsuario = (usuario?: Usuario | null) => {
+  if (!usuario) return null
+
+  const email = String(usuario.email || '').trim()
+  const nombre = String(usuario.nombre || usuario.full_name || usuario.name || '').trim()
+
+  if (email && nombre) return `${nombre} (${email})`
+  if (email) return email
+  if (nombre) return nombre
+
+  return null
+}
+
 function generarPdf(
   acciones: AccionEmpleado[],
   resumen: ResumenUbicacion[],
@@ -430,13 +446,13 @@ function generarPdf(
     columnStyles: {
       0: { cellWidth: 20 },
       1: { cellWidth: 18 },
-      2: { cellWidth: 35 },
+      2: { cellWidth: 42 },
       3: { cellWidth: 28 },
       4: { cellWidth: 34 },
       5: { cellWidth: 26 },
       6: { cellWidth: 35 },
       7: { cellWidth: 16, halign: 'right' },
-      8: { cellWidth: 75 },
+      8: { cellWidth: 68 },
     },
   })
 
@@ -489,11 +505,11 @@ export default function MovimientosEmpleadosPage() {
       if (!userId) return 'Sin usuario'
 
       const encontrado = usuarios.find((u) => u.id === userId)
+      const texto = obtenerTextoUsuario(encontrado)
 
-      if (encontrado?.email) return encontrado.email
-      if (encontrado?.nombre) return encontrado.nombre
+      if (texto) return texto
 
-      return userId.slice(0, 8)
+      return `Usuario ${userId.slice(0, 8)}`
     },
     [usuarios]
   )
@@ -609,12 +625,13 @@ export default function MovimientosEmpleadosPage() {
       if (userIds.length > 0) {
         const { data: perfiles, error: perfilesError } = await supabase
           .from('profiles')
-          .select('id,email,nombre')
+          .select('*')
           .in('id', userIds)
 
         if (!perfilesError && perfiles) {
           setUsuarios(perfiles as Usuario[])
         } else {
+          console.error('No se pudieron cargar perfiles de usuario:', perfilesError)
           setUsuarios(userIds.map((id) => ({ id, email: null })))
         }
       } else {
@@ -660,6 +677,8 @@ export default function MovimientosEmpleadosPage() {
         .filter(Boolean)
         .join(' · ')
 
+      const usuario = usuarioTexto(mov.user_id)
+
       const busqueda = [
         mov.tipo,
         tipoLegible,
@@ -668,7 +687,7 @@ export default function MovimientosEmpleadosPage() {
         mov.observaciones,
         referencia,
         detalle,
-        usuarioTexto(mov.user_id),
+        usuario,
       ]
         .filter(Boolean)
         .join(' ')
@@ -681,7 +700,7 @@ export default function MovimientosEmpleadosPage() {
         hora: formatHora(fechaHora),
         fechaHoraOrden: fechaHora,
         usuarioId: mov.user_id,
-        usuarioTexto: usuarioTexto(mov.user_id),
+        usuarioTexto: usuario,
         seccion: 'Inventario granja',
         tipoAccion: tipoLegible,
         ubicacionId: mov.ubicacion_id,
@@ -725,20 +744,12 @@ export default function MovimientosEmpleadosPage() {
         cambioNeto = entradas
       }
 
-      if (tipo === 'DESTETE') {
-        ajustes = 0
-        cambioNeto = 0
-      }
-
       if (tipo === 'MUERTE' || tipo === 'BAJA') {
         salidas = 1
         cambioNeto = -1
       }
 
-      if (tipo === 'TRASLADO') {
-        ajustes = 0
-        cambioNeto = 0
-      }
+      const usuario = usuarioTexto(ev.user_id)
 
       const busqueda = [
         ev.tipo,
@@ -749,7 +760,7 @@ export default function MovimientosEmpleadosPage() {
         ev.observaciones,
         referencia,
         detalle,
-        usuarioTexto(ev.user_id),
+        usuario,
       ]
         .filter(Boolean)
         .join(' ')
@@ -762,7 +773,7 @@ export default function MovimientosEmpleadosPage() {
         hora: formatHora(fechaHora),
         fechaHoraOrden: fechaHora,
         usuarioId: ev.user_id,
-        usuarioTexto: usuarioTexto(ev.user_id),
+        usuarioTexto: usuario,
         seccion: 'Eventos de cerdas',
         tipoAccion: tipoLegible,
         ubicacionId: ev.ubicacion_id,
@@ -983,11 +994,14 @@ export default function MovimientosEmpleadosPage() {
               onChange={(e) => setUsuarioFiltro(e.target.value)}
             >
               <option value="">Todos los usuarios</option>
-              {usuarios.map((u) => (
-                <option key={u.id} value={u.id}>
-                  {u.email || u.nombre || u.id.slice(0, 8)}
-                </option>
-              ))}
+              {usuarios.map((u) => {
+                const texto = obtenerTextoUsuario(u) || `Usuario ${u.id.slice(0, 8)}`
+                return (
+                  <option key={u.id} value={u.id}>
+                    {texto}
+                  </option>
+                )
+              })}
             </select>
           </div>
         </div>
