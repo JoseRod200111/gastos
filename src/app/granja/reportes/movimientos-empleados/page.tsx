@@ -733,7 +733,7 @@ export default function MovimientosEmpleadosPage() {
 
       let entradas = 0
       let salidas = 0
-      let ajustes = 0
+      const ajustes = 0
       let cambioNeto = 0
 
       const tipo = String(ev.tipo || '').toUpperCase()
