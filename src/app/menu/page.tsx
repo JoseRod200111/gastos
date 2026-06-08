@@ -1,8 +1,17 @@
 'use client'
 
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
+import { supabase } from '@/lib/supabaseClient'
 
 export default function Dashboard() {
+  const router = useRouter()
+
+  const handleLogout = async () => {
+    await supabase.auth.signOut()
+    router.push('/login')
+  }
+
   return (
     <div className="p-6 max-w-lg mx-auto">
       {/* Logo */}
@@ -44,13 +53,20 @@ export default function Dashboard() {
           🚚 Vehículos
         </Link>
 
-        {/* Nuevo módulo Granja */}
         <Link
           href="/granja"
           className="block bg-pink-600 hover:bg-pink-700 text-white text-center py-4 rounded shadow"
         >
           🐷 Granja
         </Link>
+
+        <button
+          type="button"
+          onClick={handleLogout}
+          className="w-full bg-red-600 hover:bg-red-700 text-white text-center py-4 rounded shadow mt-4"
+        >
+          🔒 Cerrar sesión
+        </button>
       </div>
     </div>
   )
