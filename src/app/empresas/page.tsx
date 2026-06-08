@@ -1029,9 +1029,7 @@ export default function EmpresasPage() {
             </div>
 
             <div className="text-xs text-gray-500 mt-3">
-              Si un registro ya está relacionado con ventas, erogaciones, inventario,
-              vehículos o granja, Supabase puede impedir eliminarlo. En ese caso,
-              edítalo o desactívalo si tiene campo activo.
+           
             </div>
           </div>
         </div>
