@@ -40,32 +40,37 @@ type SaldoVenta = {
   saldo: number
 }
 
-function asObj<T>(rel: any): T | null {
+type Catalogo = {
+  id: number
+  nombre: string
+}
+
+function asObj<T>(rel: unknown): T | null {
   if (rel == null) return null
   if (Array.isArray(rel)) return (rel[0] ?? null) as T | null
   return rel as T
 }
 
-function normalizeVenta(row: any): Venta {
+function normalizeVenta(row: Record<string, unknown>): Venta {
   return {
     id: Number(row.id),
-    fecha: row.fecha,
+    fecha: String(row.fecha || ''),
     cantidad: Number(row.cantidad ?? 0),
-    observaciones: row.observaciones ?? null,
-    empresa_id: row.empresa_id ?? null,
-    division_id: row.division_id ?? null,
-    cliente_id: row.cliente_id ?? null,
+    observaciones: (row.observaciones as string | null) ?? null,
+    empresa_id: (row.empresa_id as number | null) ?? null,
+    division_id: (row.division_id as number | null) ?? null,
+    cliente_id: (row.cliente_id as number | null) ?? null,
     empresas: asObj<EmpresaRel>(row.empresas),
     divisiones: asObj<DivisionRel>(row.divisiones),
     clientes: asObj<ClienteRel>(row.clientes),
   }
 }
 
-function q(n: any) {
+function q(n: unknown) {
   return `Q${Number(n || 0).toFixed(2)}`
 }
 
-function safeText(v: any) {
+function safeText(v: unknown) {
   return (v ?? '').toString()
 }
 
@@ -73,15 +78,37 @@ function round2(n: number) {
   return Math.round((Number(n || 0) + Number.EPSILON) * 100) / 100
 }
 
+async function fetchLogoDataUrl(): Promise<string | null> {
+  try {
+    const res = await fetch('/logo.png')
+    const blob = await res.blob()
+
+    return await new Promise((resolve) => {
+      const reader = new FileReader()
+      reader.onload = () => resolve(String(reader.result))
+      reader.onerror = () => resolve(null)
+      reader.readAsDataURL(blob)
+    })
+  } catch {
+    return null
+  }
+}
+
+function getLastAutoTableY(doc: jsPDF, fallback: number) {
+  return (doc as jsPDF & { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY || fallback
+}
+
 export default function ReportesVentas() {
   const [ventas, setVentas] = useState<Venta[]>([])
   const [detalles, setDetalles] = useState<Record<number, Detalle[]>>({})
   const [saldos, setSaldos] = useState<Record<number, SaldoVenta>>({})
 
-  const [empresas, setEmpresas] = useState<any[]>([])
-  const [divisiones, setDivisiones] = useState<any[]>([])
+  const [empresas, setEmpresas] = useState<Catalogo[]>([])
+  const [divisiones, setDivisiones] = useState<Catalogo[]>([])
 
   const [mostrarIncompletas] = useState(false)
+  const [generandoReporte, setGenerandoReporte] = useState(false)
+  const [generandoReciboId, setGenerandoReciboId] = useState<number | null>(null)
 
   const [filtros, setFiltros] = useState({
     empresa_id: '',
@@ -100,8 +127,8 @@ export default function ReportesVentas() {
         supabase.from('divisiones').select('*').order('nombre', { ascending: true }),
       ])
 
-      setEmpresas(emp.data || [])
-      setDivisiones(div.data || [])
+      setEmpresas((emp.data || []) as Catalogo[])
+      setDivisiones((div.data || []) as Catalogo[])
     })()
   }, [])
 
@@ -140,11 +167,12 @@ export default function ReportesVentas() {
       setVentas([])
       setDetalles({})
       setSaldos({})
+      alert(`Error cargando ventas: ${error.message}`)
       return
     }
 
-    const norm = (cabeceras || []).map(normalizeVenta)
-    const ids = norm.map(v => v.id)
+    const norm = ((cabeceras || []) as Record<string, unknown>[]).map(normalizeVenta)
+    const ids = norm.map((v) => v.id)
 
     if (ids.length === 0) {
       setVentas([])
@@ -179,21 +207,24 @@ export default function ReportesVentas() {
       setVentas(norm)
       setDetalles({})
       setSaldos({})
+      alert(`Error cargando detalles: ${detErr.message}`)
       return
     }
 
     const grouped: Record<number, Detalle[]> = {}
 
     for (const d of detAll || []) {
-      const key = Number((d as any).venta_id)
+      const row = d as Record<string, unknown>
+      const key = Number(row.venta_id)
+
       ;(grouped[key] ||= []).push({
-        concepto: safeText((d as any).concepto),
-        cantidad: Number((d as any).cantidad ?? 0),
-        precio_unitario: Number((d as any).precio_unitario ?? 0),
-        importe: Number((d as any).importe ?? 0),
-        forma_pago_id: (d as any).forma_pago_id == null ? null : Number((d as any).forma_pago_id),
-        forma_pago: asObj<{ metodo: string }>((d as any).forma_pago),
-        documento: (d as any).documento ?? null,
+        concepto: safeText(row.concepto),
+        cantidad: Number(row.cantidad ?? 0),
+        precio_unitario: Number(row.precio_unitario ?? 0),
+        importe: Number(row.importe ?? 0),
+        forma_pago_id: row.forma_pago_id == null ? null : Number(row.forma_pago_id),
+        forma_pago: asObj<{ metodo: string }>(row.forma_pago),
+        documento: (row.documento as string | null) ?? null,
       })
     }
 
@@ -209,8 +240,9 @@ export default function ReportesVentas() {
     const pagosPorVenta: Record<number, number> = {}
 
     for (const p of pagosRows || []) {
-      const ventaId = Number((p as any).venta_id)
-      pagosPorVenta[ventaId] = round2((pagosPorVenta[ventaId] || 0) + Number((p as any).monto || 0))
+      const row = p as Record<string, unknown>
+      const ventaId = Number(row.venta_id)
+      pagosPorVenta[ventaId] = round2((pagosPorVenta[ventaId] || 0) + Number(row.monto || 0))
     }
 
     const saldosCalc: Record<number, SaldoVenta> = {}
@@ -225,13 +257,10 @@ export default function ReportesVentas() {
           metodoPendienteId !== null && d.forma_pago_id === metodoPendienteId
         const esPendientePorTexto = metodo.includes('pendiente de pago')
 
-        return esPendientePorId || esPendientePorTexto
-          ? sum + Number(d.importe || 0)
-          : sum
+        return esPendientePorId || esPendientePorTexto ? sum + Number(d.importe || 0) : sum
       }, 0)
 
       const abonado = pagosPorVenta[v.id] || 0
-
       const saldoPendiente = Math.max(0, creditoOriginal - abonado)
 
       const pagadoInicial = Math.max(0, totalVenta - creditoOriginal)
@@ -245,7 +274,7 @@ export default function ReportesVentas() {
       }
     }
 
-    const filtradas = norm.filter(v =>
+    const filtradas = norm.filter((v) =>
       mostrarIncompletas ? true : (grouped[v.id]?.length ?? 0) > 0
     )
 
@@ -260,7 +289,7 @@ export default function ReportesVentas() {
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const { name, value } = e.target
-    setFiltros(prev => ({ ...prev, [name]: value }))
+    setFiltros((prev) => ({ ...prev, [name]: value }))
   }
 
   const limpiarFiltros = () =>
@@ -287,176 +316,405 @@ export default function ReportesVentas() {
     }
   }, [ventas, saldos])
 
-  const generarPDFReporte = async () => {
-    const doc = new jsPDF('l', 'mm', 'letter')
+  const nombreEmpresaFiltro =
+    empresas.find((e) => String(e.id) === String(filtros.empresa_id))?.nombre || 'Todas'
+
+  const nombreDivisionFiltro =
+    divisiones.find((d) => String(d.id) === String(filtros.division_id))?.nombre || 'Todas'
+
+  const agregarFooter = (doc: jsPDF) => {
     const pageWidth = doc.internal.pageSize.getWidth()
+    const pageHeight = doc.internal.pageSize.getHeight()
+    const totalPages = doc.getNumberOfPages()
 
-    doc.setFont('helvetica', 'bold')
-    doc.setFontSize(16)
-    doc.text('REPORTE DE VENTAS', pageWidth / 2, 18, { align: 'center' })
-
-    doc.setFont('helvetica', 'normal')
-    doc.setFontSize(10)
-
-    const rango = `Rango: ${filtros.desde || '—'} a ${filtros.hasta || '—'}`
-    const fEmp = filtros.empresa_id ? `Empresa ID: ${filtros.empresa_id}` : 'Empresa: Todas'
-    const fDiv = filtros.division_id ? `División ID: ${filtros.division_id}` : 'División: Todas'
-
-    doc.text(`${rango}   |   ${fEmp}   |   ${fDiv}`, 12, 26)
-
-    autoTable(doc, {
-      startY: 32,
-      head: [['Resumen', 'Valor']],
-      body: [
-        ['Ventas', String(resumen.totalVentas)],
-        ['Total vendido', q(resumen.totalQ)],
-        ['Total pagado', q(resumen.pagadoQ)],
-        ['Saldo pendiente', q(resumen.pendienteQ)],
-      ],
-      theme: 'striped',
-      headStyles: { fillColor: [27, 115, 160] },
-      styles: { fontSize: 9, cellPadding: 2 },
-      columnStyles: {
-        0: { cellWidth: 60 },
-        1: { cellWidth: 45, halign: 'right' },
-      },
-      margin: { left: 12, right: 12 },
-    })
-
-    let y = (doc as any).lastAutoTable?.finalY ?? 50
-    y += 6
-
-    const rows = ventas.map(v => {
-      const cli = v.clientes?.nombre || '—'
-      const nit = v.clientes?.nit || '—'
-      const emp = v.empresas?.nombre || '—'
-      const div = v.divisiones?.nombre || '—'
-      const s = saldos[v.id] || { pagado: 0, saldo: 0 }
-
-      return [
-        v.fecha,
-        `#${v.id}`,
-        cli,
-        nit,
-        emp,
-        div,
-        q(v.cantidad),
-        q(s.pagado),
-        q(s.saldo),
-      ]
-    })
-
-    autoTable(doc, {
-      startY: y,
-      head: [['Fecha', 'ID', 'Cliente', 'NIT', 'Empresa', 'División', 'Total', 'Pagado', 'Pendiente']],
-      body: rows,
-      theme: 'striped',
-      headStyles: { fillColor: [27, 115, 160] },
-      styles: { fontSize: 8, cellPadding: 2 },
-      columnStyles: {
-        0: { cellWidth: 22 },
-        1: { cellWidth: 14 },
-        2: { cellWidth: 45 },
-        3: { cellWidth: 22 },
-        4: { cellWidth: 45 },
-        5: { cellWidth: 28 },
-        6: { cellWidth: 24, halign: 'right' },
-        7: { cellWidth: 24, halign: 'right' },
-        8: { cellWidth: 26, halign: 'right' },
-      },
-      margin: { left: 12, right: 12 },
-      didDrawPage: () => {
-        doc.setFontSize(8)
-        doc.text('AGRO INDUSTRIAS RYB', 12, 10)
-      },
-    })
-
-    const ts = new Date()
-      .toISOString()
-      .replace(/[-:]/g, '')
-      .replace('T', '_')
-      .slice(0, 15)
-
-    doc.save(`reporte_ventas_${ts}.pdf`)
+    for (let i = 1; i <= totalPages; i++) {
+      doc.setPage(i)
+      doc.setFont('helvetica', 'normal')
+      doc.setFontSize(8)
+      doc.setTextColor(120, 120, 120)
+      doc.text(`Página ${i} de ${totalPages}`, pageWidth - 12, pageHeight - 7, {
+        align: 'right',
+      })
+      doc.text(`Generado: ${new Date().toLocaleString()}`, 12, pageHeight - 7)
+    }
   }
 
-  const generarReciboVenta = (venta: Venta) => {
-    const doc = new jsPDF('p', 'mm', 'letter')
+  const dibujarEncabezadoReporte = (
+    doc: jsPDF,
+    logo: string | null,
+    titulo: string,
+    subtitulo?: string
+  ) => {
     const pageWidth = doc.internal.pageSize.getWidth()
-    const s = saldos[venta.id] || { pagado: 0, saldo: 0 }
+    let y = 8
+
+    if (logo) {
+      doc.addImage(logo, 'PNG', pageWidth / 2 - 19, y, 38, 15)
+      y += 19
+    }
 
     doc.setFont('helvetica', 'bold')
     doc.setFontSize(16)
-    doc.text('RECIBO DE VENTA', pageWidth / 2, 18, { align: 'center' })
+    doc.setTextColor(20, 20, 20)
+    doc.text(titulo, pageWidth / 2, y, { align: 'center' })
 
-    doc.setFont('helvetica', 'normal')
-    doc.setFontSize(10)
+    y += 6
 
-    doc.text(`No. Recibo: V-${venta.id}`, pageWidth - 12, 14, { align: 'right' })
-    doc.text(`Fecha: ${venta.fecha}`, pageWidth - 12, 20, { align: 'right' })
+    if (subtitulo) {
+      doc.setFont('helvetica', 'normal')
+      doc.setFontSize(9)
+      doc.setTextColor(85, 85, 85)
+      doc.text(subtitulo, pageWidth / 2, y, { align: 'center' })
+      y += 4
+    }
 
-    const cli = venta.clientes?.nombre || '—'
-    const nit = venta.clientes?.nit || '—'
-    const emp = venta.empresas?.nombre || '—'
-    const div = venta.divisiones?.nombre || '—'
+    return y + 4
+  }
 
-    autoTable(doc, {
-      startY: 28,
-      head: [['Cliente', 'NIT', 'Empresa', 'División']],
-      body: [[cli, nit, emp, div]],
-      theme: 'striped',
-      headStyles: { fillColor: [27, 115, 160] },
-      styles: { fontSize: 9, cellPadding: 2 },
-      margin: { left: 12, right: 12 },
-    })
+  const generarPDFReporte = async () => {
+    if (ventas.length === 0) {
+      alert('No hay ventas para generar el reporte.')
+      return
+    }
 
-    const det = detalles[venta.id] || []
+    setGenerandoReporte(true)
 
-    autoTable(doc, {
-      startY: (doc as any).lastAutoTable?.finalY + 6,
-      head: [['Concepto', 'Cant.', 'P.Unit', 'Importe', 'Pago', 'Doc.']],
-      body: det.map(d => [
-        d.concepto,
-        String(d.cantidad),
-        q(d.precio_unitario),
-        q(d.importe),
-        d.forma_pago?.metodo || '—',
-        d.documento || '—',
-      ]),
-      theme: 'striped',
-      headStyles: { fillColor: [27, 115, 160] },
-      styles: { fontSize: 9, cellPadding: 2 },
-      columnStyles: {
-        0: { cellWidth: 62 },
-        1: { cellWidth: 14, halign: 'right' },
-        2: { cellWidth: 22, halign: 'right' },
-        3: { cellWidth: 22, halign: 'right' },
-        4: { cellWidth: 30 },
-        5: { cellWidth: 22 },
-      },
-      margin: { left: 12, right: 12 },
-    })
+    try {
+      const logo = await fetchLogoDataUrl()
+      const doc = new jsPDF('l', 'mm', 'letter')
+      const pageWidth = doc.internal.pageSize.getWidth()
 
-    autoTable(doc, {
-      startY: (doc as any).lastAutoTable?.finalY + 8,
-      head: [['Totales', 'Valor']],
-      body: [
-        ['Total venta', q(venta.cantidad)],
-        ['Pagado', q(s.pagado)],
-        ['Saldo pendiente', q(s.saldo)],
-        ['Observaciones', venta.observaciones || '—'],
-      ],
-      theme: 'striped',
-      headStyles: { fillColor: [27, 115, 160] },
-      styles: { fontSize: 9, cellPadding: 2 },
-      columnStyles: {
-        0: { cellWidth: 60 },
-        1: { cellWidth: 120 },
-      },
-      margin: { left: 12, right: 12 },
-    })
+      const yInicial = dibujarEncabezadoReporte(
+        doc,
+        logo,
+        'REPORTE DE VENTAS',
+        'Resumen general de ventas, pagos y saldos pendientes'
+      )
 
-    doc.save(`recibo_venta_${venta.id}.pdf`)
+      autoTable(doc, {
+        startY: yInicial,
+        theme: 'grid',
+        margin: { left: 12, right: 12 },
+        styles: {
+          fontSize: 8,
+          cellPadding: 2,
+          overflow: 'linebreak',
+          valign: 'middle',
+        },
+        headStyles: {
+          fillColor: [31, 41, 55],
+          textColor: 255,
+          fontStyle: 'bold',
+          halign: 'center',
+        },
+        body: [
+          ['Rango', `${filtros.desde || '—'} a ${filtros.hasta || '—'}`, 'Empresa', nombreEmpresaFiltro],
+          ['División', nombreDivisionFiltro, 'Cliente', filtros.cliente_nombre || 'Todos'],
+          ['NIT', filtros.cliente_nit || 'Todos', 'ID', filtros.id || 'Todos'],
+        ],
+        columnStyles: {
+          0: { fontStyle: 'bold', fillColor: [245, 245, 245], cellWidth: 24 },
+          1: { cellWidth: 84 },
+          2: { fontStyle: 'bold', fillColor: [245, 245, 245], cellWidth: 24 },
+          3: { cellWidth: 120 },
+        },
+      })
+
+      let y = getLastAutoTableY(doc, yInicial) + 6
+
+      autoTable(doc, {
+        startY: y,
+        theme: 'grid',
+        margin: { left: 12, right: pageWidth - 12 - 112 },
+        styles: {
+          fontSize: 9,
+          cellPadding: 2.2,
+          overflow: 'linebreak',
+        },
+        head: [['Resumen', 'Valor']],
+        body: [
+          ['Ventas', String(resumen.totalVentas)],
+          ['Total vendido', q(resumen.totalQ)],
+          ['Total pagado', q(resumen.pagadoQ)],
+          ['Saldo pendiente', q(resumen.pendienteQ)],
+        ],
+        headStyles: {
+          fillColor: [37, 99, 235],
+          textColor: 255,
+          fontStyle: 'bold',
+        },
+        columnStyles: {
+          0: { cellWidth: 58, fontStyle: 'bold' },
+          1: { cellWidth: 54, halign: 'right' },
+        },
+      })
+
+      y = getLastAutoTableY(doc, y) + 7
+
+      const rows = ventas.map((v) => {
+        const cli = v.clientes?.nombre || '—'
+        const nit = v.clientes?.nit || '—'
+        const emp = v.empresas?.nombre || '—'
+        const div = v.divisiones?.nombre || '—'
+        const s = saldos[v.id] || { pagado: 0, saldo: 0 }
+
+        return [
+          v.fecha,
+          `#${v.id}`,
+          cli,
+          nit,
+          emp,
+          div,
+          q(v.cantidad),
+          q(s.pagado),
+          q(s.saldo),
+        ]
+      })
+
+      autoTable(doc, {
+        startY: y,
+        head: [
+          [
+            'Fecha',
+            'ID',
+            'Cliente',
+            'NIT',
+            'Empresa',
+            'División',
+            'Total',
+            'Pagado',
+            'Pendiente',
+          ],
+        ],
+        body: rows,
+        theme: 'striped',
+        margin: { left: 12, right: 12, bottom: 14 },
+        styles: {
+          fontSize: 7.2,
+          cellPadding: 1.8,
+          overflow: 'linebreak',
+          valign: 'middle',
+        },
+        headStyles: {
+          fillColor: [37, 99, 235],
+          textColor: 255,
+          fontStyle: 'bold',
+          halign: 'center',
+        },
+        alternateRowStyles: {
+          fillColor: [248, 250, 252],
+        },
+        columnStyles: {
+          0: { cellWidth: 21 },
+          1: { cellWidth: 13 },
+          2: { cellWidth: 47 },
+          3: { cellWidth: 21 },
+          4: { cellWidth: 43 },
+          5: { cellWidth: 31 },
+          6: { cellWidth: 24, halign: 'right' },
+          7: { cellWidth: 24, halign: 'right' },
+          8: { cellWidth: 27, halign: 'right' },
+        },
+        didDrawPage: () => {
+          if (doc.getCurrentPageInfo().pageNumber > 1) {
+            dibujarEncabezadoReporte(doc, logo, 'REPORTE DE VENTAS')
+          }
+        },
+      })
+
+      agregarFooter(doc)
+
+      const ts = new Date()
+        .toISOString()
+        .replace(/[-:]/g, '')
+        .replace('T', '_')
+        .slice(0, 15)
+
+      doc.save(`reporte_ventas_${ts}.pdf`)
+    } finally {
+      setGenerandoReporte(false)
+    }
+  }
+
+  const generarReciboVenta = async (venta: Venta) => {
+    setGenerandoReciboId(venta.id)
+
+    try {
+      const logo = await fetchLogoDataUrl()
+      const doc = new jsPDF('p', 'mm', 'letter')
+      const pageWidth = doc.internal.pageSize.getWidth()
+      const pageHeight = doc.internal.pageSize.getHeight()
+      const margin = 12
+      const contentWidth = pageWidth - margin * 2
+      const s = saldos[venta.id] || { pagado: 0, saldo: 0 }
+
+      let y = 8
+
+      if (logo) {
+        doc.addImage(logo, 'PNG', pageWidth / 2 - 22, y, 44, 18)
+        y += 23
+      }
+
+      doc.setFont('helvetica', 'bold')
+      doc.setFontSize(15)
+      doc.setTextColor(20, 20, 20)
+      doc.text('RECIBO DE VENTA', pageWidth / 2, y, { align: 'center' })
+
+      y += 7
+
+      doc.setFont('helvetica', 'normal')
+      doc.setFontSize(9)
+      doc.setTextColor(90, 90, 90)
+      doc.text(`No. Recibo: V-${venta.id}`, margin, y)
+      doc.text(`Fecha: ${venta.fecha}`, pageWidth - margin, y, { align: 'right' })
+
+      y += 8
+
+      const cli = venta.clientes?.nombre || '—'
+      const nit = venta.clientes?.nit || '—'
+      const emp = venta.empresas?.nombre || '—'
+      const div = venta.divisiones?.nombre || '—'
+      const observaciones = venta.observaciones?.trim() || '—'
+
+      doc.setDrawColor(180, 180, 180)
+      doc.setFillColor(248, 250, 252)
+      doc.roundedRect(margin, y, contentWidth, 46, 2, 2, 'FD')
+
+      doc.setFillColor(31, 41, 55)
+      doc.roundedRect(margin, y, contentWidth, 10, 2, 2, 'F')
+
+      doc.setTextColor(255, 255, 255)
+      doc.setFont('helvetica', 'bold')
+      doc.setFontSize(10.5)
+      doc.text(`Venta #${venta.id}`, margin + 4, y + 6.5)
+      doc.text(q(venta.cantidad), pageWidth - margin - 4, y + 6.5, { align: 'right' })
+
+      let bodyY = y + 16
+      const leftX = margin + 4
+      const midX = margin + contentWidth / 2 + 2
+
+      doc.setTextColor(20, 20, 20)
+      doc.setFontSize(9)
+
+      doc.setFont('helvetica', 'bold')
+      doc.text('Cliente:', leftX, bodyY)
+      doc.setFont('helvetica', 'normal')
+      doc.text(doc.splitTextToSize(cli, contentWidth / 2 - 18), leftX + 16, bodyY)
+
+      doc.setFont('helvetica', 'bold')
+      doc.text('NIT:', midX, bodyY)
+      doc.setFont('helvetica', 'normal')
+      doc.text(nit, midX + 9, bodyY)
+
+      bodyY += 5
+
+      doc.setFont('helvetica', 'bold')
+      doc.text('Empresa:', leftX, bodyY)
+      doc.setFont('helvetica', 'normal')
+      doc.text(doc.splitTextToSize(emp, contentWidth / 2 - 18), leftX + 18, bodyY)
+
+      doc.setFont('helvetica', 'bold')
+      doc.text('División:', midX, bodyY)
+      doc.setFont('helvetica', 'normal')
+      doc.text(doc.splitTextToSize(div, contentWidth / 2 - 18), midX + 17, bodyY)
+
+      bodyY += 5
+
+      doc.setFont('helvetica', 'bold')
+      doc.text('Pagado:', leftX, bodyY)
+      doc.setFont('helvetica', 'normal')
+      doc.text(q(s.pagado), leftX + 16, bodyY)
+
+      doc.setFont('helvetica', 'bold')
+      doc.text('Pendiente:', midX, bodyY)
+      doc.setFont('helvetica', 'normal')
+      doc.text(q(s.saldo), midX + 21, bodyY)
+
+      bodyY += 5
+
+      doc.setFont('helvetica', 'bold')
+      doc.text('Observaciones:', leftX, bodyY)
+      doc.setFont('helvetica', 'normal')
+      doc.text(doc.splitTextToSize(observaciones, contentWidth - 34), leftX + 28, bodyY)
+
+      y += 52
+
+      const det = detalles[venta.id] || []
+
+      autoTable(doc, {
+        startY: y,
+        head: [['Concepto', 'Cant.', 'P.Unit', 'Importe', 'Pago', 'Doc.']],
+        body:
+          det.length > 0
+            ? det.map((d) => [
+                d.concepto,
+                String(d.cantidad),
+                q(d.precio_unitario),
+                q(d.importe),
+                d.forma_pago?.metodo || '—',
+                d.documento || '—',
+              ])
+            : [['Sin detalle', '', '', '', '', '']],
+        theme: 'grid',
+        headStyles: {
+          fillColor: [37, 99, 235],
+          textColor: 255,
+          fontStyle: 'bold',
+          halign: 'center',
+        },
+        styles: {
+          fontSize: 8,
+          cellPadding: 1.8,
+          overflow: 'linebreak',
+          valign: 'middle',
+        },
+        columnStyles: {
+          0: { cellWidth: 66 },
+          1: { cellWidth: 14, halign: 'center' },
+          2: { cellWidth: 22, halign: 'right' },
+          3: { cellWidth: 22, halign: 'right' },
+          4: { cellWidth: 36 },
+          5: { cellWidth: 24 },
+        },
+        margin: { left: margin, right: margin, bottom: 14 },
+      })
+
+      y = getLastAutoTableY(doc, y) + 7
+
+      autoTable(doc, {
+        startY: y,
+        theme: 'grid',
+        margin: { left: pageWidth - margin - 78, right: margin },
+        styles: {
+          fontSize: 9,
+          cellPadding: 2,
+        },
+        headStyles: {
+          fillColor: [31, 41, 55],
+          textColor: 255,
+          fontStyle: 'bold',
+        },
+        body: [
+          ['Total venta', q(venta.cantidad)],
+          ['Pagado', q(s.pagado)],
+          ['Saldo pendiente', q(s.saldo)],
+        ],
+        columnStyles: {
+          0: { cellWidth: 38, fontStyle: 'bold' },
+          1: { cellWidth: 40, halign: 'right' },
+        },
+      })
+
+      doc.setFont('helvetica', 'normal')
+      doc.setFontSize(8)
+      doc.setTextColor(120, 120, 120)
+      doc.text(`Generado: ${new Date().toLocaleString()}`, margin, pageHeight - 7)
+      doc.text('Página 1 de 1', pageWidth - margin, pageHeight - 7, { align: 'right' })
+
+      doc.save(`recibo_venta_${venta.id}.pdf`)
+    } finally {
+      setGenerandoReciboId(null)
+    }
   }
 
   return (
@@ -470,114 +728,131 @@ export default function ReportesVentas() {
         Usa filtros, genera PDF general de monitoreo o recibo individual por venta.
       </p>
 
-      <div className="grid grid-cols-1 md:grid-cols-8 gap-4 mb-5">
-        <select
-          name="empresa_id"
-          value={filtros.empresa_id}
-          onChange={handleChange}
-          className="border p-2"
-        >
-          <option value="">Todas las Empresas</option>
-          {empresas.map(e => (
-            <option key={e.id} value={e.id}>
-              {e.nombre}
-            </option>
-          ))}
-        </select>
+      <div className="border rounded-lg bg-white p-4 shadow-sm mb-5">
+        <h2 className="font-semibold mb-3">Filtros</h2>
 
-        <select
-          name="division_id"
-          value={filtros.division_id}
-          onChange={handleChange}
-          className="border p-2"
-        >
-          <option value="">Todas las Divisiones</option>
-          {divisiones.map(d => (
-            <option key={d.id} value={d.id}>
-              {d.nombre}
-            </option>
-          ))}
-        </select>
+        <div className="grid grid-cols-1 md:grid-cols-8 gap-4">
+          <select
+            name="empresa_id"
+            value={filtros.empresa_id}
+            onChange={handleChange}
+            className="border p-2 rounded"
+          >
+            <option value="">Todas las Empresas</option>
+            {empresas.map((e) => (
+              <option key={e.id} value={e.id}>
+                {e.nombre}
+              </option>
+            ))}
+          </select>
 
-        <input
-          type="date"
-          name="desde"
-          value={filtros.desde}
-          onChange={handleChange}
-          className="border p-2"
-        />
+          <select
+            name="division_id"
+            value={filtros.division_id}
+            onChange={handleChange}
+            className="border p-2 rounded"
+          >
+            <option value="">Todas las Divisiones</option>
+            {divisiones.map((d) => (
+              <option key={d.id} value={d.id}>
+                {d.nombre}
+              </option>
+            ))}
+          </select>
 
-        <input
-          type="date"
-          name="hasta"
-          value={filtros.hasta}
-          onChange={handleChange}
-          className="border p-2"
-        />
+          <input
+            type="date"
+            name="desde"
+            value={filtros.desde}
+            onChange={handleChange}
+            className="border p-2 rounded"
+          />
 
-        <input
-          type="text"
-          name="cliente_nombre"
-          placeholder="Cliente"
-          value={filtros.cliente_nombre}
-          onChange={handleChange}
-          className="border p-2"
-        />
+          <input
+            type="date"
+            name="hasta"
+            value={filtros.hasta}
+            onChange={handleChange}
+            className="border p-2 rounded"
+          />
 
-        <input
-          type="text"
-          name="cliente_nit"
-          placeholder="NIT"
-          value={filtros.cliente_nit}
-          onChange={handleChange}
-          className="border p-2"
-        />
+          <input
+            type="text"
+            name="cliente_nombre"
+            placeholder="Cliente"
+            value={filtros.cliente_nombre}
+            onChange={handleChange}
+            className="border p-2 rounded"
+          />
 
-        <input
-          type="text"
-          name="id"
-          placeholder="ID"
-          value={filtros.id}
-          onChange={handleChange}
-          className="border p-2"
-        />
-      </div>
+          <input
+            type="text"
+            name="cliente_nit"
+            placeholder="NIT"
+            value={filtros.cliente_nit}
+            onChange={handleChange}
+            className="border p-2 rounded"
+          />
 
-      <div className="mb-6 flex flex-wrap gap-2 items-center">
-        <button onClick={cargarDatos} className="bg-blue-600 text-white px-4 py-2 rounded">
-          🔍 Aplicar filtros
-        </button>
+          <input
+            type="text"
+            name="id"
+            placeholder="ID"
+            value={filtros.id}
+            onChange={handleChange}
+            className="border p-2 rounded"
+          />
+        </div>
 
-        <button onClick={limpiarFiltros} className="bg-gray-500 text-white px-4 py-2 rounded">
-          Limpiar
-        </button>
+        <div className="mt-4 flex flex-wrap gap-2 items-center">
+          <button
+            onClick={cargarDatos}
+            className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded"
+          >
+            🔍 Aplicar filtros
+          </button>
 
-        <button onClick={generarPDFReporte} className="bg-green-600 text-white px-4 py-2 rounded">
-          📄 Generar PDF (reporte)
-        </button>
+          <button
+            onClick={limpiarFiltros}
+            className="bg-gray-500 hover:bg-gray-600 text-white px-4 py-2 rounded"
+          >
+            Limpiar
+          </button>
 
-        <a href="/menu" className="ml-auto inline-block bg-gray-700 text-white px-4 py-2 rounded">
-          ⬅ Volver al Menú de Ventas
-        </a>
+          <button
+            onClick={generarPDFReporte}
+            disabled={generandoReporte || ventas.length === 0}
+            className="bg-green-600 hover:bg-green-700 disabled:opacity-60 text-white px-4 py-2 rounded"
+          >
+            {generandoReporte ? 'Generando PDF...' : '📄 Generar PDF'}
+          </button>
+
+          <a
+            href="/menu"
+            className="ml-auto inline-block bg-gray-700 hover:bg-gray-800 text-white px-4 py-2 rounded"
+          >
+            ⬅ Volver al Menú de Ventas
+          </a>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-4 gap-3 mb-6">
-        <div className="border rounded p-3 bg-white">
+        <div className="border rounded p-3 bg-white shadow-sm">
           <div className="text-xs text-gray-500">Ventas</div>
           <div className="text-lg font-semibold">{resumen.totalVentas}</div>
         </div>
 
-        <div className="border rounded p-3 bg-white">
+        <div className="border rounded p-3 bg-white shadow-sm">
           <div className="text-xs text-gray-500">Total vendido</div>
           <div className="text-lg font-semibold">{q(resumen.totalQ)}</div>
         </div>
 
-        <div className="border rounded p-3 bg-white">
+        <div className="border rounded p-3 bg-white shadow-sm">
           <div className="text-xs text-gray-500">Pagado</div>
           <div className="text-lg font-semibold text-green-700">{q(resumen.pagadoQ)}</div>
         </div>
 
-        <div className="border rounded p-3 bg-white">
+        <div className="border rounded p-3 bg-white shadow-sm">
           <div className="text-xs text-gray-500">Saldo pendiente</div>
           <div className="text-lg font-semibold text-red-700">{q(resumen.pendienteQ)}</div>
         </div>
@@ -588,25 +863,28 @@ export default function ReportesVentas() {
           No hay datos con esos filtros.
         </div>
       ) : (
-        ventas.map(v => {
+        ventas.map((v) => {
           const s = saldos[v.id] || { pagado: 0, saldo: 0 }
 
           return (
-            <div key={v.id} className="border rounded bg-white p-4 mb-4">
-              <div className="flex items-center gap-2 mb-3">
-                <div className="font-semibold text-sm">
+            <div key={v.id} className="border rounded-xl bg-white shadow-sm overflow-hidden mb-4">
+              <div className="bg-slate-800 text-white px-4 py-3 flex flex-wrap gap-3 items-center">
+                <div className="font-semibold">
                   Venta #{v.id} — {v.fecha}
                 </div>
 
+                <div className="ml-auto font-semibold">{q(v.cantidad)}</div>
+
                 <button
                   onClick={() => generarReciboVenta(v)}
-                  className="ml-auto bg-slate-800 text-white px-3 py-1.5 rounded text-xs"
+                  disabled={generandoReciboId === v.id}
+                  className="bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white px-3 py-1.5 rounded text-xs"
                 >
-                  Recibo PDF
+                  {generandoReciboId === v.id ? 'Generando...' : 'Recibo PDF'}
                 </button>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-sm mb-3">
+              <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-2 text-sm">
                 <div>
                   <span className="font-semibold">Empresa:</span> {v.empresas?.nombre || '—'}
                 </div>
@@ -642,9 +920,9 @@ export default function ReportesVentas() {
                 </div>
               </div>
 
-              <div className="overflow-auto">
+              <div className="px-4 pb-4 overflow-auto">
                 <table className="w-full border text-sm">
-                  <thead className="bg-gray-200">
+                  <thead className="bg-blue-600 text-white">
                     <tr>
                       <th className="p-2 text-left">Concepto</th>
                       <th className="p-2 text-right">Cant.</th>
