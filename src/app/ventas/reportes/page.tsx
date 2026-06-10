@@ -182,7 +182,7 @@ export default function ReportesVentas() {
       return
     }
 
-    const norm = ((cabeceras || []) as Record<string, unknown>[]).map(normalizeVenta)
+    const norm = ((cabeceras || []) as unknown as Record<string, unknown>[]).map(normalizeVenta)
     const ids = norm.map((v) => v.id)
 
     if (ids.length === 0) {
