@@ -95,7 +95,10 @@ async function fetchLogoDataUrl(): Promise<string | null> {
 }
 
 function getLastAutoTableY(doc: jsPDF, fallback: number) {
-  return (doc as jsPDF & { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY || fallback
+  return (
+    (doc as jsPDF & { lastAutoTable?: { finalY: number } }).lastAutoTable
+      ?.finalY || fallback
+  )
 }
 
 export default function ReportesVentas() {
@@ -134,7 +137,8 @@ export default function ReportesVentas() {
 
   const cargarDatos = useCallback(async () => {
     const usaFiltroCliente =
-      Boolean(filtros.cliente_nombre.trim()) || Boolean(filtros.cliente_nit.trim())
+      Boolean(filtros.cliente_nombre.trim()) ||
+      Boolean(filtros.cliente_nit.trim())
 
     const selectString = `
       id, fecha, cantidad, observaciones,
@@ -144,11 +148,18 @@ export default function ReportesVentas() {
       ${usaFiltroCliente ? `, clientes!inner ( nombre, nit )` : `, clientes ( nombre, nit )`}
     `.trim()
 
-    let query = supabase.from('ventas').select(selectString).order('fecha', { ascending: false })
+    let query = supabase
+      .from('ventas')
+      .select(selectString)
+      .order('fecha', { ascending: false })
 
     if (filtros.id.trim()) query = query.eq('id', Number(filtros.id))
-    if (filtros.empresa_id.trim()) query = query.eq('empresa_id', Number(filtros.empresa_id))
-    if (filtros.division_id.trim()) query = query.eq('division_id', Number(filtros.division_id))
+    if (filtros.empresa_id.trim()) {
+      query = query.eq('empresa_id', Number(filtros.empresa_id))
+    }
+    if (filtros.division_id.trim()) {
+      query = query.eq('division_id', Number(filtros.division_id))
+    }
     if (filtros.desde) query = query.gte('fecha', filtros.desde)
     if (filtros.hasta) query = query.lte('fecha', filtros.hasta)
 
@@ -188,7 +199,9 @@ export default function ReportesVentas() {
       .limit(1)
       .maybeSingle()
 
-    const metodoPendienteId = metodoPendiente?.id ? Number(metodoPendiente.id) : null
+    const metodoPendienteId = metodoPendiente?.id
+      ? Number(metodoPendiente.id)
+      : null
 
     const { data: detAll, error: detErr } = await supabase
       .from('detalle_venta')
@@ -222,7 +235,8 @@ export default function ReportesVentas() {
         cantidad: Number(row.cantidad ?? 0),
         precio_unitario: Number(row.precio_unitario ?? 0),
         importe: Number(row.importe ?? 0),
-        forma_pago_id: row.forma_pago_id == null ? null : Number(row.forma_pago_id),
+        forma_pago_id:
+          row.forma_pago_id == null ? null : Number(row.forma_pago_id),
         forma_pago: asObj<{ metodo: string }>(row.forma_pago),
         documento: (row.documento as string | null) ?? null,
       })
@@ -242,7 +256,10 @@ export default function ReportesVentas() {
     for (const p of pagosRows || []) {
       const row = p as Record<string, unknown>
       const ventaId = Number(row.venta_id)
-      pagosPorVenta[ventaId] = round2((pagosPorVenta[ventaId] || 0) + Number(row.monto || 0))
+
+      pagosPorVenta[ventaId] = round2(
+        (pagosPorVenta[ventaId] || 0) + Number(row.monto || 0)
+      )
     }
 
     const saldosCalc: Record<number, SaldoVenta> = {}
@@ -257,7 +274,9 @@ export default function ReportesVentas() {
           metodoPendienteId !== null && d.forma_pago_id === metodoPendienteId
         const esPendientePorTexto = metodo.includes('pendiente de pago')
 
-        return esPendientePorId || esPendientePorTexto ? sum + Number(d.importe || 0) : sum
+        return esPendientePorId || esPendientePorTexto
+          ? sum + Number(d.importe || 0)
+          : sum
       }, 0)
 
       const abonado = pagosPorVenta[v.id] || 0
@@ -287,7 +306,9 @@ export default function ReportesVentas() {
     cargarDatos()
   }, [cargarDatos])
 
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
+  const handleChange = (
+    e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>
+  ) => {
     const { name, value } = e.target
     setFiltros((prev) => ({ ...prev, [name]: value }))
   }
@@ -305,8 +326,14 @@ export default function ReportesVentas() {
 
   const resumen = useMemo(() => {
     const totalQ = ventas.reduce((acc, v) => acc + Number(v.cantidad || 0), 0)
-    const pagadoQ = ventas.reduce((acc, v) => acc + Number(saldos[v.id]?.pagado || 0), 0)
-    const pendienteQ = ventas.reduce((acc, v) => acc + Number(saldos[v.id]?.saldo || 0), 0)
+    const pagadoQ = ventas.reduce(
+      (acc, v) => acc + Number(saldos[v.id]?.pagado || 0),
+      0
+    )
+    const pendienteQ = ventas.reduce(
+      (acc, v) => acc + Number(saldos[v.id]?.saldo || 0),
+      0
+    )
 
     return {
       totalQ: round2(totalQ),
@@ -317,10 +344,12 @@ export default function ReportesVentas() {
   }, [ventas, saldos])
 
   const nombreEmpresaFiltro =
-    empresas.find((e) => String(e.id) === String(filtros.empresa_id))?.nombre || 'Todas'
+    empresas.find((e) => String(e.id) === String(filtros.empresa_id))?.nombre ||
+    'Todas'
 
   const nombreDivisionFiltro =
-    divisiones.find((d) => String(d.id) === String(filtros.division_id))?.nombre || 'Todas'
+    divisiones.find((d) => String(d.id) === String(filtros.division_id))
+      ?.nombre || 'Todas'
 
   const agregarFooter = (doc: jsPDF) => {
     const pageWidth = doc.internal.pageSize.getWidth()
@@ -332,9 +361,11 @@ export default function ReportesVentas() {
       doc.setFont('helvetica', 'normal')
       doc.setFontSize(8)
       doc.setTextColor(120, 120, 120)
+
       doc.text(`Página ${i} de ${totalPages}`, pageWidth - 12, pageHeight - 7, {
         align: 'right',
       })
+
       doc.text(`Generado: ${new Date().toLocaleString()}`, 12, pageHeight - 7)
     }
   }
@@ -408,8 +439,18 @@ export default function ReportesVentas() {
           halign: 'center',
         },
         body: [
-          ['Rango', `${filtros.desde || '—'} a ${filtros.hasta || '—'}`, 'Empresa', nombreEmpresaFiltro],
-          ['División', nombreDivisionFiltro, 'Cliente', filtros.cliente_nombre || 'Todos'],
+          [
+            'Rango',
+            `${filtros.desde || '—'} a ${filtros.hasta || '—'}`,
+            'Empresa',
+            nombreEmpresaFiltro,
+          ],
+          [
+            'División',
+            nombreDivisionFiltro,
+            'Cliente',
+            filtros.cliente_nombre || 'Todos',
+          ],
           ['NIT', filtros.cliente_nit || 'Todos', 'ID', filtros.id || 'Todos'],
         ],
         columnStyles: {
@@ -515,11 +556,6 @@ export default function ReportesVentas() {
           7: { cellWidth: 24, halign: 'right' },
           8: { cellWidth: 27, halign: 'right' },
         },
-        didDrawPage: () => {
-          if (doc.getCurrentPageInfo().pageNumber > 1) {
-            dibujarEncabezadoReporte(doc, logo, 'REPORTE DE VENTAS')
-          }
-        },
       })
 
       agregarFooter(doc)
@@ -566,7 +602,9 @@ export default function ReportesVentas() {
       doc.setFontSize(9)
       doc.setTextColor(90, 90, 90)
       doc.text(`No. Recibo: V-${venta.id}`, margin, y)
-      doc.text(`Fecha: ${venta.fecha}`, pageWidth - margin, y, { align: 'right' })
+      doc.text(`Fecha: ${venta.fecha}`, pageWidth - margin, y, {
+        align: 'right',
+      })
 
       y += 8
 
@@ -587,7 +625,9 @@ export default function ReportesVentas() {
       doc.setFont('helvetica', 'bold')
       doc.setFontSize(10.5)
       doc.text(`Venta #${venta.id}`, margin + 4, y + 6.5)
-      doc.text(q(venta.cantidad), pageWidth - margin - 4, y + 6.5, { align: 'right' })
+      doc.text(q(venta.cantidad), pageWidth - margin - 4, y + 6.5, {
+        align: 'right',
+      })
 
       let bodyY = y + 16
       const leftX = margin + 4
@@ -635,7 +675,11 @@ export default function ReportesVentas() {
       doc.setFont('helvetica', 'bold')
       doc.text('Observaciones:', leftX, bodyY)
       doc.setFont('helvetica', 'normal')
-      doc.text(doc.splitTextToSize(observaciones, contentWidth - 34), leftX + 28, bodyY)
+      doc.text(
+        doc.splitTextToSize(observaciones, contentWidth - 34),
+        leftX + 28,
+        bodyY
+      )
 
       y += 52
 
@@ -709,7 +753,9 @@ export default function ReportesVentas() {
       doc.setFontSize(8)
       doc.setTextColor(120, 120, 120)
       doc.text(`Generado: ${new Date().toLocaleString()}`, margin, pageHeight - 7)
-      doc.text('Página 1 de 1', pageWidth - margin, pageHeight - 7, { align: 'right' })
+      doc.text('Página 1 de 1', pageWidth - margin, pageHeight - 7, {
+        align: 'right',
+      })
 
       doc.save(`recibo_venta_${venta.id}.pdf`)
     } finally {
@@ -724,6 +770,7 @@ export default function ReportesVentas() {
       </div>
 
       <h1 className="text-2xl font-bold mb-1">Reporte de Ventas</h1>
+
       <p className="text-sm text-gray-600 mb-5">
         Usa filtros, genera PDF general de monitoreo o recibo individual por venta.
       </p>
@@ -849,12 +896,16 @@ export default function ReportesVentas() {
 
         <div className="border rounded p-3 bg-white shadow-sm">
           <div className="text-xs text-gray-500">Pagado</div>
-          <div className="text-lg font-semibold text-green-700">{q(resumen.pagadoQ)}</div>
+          <div className="text-lg font-semibold text-green-700">
+            {q(resumen.pagadoQ)}
+          </div>
         </div>
 
         <div className="border rounded p-3 bg-white shadow-sm">
           <div className="text-xs text-gray-500">Saldo pendiente</div>
-          <div className="text-lg font-semibold text-red-700">{q(resumen.pendienteQ)}</div>
+          <div className="text-lg font-semibold text-red-700">
+            {q(resumen.pendienteQ)}
+          </div>
         </div>
       </div>
 
@@ -867,7 +918,10 @@ export default function ReportesVentas() {
           const s = saldos[v.id] || { pagado: 0, saldo: 0 }
 
           return (
-            <div key={v.id} className="border rounded-xl bg-white shadow-sm overflow-hidden mb-4">
+            <div
+              key={v.id}
+              className="border rounded-xl bg-white shadow-sm overflow-hidden mb-4"
+            >
               <div className="bg-slate-800 text-white px-4 py-3 flex flex-wrap gap-3 items-center">
                 <div className="font-semibold">
                   Venta #{v.id} — {v.fecha}
@@ -886,19 +940,23 @@ export default function ReportesVentas() {
 
               <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-2 text-sm">
                 <div>
-                  <span className="font-semibold">Empresa:</span> {v.empresas?.nombre || '—'}
+                  <span className="font-semibold">Empresa:</span>{' '}
+                  {v.empresas?.nombre || '—'}
                 </div>
 
                 <div>
-                  <span className="font-semibold">División:</span> {v.divisiones?.nombre || '—'}
+                  <span className="font-semibold">División:</span>{' '}
+                  {v.divisiones?.nombre || '—'}
                 </div>
 
                 <div>
-                  <span className="font-semibold">Cliente:</span> {v.clientes?.nombre || '—'}
+                  <span className="font-semibold">Cliente:</span>{' '}
+                  {v.clientes?.nombre || '—'}
                 </div>
 
                 <div>
-                  <span className="font-semibold">NIT:</span> {v.clientes?.nit || '—'}
+                  <span className="font-semibold">NIT:</span>{' '}
+                  {v.clientes?.nit || '—'}
                 </div>
 
                 <div>
@@ -907,7 +965,9 @@ export default function ReportesVentas() {
 
                 <div>
                   <span className="font-semibold">Pagado:</span>{' '}
-                  <span className="text-green-700 font-semibold">{q(s.pagado)}</span>
+                  <span className="text-green-700 font-semibold">
+                    {q(s.pagado)}
+                  </span>
                 </div>
 
                 <div>
@@ -916,7 +976,8 @@ export default function ReportesVentas() {
                 </div>
 
                 <div className="md:col-span-2">
-                  <span className="font-semibold">Observaciones:</span> {v.observaciones || '—'}
+                  <span className="font-semibold">Observaciones:</span>{' '}
+                  {v.observaciones || '—'}
                 </div>
               </div>
 
