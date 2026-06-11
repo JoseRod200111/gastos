@@ -275,11 +275,7 @@ const getMotivoEvento = (ev: EventoMuerteCerda) => {
 }
 
 const getMotivoBaja = (baja: BajaMuerte) => {
-  return (
-    texto(baja.motivo) ||
-    texto(baja.observaciones) ||
-    'Sin motivo registrado'
-  )
+  return texto(baja.motivo) || texto(baja.observaciones) || 'Sin motivo registrado'
 }
 
 const crearPieChartDataUrl = (resumen: ResumenCausa[]) => {
@@ -381,6 +377,7 @@ function getLastAutoTableY(doc: jsPDF, fallback: number) {
 
 export default function ReporteMuertesPage() {
   const hoy = useMemo(() => hoyISO(), [])
+
   const [desde, setDesde] = useState(restarDias(hoy, 30))
   const [hasta, setHasta] = useState(hoy)
   const [cerdaId, setCerdaId] = useState('')
@@ -400,6 +397,7 @@ export default function ReporteMuertesPage() {
       supabase
         .from('granja_cerdas')
         .select('id, arete, nombre, estado, activa, ubicacion_id')
+        .eq('estado', 'MUERTA')
         .order('arete', { ascending: true }),
 
       supabase
@@ -409,7 +407,7 @@ export default function ReporteMuertesPage() {
     ])
 
     if (cerdasRes.error) {
-      console.error('Error cargando cerdas', cerdasRes.error)
+      console.error('Error cargando cerdas muertas', cerdasRes.error)
     }
 
     if (ubicRes.error) {
@@ -543,7 +541,9 @@ export default function ReporteMuertesPage() {
         causaCategoria,
         causaTexto: motivo,
         observaciones: ev.observaciones || '',
-        detalle: `Muerte registrada como evento de cerda${cerda?.activa === false ? ' · Cerda inactiva' : ''}`,
+        detalle: `Muerte registrada como evento de cerda${
+          cerda?.activa === false ? ' · Cerda inactiva' : ''
+        }`,
         createdAt: ev.created_at,
       }
     })
@@ -612,9 +612,11 @@ export default function ReporteMuertesPage() {
 
   const resumen = useMemo(() => {
     const totalMuertes = registros.reduce((s, r) => s + r.cantidad, 0)
+
     const totalCerdas = registros
       .filter((r) => r.origen === 'CERDA')
       .reduce((s, r) => s + r.cantidad, 0)
+
     const totalLote = registros
       .filter((r) => r.origen === 'LOTE')
       .reduce((s, r) => s + r.cantidad, 0)
@@ -625,6 +627,7 @@ export default function ReporteMuertesPage() {
 
     registros.forEach((r) => {
       const causaLabel = getCausaLabel(r.causaCategoria)
+
       causaMap.set(causaLabel, (causaMap.get(causaLabel) || 0) + r.cantidad)
       ubicMap.set(r.ubicacionCodigo, (ubicMap.get(r.ubicacionCodigo) || 0) + r.cantidad)
 
@@ -739,9 +742,30 @@ export default function ReporteMuertesPage() {
         styles: { fontSize: 8.5, cellPadding: 2 },
         headStyles: { fillColor: [37, 99, 235], textColor: 255 },
         body: [
-          ['Total muertes', String(resumen.totalMuertes), 'Muertes de cerdas', String(resumen.totalCerdas)],
-          ['Bajas generales', String(resumen.totalLote), 'Causa principal', resumen.causaPrincipal ? `${resumen.causaPrincipal.causa} (${resumen.causaPrincipal.cantidad})` : '—'],
-          ['Ubicación principal', resumen.ubicacionPrincipal ? `${resumen.ubicacionPrincipal.ubicacion} (${resumen.ubicacionPrincipal.cantidad})` : '—', 'Estado más repetido', resumen.estadoPrincipal ? `${resumen.estadoPrincipal.estado} (${resumen.estadoPrincipal.cantidad})` : '—'],
+          [
+            'Total muertes',
+            String(resumen.totalMuertes),
+            'Muertes de cerdas',
+            String(resumen.totalCerdas),
+          ],
+          [
+            'Bajas generales',
+            String(resumen.totalLote),
+            'Causa principal',
+            resumen.causaPrincipal
+              ? `${resumen.causaPrincipal.causa} (${resumen.causaPrincipal.cantidad})`
+              : '—',
+          ],
+          [
+            'Ubicación principal',
+            resumen.ubicacionPrincipal
+              ? `${resumen.ubicacionPrincipal.ubicacion} (${resumen.ubicacionPrincipal.cantidad})`
+              : '—',
+            'Estado más repetido',
+            resumen.estadoPrincipal
+              ? `${resumen.estadoPrincipal.estado} (${resumen.estadoPrincipal.cantidad})`
+              : '—',
+          ],
         ],
         columnStyles: {
           0: { fontStyle: 'bold', fillColor: [245, 245, 245], cellWidth: 36 },
@@ -843,6 +867,7 @@ export default function ReporteMuertesPage() {
         doc.setFont('helvetica', 'normal')
         doc.setFontSize(8)
         doc.setTextColor(120, 120, 120)
+
         doc.text(`Página ${i} de ${totalPages}`, pageWidth - 12, pageHeight - 7, {
           align: 'right',
         })
@@ -867,9 +892,6 @@ export default function ReporteMuertesPage() {
 
         <div>
           <h1 className="text-2xl font-bold">Reporte de muertes</h1>
-          <p className="text-xs text-gray-600">
-            Control de muertes por cerda, ubicación, causa, fecha y resumen de patrones.
-          </p>
         </div>
 
         <Link
@@ -905,18 +927,17 @@ export default function ReporteMuertesPage() {
           </div>
 
           <div>
-            <label className="block text-xs font-semibold mb-1">Cerda</label>
+            <label className="block text-xs font-semibold mb-1">Cerda fallecida</label>
             <select
               className="border rounded p-2 w-full"
               value={cerdaId}
               onChange={(e) => setCerdaId(e.target.value)}
             >
-              <option value="">Todas las cerdas</option>
+              <option value="">Todas las cerdas fallecidas</option>
               {cerdas.map((c) => (
                 <option key={c.id} value={c.id}>
                   {c.arete || `ID ${c.id}`}
                   {c.nombre ? ` — ${c.nombre}` : ''}
-                  {c.estado ? ` — ${c.estado}` : ''}
                 </option>
               ))}
             </select>
@@ -1040,6 +1061,7 @@ export default function ReporteMuertesPage() {
                       {r.cantidad} · {r.porcentaje.toFixed(1)}%
                     </b>
                   </div>
+
                   <div className="h-2 bg-gray-200 rounded">
                     <div
                       className="h-2 bg-blue-600 rounded"
@@ -1086,11 +1108,6 @@ export default function ReporteMuertesPage() {
                 ? `${resumen.estadoPrincipal.estado} (${resumen.estadoPrincipal.cantidad})`
                 : '—'}
             </p>
-
-            <p className="text-gray-600">
-              Si una misma causa o ubicación se repite, conviene revisar manejo,
-              ambiente, alimentación, bioseguridad y registrar necropsia cuando sea posible.
-            </p>
           </div>
         </div>
       </div>
@@ -1098,6 +1115,7 @@ export default function ReporteMuertesPage() {
       <div className="border rounded-lg bg-white shadow-sm overflow-hidden">
         <div className="p-3 border-b flex items-center">
           <h2 className="font-semibold">Detalle de muertes</h2>
+
           <span className="ml-auto text-sm text-gray-600">
             Mostrando {registros.length} registros
           </span>
@@ -1132,7 +1150,9 @@ export default function ReporteMuertesPage() {
                 registros.map((r) => (
                   <tr key={r.id} className="border-t align-top">
                     <td className="p-2">{r.fecha}</td>
-                    <td className="p-2">{r.origen === 'CERDA' ? 'Cerda' : 'General'}</td>
+                    <td className="p-2">
+                      {r.origen === 'CERDA' ? 'Cerda' : 'General'}
+                    </td>
                     <td className="p-2 font-semibold">{r.arete}</td>
                     <td className="p-2">{r.nombreCerda}</td>
                     <td className="p-2">{r.estadoCerda}</td>
@@ -1143,9 +1163,11 @@ export default function ReporteMuertesPage() {
                     <td className="p-2">{getCausaLabel(r.causaCategoria)}</td>
                     <td className="p-2">
                       <div>{r.causaTexto}</div>
+
                       {r.observaciones ? (
                         <div className="text-gray-500 mt-1">{r.observaciones}</div>
                       ) : null}
+
                       <div className="text-gray-400 mt-1">{r.detalle}</div>
                     </td>
                   </tr>
