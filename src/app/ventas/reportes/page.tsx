@@ -757,7 +757,7 @@ export default function ReportesVentas() {
         align: 'right',
       })
 
-      doc.save(`recibo_venta_${venta.id}.pdf`)
+      doc.save(`recibo_venta_ID_${venta.id}_${venta.fecha}.pdf`)
     } finally {
       setGenerandoReciboId(null)
     }
