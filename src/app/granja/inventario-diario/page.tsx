@@ -193,10 +193,16 @@ const etiquetaCerda = (cerda: CerdaRow | undefined) => {
 
   const arete =
     cerda.arete && cerda.arete.trim() !== ''
-      ? cerda.arete
+      ? cerda.arete.trim()
       : `Sin arete #${cerda.id}`
 
-  return `${arete}${cerda.nombre ? ` — ${cerda.nombre}` : ''}`
+  const nombre = cerda.nombre?.trim() || ''
+
+  if (!nombre || nombre.toLowerCase() === arete.toLowerCase()) {
+    return arete
+  }
+
+  return `${arete} — ${nombre}`
 }
 
 const idsToAretes = (ids: number[], cerdas: CerdaRow[]) => {
