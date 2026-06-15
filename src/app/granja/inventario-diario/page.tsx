@@ -51,19 +51,15 @@ type CerdaRow = {
 
 type EstadoUbicacion = {
   teorico: number
-
   cerdasTeorico: number
   lechonesTeorico: number
   cerdosTeorico: number
-
   cerdasManual: string
   lechonesManual: string
   cerdosManual: string
-
   aretes: string[]
   cerdaIdsTeoricos: number[]
   cerdaIdsManual: number[]
-
   totalManual: number
   diferencia: number
 }
@@ -117,10 +113,7 @@ const groupNameFor = (ubicacion: Ubicacion) => {
   const codigo = ubicacion.codigo || ''
   const nombre = ubicacion.nombre || ''
 
-  if (nombre.includes(' - ')) {
-    return nombre.split(' - ')[0] || 'Otros'
-  }
-
+  if (nombre.includes(' - ')) return nombre.split(' - ')[0] || 'Otros'
   if (nombre) return nombre
 
   if (codigo.startsWith('G1')) return 'Gestación 1'
@@ -217,11 +210,6 @@ const idsToAretes = (ids: number[], cerdas: CerdaRow[]) => {
     )
 }
 
-const nombreUbicacion = (ubicacion?: Ubicacion) => {
-  if (!ubicacion) return '—'
-  return `${ubicacion.codigo}${ubicacion.nombre ? ` — ${ubicacion.nombre}` : ''}`
-}
-
 const obtenerResumenCerdas = (
   ubicacionId: number,
   item: EstadoUbicacion,
@@ -231,16 +219,12 @@ const obtenerResumenCerdas = (
   const teoricas = item.cerdaIdsTeoricos
   const contadas = item.cerdaIdsManual
 
-  if (teoricas.length === 0 && contadas.length === 0) {
-    return '—'
-  }
+  if (teoricas.length === 0 && contadas.length === 0) return '—'
 
   const faltantes = teoricas.filter((id) => !contadas.includes(id))
   const sobrantes = contadas.filter((id) => !teoricas.includes(id))
 
-  if (faltantes.length === 0 && sobrantes.length === 0) {
-    return 'OK'
-  }
+  if (faltantes.length === 0 && sobrantes.length === 0) return 'OK'
 
   const partes: string[] = []
 
@@ -512,10 +496,7 @@ export default function InventarioDiarioPage() {
     ubicaciones.forEach((ubicacion) => {
       const nombreGrupo = groupNameFor(ubicacion)
 
-      if (!agrupado[nombreGrupo]) {
-        agrupado[nombreGrupo] = []
-      }
-
+      if (!agrupado[nombreGrupo]) agrupado[nombreGrupo] = []
       agrupado[nombreGrupo].push(ubicacion)
     })
 
@@ -661,17 +642,9 @@ export default function InventarioDiarioPage() {
 
       const ubicacionId = Number(cerda.ubicacion_id)
 
-      if (cerdasPorUbicacion[ubicacionId] === undefined) {
-        cerdasPorUbicacion[ubicacionId] = 0
-      }
-
-      if (!aretesPorUbicacion[ubicacionId]) {
-        aretesPorUbicacion[ubicacionId] = []
-      }
-
-      if (!cerdaIdsPorUbicacion[ubicacionId]) {
-        cerdaIdsPorUbicacion[ubicacionId] = []
-      }
+      if (cerdasPorUbicacion[ubicacionId] === undefined) cerdasPorUbicacion[ubicacionId] = 0
+      if (!aretesPorUbicacion[ubicacionId]) aretesPorUbicacion[ubicacionId] = []
+      if (!cerdaIdsPorUbicacion[ubicacionId]) cerdaIdsPorUbicacion[ubicacionId] = []
 
       cerdasPorUbicacion[ubicacionId] += 1
 
@@ -785,10 +758,7 @@ export default function InventarioDiarioPage() {
       if (!errInventarioCerdas) {
         inventarioCerdas = (inventarioCerdasRaw ?? []) as InventarioDiarioCerdaRow[]
       } else {
-        console.error(
-          'Error cargando cerdas contadas en inventario diario',
-          errInventarioCerdas
-        )
+        console.error('Error cargando cerdas contadas en inventario diario', errInventarioCerdas)
       }
 
       const mapInventarioDiario = new Map<number, InventarioDiarioRow>()
@@ -803,22 +773,17 @@ export default function InventarioDiarioPage() {
         const ubicacionId = Number(row.ubicacion_id)
         const cerdaId = Number(row.cerda_id)
 
-        if (!mapCerdasManual.has(ubicacionId)) {
-          mapCerdasManual.set(ubicacionId, [])
-        }
+        if (!mapCerdasManual.has(ubicacionId)) mapCerdasManual.set(ubicacionId, [])
 
         const actuales = mapCerdasManual.get(ubicacionId) || []
 
-        if (!actuales.includes(cerdaId)) {
-          actuales.push(cerdaId)
-        }
+        if (!actuales.includes(cerdaId)) actuales.push(cerdaId)
       })
 
       const nuevoEstado: Record<number, EstadoUbicacion> = {}
 
       ubicacionesData.forEach((ubicacion) => {
         const teoricoActual = teoricos[ubicacion.id] ?? 0
-
         const cerdasTeorico = cerdasPorUbicacion[ubicacion.id] ?? 0
         const aretes = aretesPorUbicacion[ubicacion.id] ?? []
         const cerdaIdsTeoricos = cerdaIdsPorUbicacion[ubicacion.id] ?? []
@@ -869,19 +834,15 @@ export default function InventarioDiarioPage() {
 
         nuevoEstado[ubicacion.id] = {
           teorico: teoricoActual,
-
           cerdasTeorico,
           lechonesTeorico,
           cerdosTeorico,
-
           cerdasManual,
           lechonesManual,
           cerdosManual,
-
           aretes,
           cerdaIdsTeoricos,
           cerdaIdsManual: cerdasManualIdsGuardadas,
-
           totalManual,
           diferencia: tieneConteo ? totalManual - teoricoActual : 0,
         }
@@ -898,9 +859,7 @@ export default function InventarioDiarioPage() {
   }, [])
 
   useEffect(() => {
-    if (fecha) {
-      cargarDatos()
-    }
+    if (fecha) cargarDatos()
   }, [fecha, cargarDatos])
 
   const actualizarConteo = (
@@ -912,17 +871,11 @@ export default function InventarioDiarioPage() {
 
     setEstado((prev) => {
       const actual = prev[ubicacionId]
-
       if (!actual) return prev
 
-      const cerdasManual =
-        campo === 'cerdasManual' ? limpio : actual.cerdasManual
-
-      const lechonesManual =
-        campo === 'lechonesManual' ? limpio : actual.lechonesManual
-
-      const cerdosManual =
-        campo === 'cerdosManual' ? limpio : actual.cerdosManual
+      const cerdasManual = campo === 'cerdasManual' ? limpio : actual.cerdasManual
+      const lechonesManual = campo === 'lechonesManual' ? limpio : actual.lechonesManual
+      const cerdosManual = campo === 'cerdosManual' ? limpio : actual.cerdosManual
 
       const totalManual = calcularTotalManual(
         cerdasManual,
@@ -952,9 +905,7 @@ export default function InventarioDiarioPage() {
     estadoActual = estado
   ) => {
     for (const [ubicacionId, item] of Object.entries(estadoActual)) {
-      if (item.cerdaIdsManual.includes(cerdaId)) {
-        return Number(ubicacionId)
-      }
+      if (item.cerdaIdsManual.includes(cerdaId)) return Number(ubicacionId)
     }
 
     return null
@@ -964,7 +915,6 @@ export default function InventarioDiarioPage() {
     if (!cerdaIdTexto) return
 
     const cerdaId = Number(cerdaIdTexto)
-
     if (!Number.isFinite(cerdaId) || cerdaId <= 0) return
 
     setEstado((prev) => {
@@ -980,18 +930,17 @@ export default function InventarioDiarioPage() {
 
       if (yaAsignadaEn !== null && yaAsignadaEn !== ubicacionId) {
         const ubicacion = ubicaciones.find((u) => u.id === yaAsignadaEn)
+
         alert(
           `Esa cerda ya fue asignada en otra ubicación: ${
             ubicacion?.codigo || yaAsignadaEn
           }. No puede estar dos veces en el mismo inventario diario.`
         )
+
         return prev
       }
 
-      const cerdaIdsManual = [...actual.cerdaIdsManual, cerdaId].sort(
-        (a, b) => a - b
-      )
-
+      const cerdaIdsManual = [...actual.cerdaIdsManual, cerdaId].sort((a, b) => a - b)
       const cerdasManual = String(cerdaIdsManual.length)
 
       const totalManual = calcularTotalManual(
@@ -1121,6 +1070,7 @@ export default function InventarioDiarioPage() {
       for (const cerdaId of item.cerdaIdsManual) {
         if (usadas.has(cerdaId)) {
           const ubicacionA = usadas.get(cerdaId)
+
           return `Una misma cerda está seleccionada en dos ubicaciones distintas: ${ubicacionA} y ${ubicacionId}.`
         }
 
@@ -1150,6 +1100,7 @@ export default function InventarioDiarioPage() {
     }
 
     const errorCerdas = validarCerdasSeleccionadas()
+
     if (errorCerdas) {
       alert(errorCerdas)
       return
@@ -1189,6 +1140,7 @@ export default function InventarioDiarioPage() {
     }
 
     const errorCerdas = validarCerdasSeleccionadas()
+
     if (errorCerdas) {
       alert(errorCerdas)
       return
@@ -1323,19 +1275,15 @@ export default function InventarioDiarioPage() {
   const renderCampoUbicacion = (ubicacion: Ubicacion) => {
     const data = estado[ubicacion.id] || {
       teorico: 0,
-
       cerdasTeorico: 0,
       lechonesTeorico: 0,
       cerdosTeorico: 0,
-
       cerdasManual: '',
       lechonesManual: '',
       cerdosManual: '',
-
       aretes: [],
       cerdaIdsTeoricos: [],
       cerdaIdsManual: [],
-
       totalManual: 0,
       diferencia: 0,
     }
@@ -1353,8 +1301,6 @@ export default function InventarioDiarioPage() {
         : diferencia > 0
           ? 'text-emerald-700'
           : 'text-red-700'
-
-    const cerdasSeleccionadas = idsToAretes(data.cerdaIdsManual, cerdasDisponibles)
 
     const opcionesCerdas = cerdasDisponibles.filter((cerda) => {
       const actual = data.cerdaIdsManual.includes(cerda.id)
@@ -1507,7 +1453,7 @@ export default function InventarioDiarioPage() {
 
             <div className="mt-1 text-[10px] text-gray-600">
               <span className="font-semibold">Cerdas contadas:</span>{' '}
-              {cerdasSeleccionadas.length > 0 ? (
+              {data.cerdaIdsManual.length > 0 ? (
                 <span className="inline-flex flex-wrap gap-1">
                   {data.cerdaIdsManual.map((id) => (
                     <button
