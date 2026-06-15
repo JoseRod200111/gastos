@@ -28,11 +28,30 @@ type Compra = {
   ubicacion_id: number
   lote_id: number | null
   cantidad: number
+  hembras: number | null
+  machos: number | null
   peso_total_kg: number | null
 }
 
+const toNumberOrNull = (value: string) => {
+  if (value.trim() === '') return null
+
+  const n = Number(value)
+  return Number.isFinite(n) ? n : null
+}
+
+const toNumberOrZero = (value: string) => {
+  if (value.trim() === '') return 0
+
+  const n = Number(value)
+  return Number.isFinite(n) ? n : 0
+}
+
+const fechaCompraToTimestamp = (fecha: string) => {
+  return new Date(`${fecha}T12:00:00`).toISOString()
+}
+
 export default function GranjaEntradaCompraPage() {
-  /* ------------ state ------------ */
   const [ubicaciones, setUbicaciones] = useState<Ubicacion[]>([])
   const [lotes, setLotes] = useState<Lote[]>([])
   const [proveedores, setProveedores] = useState<Proveedor[]>([])
@@ -69,9 +88,9 @@ export default function GranjaEntradaCompraPage() {
       observaciones: '',
     })
 
-  /* ------------ carga de catálogos + compras ------------ */
   const cargarDatos = useCallback(async () => {
     setLoading(true)
+
     try {
       const [
         { data: ubicData, error: ubicError },
@@ -84,20 +103,24 @@ export default function GranjaEntradaCompraPage() {
           .select('id, codigo, nombre')
           .eq('activo', true)
           .order('codigo', { ascending: true }),
+
         supabase
           .from('granja_lotes')
           .select('id, codigo, fecha, tipo_origen')
           .eq('tipo_origen', 'COMPRA')
           .order('fecha', { ascending: false })
           .limit(50),
+
         supabase
           .from('proveedores')
           .select('id, nombre')
           .order('nombre', { ascending: true }),
+
         supabase
           .from('granja_compras_cerdos')
-          .select('id, fecha, ubicacion_id, lote_id, cantidad, peso_total_kg')
+          .select('id, fecha, ubicacion_id, lote_id, cantidad, hembras, machos, peso_total_kg')
           .order('fecha', { ascending: false })
+          .order('id', { ascending: false })
           .limit(20),
       ])
 
@@ -106,10 +129,10 @@ export default function GranjaEntradaCompraPage() {
       if (provError) console.error('Error cargando proveedores', provError)
       if (compError) console.error('Error cargando compras', compError)
 
-      if (ubicData) setUbicaciones(ubicData as Ubicacion[])
-      if (loteData) setLotes(loteData as Lote[])
-      if (provData) setProveedores(provData as Proveedor[])
-      if (compData) setComprasRecientes(compData as Compra[])
+      setUbicaciones((ubicData || []) as Ubicacion[])
+      setLotes((loteData || []) as Lote[])
+      setProveedores((provData || []) as Proveedor[])
+      setComprasRecientes((compData || []) as Compra[])
     } finally {
       setLoading(false)
     }
@@ -119,29 +142,51 @@ export default function GranjaEntradaCompraPage() {
     cargarDatos()
   }, [cargarDatos])
 
-  /* ------------ helpers ------------ */
-  const findUbicacion = (id: number) =>
-    ubicaciones.find((u) => u.id === id)
+  const findUbicacion = (id: number) => ubicaciones.find((u) => u.id === id)
 
-  const findLote = (id: number | null) =>
-    lotes.find((l) => l.id === id)
+  const findLote = (id: number | null) => lotes.find((l) => l.id === id)
 
-  /* ------------ guardar compra ------------ */
   const guardarCompra = async () => {
     if (!form.fecha || !form.ubicacion_id || !form.cantidad) {
       alert('Fecha, ubicación y cantidad son obligatorios.')
       return
     }
 
+    const cantidad = toNumberOrZero(form.cantidad)
+    const hembras = toNumberOrZero(form.hembras)
+    const machos = toNumberOrZero(form.machos)
+    const pesoTotalKg = toNumberOrNull(form.peso_total_kg)
+    const precioTotal = toNumberOrNull(form.precio_total)
+
+    if (!Number.isFinite(cantidad) || cantidad <= 0) {
+      alert('La cantidad debe ser mayor que 0.')
+      return
+    }
+
+    if (hembras < 0 || machos < 0) {
+      alert('Hembras y machos no pueden ser negativos.')
+      return
+    }
+
+    if (hembras + machos > cantidad) {
+      const ok = confirm(
+        'La suma de hembras y machos es mayor que la cantidad total. ¿Deseas guardar de todos modos?'
+      )
+
+      if (!ok) return
+    }
+
     setGuardando(true)
+
     try {
-      // 1) determinar / crear lote
+      const { data: userData } = await supabase.auth.getUser()
+      const userId = userData?.user?.id ?? null
+
       let loteId: number | null = form.lote_id ? Number(form.lote_id) : null
 
       if (!loteId) {
         const codigoBase =
-          form.nuevo_lote_codigo.trim() ||
-          `C-${form.fecha.replace(/-/g, '')}`
+          form.nuevo_lote_codigo.trim() || `C-${form.fecha.replace(/-/g, '')}`
 
         const { data: loteInsertado, error: loteErr } = await supabase
           .from('granja_lotes')
@@ -156,67 +201,80 @@ export default function GranjaEntradaCompraPage() {
 
         if (loteErr || !loteInsertado) {
           console.error('Error creando lote', loteErr)
-          alert('No se pudo crear el lote.')
+          alert(
+            loteErr?.message
+              ? `No se pudo crear el lote: ${loteErr.message}`
+              : 'No se pudo crear el lote.'
+          )
           return
         }
 
-        loteId = loteInsertado.id
+        loteId = Number(loteInsertado.id)
       }
 
-      // 2) insertar compra
+      const payloadCompra = {
+        fecha: form.fecha,
+        ubicacion_id: Number(form.ubicacion_id),
+        lote_id: loteId,
+        es_compra: true,
+        proveedor_id: form.proveedor_id ? Number(form.proveedor_id) : null,
+        cantidad,
+        hembras,
+        machos,
+        peso_total_kg: pesoTotalKg,
+        precio_total: precioTotal,
+        observaciones: form.observaciones || null,
+        user_id: userId,
+      }
+
       const { data: compraInsertada, error: compraErr } = await supabase
         .from('granja_compras_cerdos')
-        .insert({
-          fecha: form.fecha,
-          ubicacion_id: Number(form.ubicacion_id),
-          lote_id: loteId,
-          proveedor_id: form.proveedor_id ? Number(form.proveedor_id) : null,
-          cantidad: Number(form.cantidad),
-          hembras: form.hembras ? Number(form.hembras) : 0,
-          machos: form.machos ? Number(form.machos) : 0,
-          peso_total_kg: form.peso_total_kg
-            ? Number(form.peso_total_kg)
-            : null,
-          precio_total: form.precio_total
-            ? Number(form.precio_total)
-            : null,
-          observaciones: form.observaciones || null,
-        })
+        .insert(payloadCompra)
         .select('id')
         .single()
 
       if (compraErr || !compraInsertada) {
         console.error('Error guardando compra', compraErr)
-        alert('No se pudo guardar la compra.')
+        alert(
+          compraErr?.message
+            ? `No se pudo guardar la compra: ${compraErr.message}`
+            : 'No se pudo guardar la compra.'
+        )
         return
       }
 
-      // 3) movimiento de inventario (entrada por compra)
-      const movErrResp = await supabase
-        .from('granja_movimientos')
-        .insert({
-          ubicacion_id: Number(form.ubicacion_id),
-          tipo: 'ENTRADA_COMPRA',
-          lote_id: loteId,
-          cantidad: Number(form.cantidad),
-          hembras: form.hembras ? Number(form.hembras) : null,
-          machos: form.machos ? Number(form.machos) : null,
-          peso_total_kg: form.peso_total_kg
-            ? Number(form.peso_total_kg)
-            : null,
-          referencia_tabla: 'granja_compras_cerdos',
-          referencia_id: compraInsertada.id,
-          observaciones: 'Entrada de cerdos por compra',
-        })
+      const compraId = Number(compraInsertada.id)
 
-      if (movErrResp.error) {
-        console.error('Error registrando movimiento', movErrResp.error)
-        alert(
-          'Compra guardada, pero hubo un error registrando el movimiento de inventario.'
-        )
-      } else {
-        alert('Compra registrada correctamente.')
+      const payloadMovimiento = {
+        fecha: fechaCompraToTimestamp(form.fecha),
+        ubicacion_id: Number(form.ubicacion_id),
+        tipo: 'ENTRADA_COMPRA',
+        lote_id: loteId,
+        cantidad,
+        hembras,
+        machos,
+        peso_total_kg: pesoTotalKg,
+        referencia_tabla: 'granja_compras_cerdos',
+        referencia_id: compraId,
+        user_id: userId,
+        observaciones: form.observaciones || 'Entrada de cerdos por compra',
       }
+
+      const { error: movErr } = await supabase
+        .from('granja_movimientos')
+        .insert(payloadMovimiento)
+
+      if (movErr) {
+        console.error('Error registrando movimiento', movErr)
+
+        alert(
+          `Compra #${compraId} guardada, pero hubo un error registrando el movimiento de inventario: ${movErr.message}`
+        )
+
+        return
+      }
+
+      alert(`Compra #${compraId} registrada correctamente. Inventario actualizado.`)
 
       resetForm()
       await cargarDatos()
@@ -225,21 +283,18 @@ export default function GranjaEntradaCompraPage() {
     }
   }
 
-  /* ------------ UI ------------ */
   return (
     <div className="p-6 max-w-5xl mx-auto">
-      {/* encabezado */}
       <div className="mb-6 flex items-center gap-3">
         <img src="/logo.png" alt="Logo" className="h-10" />
+
         <div>
-          <h1 className="text-2xl font-bold">
-            Granja — Entrada por compra
-          </h1>
+          <h1 className="text-2xl font-bold">Granja — Entrada por compra</h1>
           <p className="text-xs text-gray-600">
-            Registrar ingresos de cerdos comprados y actualizar inventario
-            por ubicación.
+            Registrar ingresos de cerdos comprados y actualizar inventario por ubicación.
           </p>
         </div>
+
         <Link
           href="/granja"
           className="ml-auto inline-block bg-slate-700 hover:bg-slate-800 text-white px-3 py-2 rounded text-sm"
@@ -249,28 +304,21 @@ export default function GranjaEntradaCompraPage() {
       </div>
 
       <div className="grid gap-6 md:grid-cols-2">
-        {/* -------- formulario -------- */}
         <div className="border rounded-lg p-4 bg-white shadow-sm">
           <h2 className="font-semibold mb-3">Nueva compra de cerdos</h2>
 
           {loading && (
-            <p className="text-xs text-gray-500 mb-2">
-              Cargando catálogos…
-            </p>
+            <p className="text-xs text-gray-500 mb-2">Cargando catálogos…</p>
           )}
 
           <div className="grid grid-cols-2 gap-3">
             <div className="col-span-2">
-              <label className="block text-xs font-semibold mb-1">
-                Fecha
-              </label>
+              <label className="block text-xs font-semibold mb-1">Fecha</label>
               <input
                 type="date"
                 className="border rounded w-full p-2 text-sm"
                 value={form.fecha}
-                onChange={(e) =>
-                  setForm({ ...form, fecha: e.target.value })
-                }
+                onChange={(e) => setForm({ ...form, fecha: e.target.value })}
               />
             </div>
 
@@ -295,7 +343,6 @@ export default function GranjaEntradaCompraPage() {
               </select>
             </div>
 
-            {/* lote existente */}
             <div>
               <label className="block text-xs font-semibold mb-1">
                 Lote existente
@@ -303,9 +350,7 @@ export default function GranjaEntradaCompraPage() {
               <select
                 className="border rounded w-full p-2 text-sm"
                 value={form.lote_id}
-                onChange={(e) =>
-                  setForm({ ...form, lote_id: e.target.value })
-                }
+                onChange={(e) => setForm({ ...form, lote_id: e.target.value })}
               >
                 <option value="">— Crear nuevo lote —</option>
                 {lotes.map((l) => (
@@ -316,14 +361,13 @@ export default function GranjaEntradaCompraPage() {
               </select>
             </div>
 
-            {/* nuevo lote */}
             <div>
               <label className="block text-xs font-semibold mb-1">
-                Código nuevo lote (si no selecciona uno)
+                Código nuevo lote
               </label>
               <input
                 className="border rounded w-full p-2 text-sm"
-                placeholder=""
+                placeholder="Si no selecciona uno"
                 value={form.nuevo_lote_codigo}
                 onChange={(e) =>
                   setForm({ ...form, nuevo_lote_codigo: e.target.value })
@@ -332,9 +376,7 @@ export default function GranjaEntradaCompraPage() {
             </div>
 
             <div className="col-span-2">
-              <label className="block text-xs font-semibold mb-1">
-                Proveedor
-              </label>
+              <label className="block text-xs font-semibold mb-1">Proveedor</label>
               <select
                 className="border rounded w-full p-2 text-sm"
                 value={form.proveedor_id}
@@ -357,39 +399,32 @@ export default function GranjaEntradaCompraPage() {
               </label>
               <input
                 type="number"
+                min="1"
                 className="border rounded w-full p-2 text-sm"
                 value={form.cantidad}
-                onChange={(e) =>
-                  setForm({ ...form, cantidad: e.target.value })
-                }
+                onChange={(e) => setForm({ ...form, cantidad: e.target.value })}
               />
             </div>
 
             <div>
-              <label className="block text-xs font-semibold mb-1">
-                Hembras
-              </label>
+              <label className="block text-xs font-semibold mb-1">Hembras</label>
               <input
                 type="number"
+                min="0"
                 className="border rounded w-full p-2 text-sm"
                 value={form.hembras}
-                onChange={(e) =>
-                  setForm({ ...form, hembras: e.target.value })
-                }
+                onChange={(e) => setForm({ ...form, hembras: e.target.value })}
               />
             </div>
 
             <div>
-              <label className="block text-xs font-semibold mb-1">
-                Machos
-              </label>
+              <label className="block text-xs font-semibold mb-1">Machos</label>
               <input
                 type="number"
+                min="0"
                 className="border rounded w-full p-2 text-sm"
                 value={form.machos}
-                onChange={(e) =>
-                  setForm({ ...form, machos: e.target.value })
-                }
+                onChange={(e) => setForm({ ...form, machos: e.target.value })}
               />
             </div>
 
@@ -399,6 +434,8 @@ export default function GranjaEntradaCompraPage() {
               </label>
               <input
                 type="number"
+                min="0"
+                step="0.01"
                 className="border rounded w-full p-2 text-sm"
                 value={form.peso_total_kg}
                 onChange={(e) =>
@@ -413,6 +450,8 @@ export default function GranjaEntradaCompraPage() {
               </label>
               <input
                 type="number"
+                min="0"
+                step="0.01"
                 className="border rounded w-full p-2 text-sm"
                 value={form.precio_total}
                 onChange={(e) =>
@@ -444,6 +483,7 @@ export default function GranjaEntradaCompraPage() {
             >
               {guardando ? 'Guardando…' : 'Guardar compra'}
             </button>
+
             <button
               type="button"
               onClick={resetForm}
@@ -454,9 +494,9 @@ export default function GranjaEntradaCompraPage() {
           </div>
         </div>
 
-        {/* -------- compras recientes -------- */}
         <div className="border rounded-lg p-4 bg-white shadow-sm">
           <h2 className="font-semibold mb-3">Compras recientes</h2>
+
           {comprasRecientes.length === 0 ? (
             <p className="text-sm text-gray-600">
               Aún no hay compras registradas.
@@ -466,38 +506,45 @@ export default function GranjaEntradaCompraPage() {
               <table className="w-full text-xs">
                 <thead className="bg-gray-100">
                   <tr>
+                    <th className="p-2 text-left">ID</th>
                     <th className="p-2 text-left">Fecha</th>
                     <th className="p-2 text-left">Ubicación</th>
                     <th className="p-2 text-left">Lote</th>
                     <th className="p-2 text-right">Cantidad</th>
+                    <th className="p-2 text-right">H</th>
+                    <th className="p-2 text-right">M</th>
                     <th className="p-2 text-right">Peso kg</th>
                   </tr>
                 </thead>
+
                 <tbody>
                   {comprasRecientes.map((c) => {
                     const u = findUbicacion(c.ubicacion_id)
                     const l = findLote(c.lote_id)
+
                     return (
                       <tr key={c.id} className="border-t">
-                        <td className="p-2">
-                          {c.fecha || '—'}
-                        </td>
+                        <td className="p-2">{c.id}</td>
+
+                        <td className="p-2">{c.fecha || '—'}</td>
+
                         <td className="p-2">
                           {u
-                            ? `${u.codigo}${
-                                u.nombre ? ` — ${u.nombre}` : ''
-                              }`
+                            ? `${u.codigo}${u.nombre ? ` — ${u.nombre}` : ''}`
                             : c.ubicacion_id}
                         </td>
-                        <td className="p-2">
-                          {l ? l.codigo : '—'}
-                        </td>
-                        <td className="p-2 text-right">
-                          {c.cantidad}
-                        </td>
+
+                        <td className="p-2">{l ? l.codigo : '—'}</td>
+
+                        <td className="p-2 text-right">{c.cantidad}</td>
+
+                        <td className="p-2 text-right">{c.hembras ?? 0}</td>
+
+                        <td className="p-2 text-right">{c.machos ?? 0}</td>
+
                         <td className="p-2 text-right">
                           {c.peso_total_kg != null
-                            ? c.peso_total_kg.toFixed(2)
+                            ? Number(c.peso_total_kg).toFixed(2)
                             : '—'}
                         </td>
                       </tr>
@@ -512,4 +559,3 @@ export default function GranjaEntradaCompraPage() {
     </div>
   )
 }
-
