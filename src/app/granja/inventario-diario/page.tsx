@@ -113,7 +113,7 @@ const groupNameFor = (ubicacion: Ubicacion) => {
   const codigo = ubicacion.codigo || ''
   const nombre = ubicacion.nombre || ''
 
-  if (nombre.includes(' - '')) return nombre.split(' - ')[0] || 'Otros'
+  if (nombre.includes(' - ')) return nombre.split(' - ')[0] || 'Otros'
   if (nombre) return nombre
 
   if (codigo.startsWith('G1')) return 'Gestación 1'
