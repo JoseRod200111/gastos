@@ -154,12 +154,6 @@ const formatHora = (value?: string | null) => {
   return '—'
 }
 
-const fechaHoraValor = (fecha?: string | null, createdAt?: string | null) => {
-  if (createdAt) return String(createdAt)
-  if (fecha) return String(fecha)
-  return ''
-}
-
 const fechaEventoValor = (fecha?: string | null) => {
   if (!fecha) return ''
 
@@ -1202,7 +1196,7 @@ export default function MovimientosEmpleadosPage() {
               placeholder="Ej: AR1023, parto, destete, TR8, traslado, baja..."
             />
             <div className="text-[11px] text-gray-500 mt-1">
-              TR8 y TR08 se buscan como el mismo tramo. Usa "Registro" para ver cuándo se capturó en el sistema y "Evento" para ver la fecha real asignada al movimiento.
+              TR8 y TR08 se buscan como el mismo tramo. Usa &quot;Registro&quot; para ver cuándo se capturó en el sistema y &quot;Evento&quot; para ver la fecha real asignada al movimiento.
             </div>
           </div>
         </div>
