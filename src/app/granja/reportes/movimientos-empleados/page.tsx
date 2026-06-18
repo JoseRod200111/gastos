@@ -76,7 +76,14 @@ type AccionEmpleado = {
   origen: 'MOVIMIENTO_INVENTARIO' | 'EVENTO_CERDA'
   fecha: string
   hora: string
+  fechaEvento: string
+  horaEvento: string
+  fechaRegistro: string
+  horaRegistro: string
+  fechaHoraEventoOrden: string
+  fechaHoraRegistroOrden: string
   fechaHoraOrden: string
+  diasDiferenciaRegistro: number
   usuarioId: string | null
   usuarioTexto: string
   seccion: string
@@ -151,6 +158,31 @@ const fechaHoraValor = (fecha?: string | null, createdAt?: string | null) => {
   if (createdAt) return String(createdAt)
   if (fecha) return String(fecha)
   return ''
+}
+
+const fechaEventoValor = (fecha?: string | null) => {
+  if (!fecha) return ''
+
+  const raw = String(fecha)
+  if (raw.length === 10) return `${raw}T12:00:00`
+  return raw
+}
+
+const fechaRegistroValor = (createdAt?: string | null) => {
+  if (!createdAt) return ''
+  return String(createdAt)
+}
+
+const diffDiasFecha = (fechaEvento?: string | null, fechaRegistro?: string | null) => {
+  if (!fechaEvento || !fechaRegistro) return 0
+
+  const evento = new Date(formatFecha(fechaEvento) + 'T00:00:00')
+  const registro = new Date(formatFecha(fechaRegistro) + 'T00:00:00')
+
+  const diff = registro.getTime() - evento.getTime()
+  if (!Number.isFinite(diff)) return 0
+
+  return Math.round(diff / (24 * 60 * 60 * 1000))
 }
 
 const toNum = (value: unknown) => {
@@ -357,6 +389,7 @@ function generarPdf(
     ubicacion: string
     tipo: string
     texto: string
+    tipoFecha: string
   }
 ) {
   const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' })
@@ -368,7 +401,7 @@ function generarPdf(
   doc.text(
     `Rango: ${filtros.desdeFecha} ${filtros.desdeHora || '00:00'} a ${filtros.hastaFecha} ${
       filtros.hastaHora || '23:59'
-    }`,
+    } · Fecha usada: ${filtros.tipoFecha || 'Registro'}`,
     14,
     21
   )
@@ -418,8 +451,10 @@ function generarPdf(
     startY: y + 8,
     head: [
       [
-        'Fecha',
-        'Hora',
+        'Fecha evento',
+        'Hora evento',
+        'Fecha registro',
+        'Hora registro',
         'Usuario',
         'Sección',
         'Tipo',
@@ -430,8 +465,10 @@ function generarPdf(
       ],
     ],
     body: acciones.map((a) => [
-      a.fecha,
-      a.hora,
+      a.fechaEvento,
+      a.horaEvento,
+      a.fechaRegistro,
+      a.horaRegistro,
       a.usuarioTexto,
       a.seccion,
       a.tipoAccion,
@@ -444,15 +481,17 @@ function generarPdf(
     headStyles: { fillColor: [230, 230, 230] },
     margin: { left: 14, right: 14 },
     columnStyles: {
-      0: { cellWidth: 20 },
-      1: { cellWidth: 18 },
-      2: { cellWidth: 42 },
-      3: { cellWidth: 28 },
-      4: { cellWidth: 34 },
-      5: { cellWidth: 26 },
-      6: { cellWidth: 35 },
-      7: { cellWidth: 16, halign: 'right' },
-      8: { cellWidth: 68 },
+      0: { cellWidth: 19 },
+      1: { cellWidth: 15 },
+      2: { cellWidth: 19 },
+      3: { cellWidth: 15 },
+      4: { cellWidth: 37 },
+      5: { cellWidth: 24 },
+      6: { cellWidth: 30 },
+      7: { cellWidth: 24 },
+      8: { cellWidth: 32 },
+      9: { cellWidth: 14, halign: 'right' },
+      10: { cellWidth: 62 },
     },
   })
 
@@ -483,6 +522,7 @@ export default function MovimientosEmpleadosPage() {
   const [ubicacionFiltro, setUbicacionFiltro] = useState('')
   const [tipoFiltro, setTipoFiltro] = useState('')
   const [textoFiltro, setTextoFiltro] = useState('')
+  const [tipoFechaFiltro, setTipoFechaFiltro] = useState<'REGISTRO' | 'EVENTO' | 'AMBAS'>('REGISTRO')
 
   useEffect(() => {
     const hoy = hoyYYYYMMDD()
@@ -515,16 +555,12 @@ export default function MovimientosEmpleadosPage() {
   )
 
   const cargarDatos = useCallback(async () => {
-    if (!desdeISO || !hastaISO) return
+    if (!desdeISO || !hastaISO || !desdeFecha || !hastaFecha) return
 
     setLoading(true)
 
     try {
-      const [movRes, eventosRes, ubicacionesRes] = await Promise.all([
-        supabase
-          .from('granja_movimientos')
-          .select(
-            `
+      const selectMovimientos = `
             id,
             fecha,
             tipo,
@@ -547,15 +583,8 @@ export default function MovimientosEmpleadosPage() {
               codigo
             )
           `
-          )
-          .gte('created_at', desdeISO)
-          .lte('created_at', hastaISO)
-          .order('created_at', { ascending: false }),
 
-        supabase
-          .from('granja_cerda_eventos')
-          .select(
-            `
+      const selectEventos = `
             id,
             cerda_id,
             fecha,
@@ -579,40 +608,120 @@ export default function MovimientosEmpleadosPage() {
               codigo
             )
           `
-          )
+
+      const cargarMovimientosPorRegistro = async () => {
+        const { data, error } = await supabase
+          .from('granja_movimientos')
+          .select(selectMovimientos)
           .gte('created_at', desdeISO)
           .lte('created_at', hastaISO)
-          .order('created_at', { ascending: false }),
+          .order('created_at', { ascending: false })
 
-        supabase
-          .from('granja_ubicaciones')
-          .select('id,codigo,nombre')
-          .eq('activo', true)
-          .order('codigo', { ascending: true }),
-      ])
-
-      if (movRes.error) {
-        console.error('Error movimientos', movRes.error)
-        alert(`Error cargando movimientos: ${movRes.error.message}`)
-        return
+        if (error) throw error
+        return (data || []) as unknown as MovimientoGranja[]
       }
 
-      if (eventosRes.error) {
-        console.error('Error eventos cerdas', eventosRes.error)
-        alert(`Error cargando eventos de cerdas: ${eventosRes.error.message}`)
-        return
+      const cargarMovimientosPorEvento = async () => {
+        const { data, error } = await supabase
+          .from('granja_movimientos')
+          .select(selectMovimientos)
+          .gte('fecha', desdeISO)
+          .lte('fecha', hastaISO)
+          .order('fecha', { ascending: false })
+
+        if (error) throw error
+        return (data || []) as unknown as MovimientoGranja[]
       }
 
-      if (ubicacionesRes.error) {
-        console.error('Error ubicaciones', ubicacionesRes.error)
+      const cargarEventosPorRegistro = async () => {
+        const { data, error } = await supabase
+          .from('granja_cerda_eventos')
+          .select(selectEventos)
+          .gte('created_at', desdeISO)
+          .lte('created_at', hastaISO)
+          .order('created_at', { ascending: false })
+
+        if (error) throw error
+        return (data || []) as unknown as EventoCerda[]
       }
 
-      const movs = (movRes.data || []) as unknown as MovimientoGranja[]
-      const evs = (eventosRes.data || []) as unknown as EventoCerda[]
+      const cargarEventosPorEvento = async () => {
+        const { data, error } = await supabase
+          .from('granja_cerda_eventos')
+          .select(selectEventos)
+          .gte('fecha', desdeFecha)
+          .lte('fecha', hastaFecha)
+          .order('fecha', { ascending: false })
+
+        if (error) throw error
+        return (data || []) as unknown as EventoCerda[]
+      }
+
+      const combinarMovimientos = (listas: MovimientoGranja[][]) => {
+        const map = new Map<number, MovimientoGranja>()
+        listas.flat().forEach((row) => map.set(row.id, row))
+        return Array.from(map.values()).sort((a, b) => {
+          const fechaA = fechaRegistroValor(a.created_at) || fechaEventoValor(a.fecha)
+          const fechaB = fechaRegistroValor(b.created_at) || fechaEventoValor(b.fecha)
+          return fechaB.localeCompare(fechaA)
+        })
+      }
+
+      const combinarEventos = (listas: EventoCerda[][]) => {
+        const map = new Map<number, EventoCerda>()
+        listas.flat().forEach((row) => map.set(row.id, row))
+        return Array.from(map.values()).sort((a, b) => {
+          const fechaA = fechaRegistroValor(a.created_at) || fechaEventoValor(a.fecha)
+          const fechaB = fechaRegistroValor(b.created_at) || fechaEventoValor(b.fecha)
+          return fechaB.localeCompare(fechaA)
+        })
+      }
+
+      let movs: MovimientoGranja[] = []
+      let evs: EventoCerda[] = []
+
+      if (tipoFechaFiltro === 'REGISTRO') {
+        const [movimientosRegistro, eventosRegistro] = await Promise.all([
+          cargarMovimientosPorRegistro(),
+          cargarEventosPorRegistro(),
+        ])
+
+        movs = movimientosRegistro
+        evs = eventosRegistro
+      } else if (tipoFechaFiltro === 'EVENTO') {
+        const [movimientosEvento, eventosEvento] = await Promise.all([
+          cargarMovimientosPorEvento(),
+          cargarEventosPorEvento(),
+        ])
+
+        movs = movimientosEvento
+        evs = eventosEvento
+      } else {
+        const [movimientosRegistro, movimientosEvento, eventosRegistro, eventosEvento] =
+          await Promise.all([
+            cargarMovimientosPorRegistro(),
+            cargarMovimientosPorEvento(),
+            cargarEventosPorRegistro(),
+            cargarEventosPorEvento(),
+          ])
+
+        movs = combinarMovimientos([movimientosRegistro, movimientosEvento])
+        evs = combinarEventos([eventosRegistro, eventosEvento])
+      }
+
+      const { data: ubicacionesData, error: ubicacionesError } = await supabase
+        .from('granja_ubicaciones')
+        .select('id,codigo,nombre')
+        .eq('activo', true)
+        .order('codigo', { ascending: true })
+
+      if (ubicacionesError) {
+        console.error('Error ubicaciones', ubicacionesError)
+      }
 
       setMovimientos(movs)
       setEventosCerdas(evs)
-      setUbicaciones((ubicacionesRes.data || []) as Ubicacion[])
+      setUbicaciones((ubicacionesData || []) as Ubicacion[])
 
       const userIds = Array.from(
         new Set(
@@ -637,10 +746,14 @@ export default function MovimientosEmpleadosPage() {
       } else {
         setUsuarios([])
       }
+    } catch (error) {
+      console.error('Error cargando movimientos de empleados', error)
+      const message = error instanceof Error ? error.message : 'Error desconocido'
+      alert(`Error cargando movimientos de empleados: ${message}`)
     } finally {
       setLoading(false)
     }
-  }, [desdeISO, hastaISO])
+  }, [desdeISO, hastaISO, desdeFecha, hastaFecha, tipoFechaFiltro])
 
   useEffect(() => {
     if (desdeISO && hastaISO) {
@@ -651,7 +764,9 @@ export default function MovimientosEmpleadosPage() {
   const accionesBase = useMemo(() => {
     const accionesMovimientos: AccionEmpleado[] = movimientos.map((mov) => {
       const clase = clasificarMovimiento(mov)
-      const fechaHora = fechaHoraValor(mov.fecha, mov.created_at)
+      const fechaEvento = fechaEventoValor(mov.fecha)
+      const fechaRegistro = fechaRegistroValor(mov.created_at)
+      const fechaHora = tipoFechaFiltro === 'EVENTO' ? fechaEvento : fechaRegistro || fechaEvento
       const ubicacion = ubicacionTexto(mov.granja_ubicaciones)
       const codigo = mov.granja_ubicaciones?.codigo || '—'
       const tipoLegible = tipoMovimientoLegible(mov.tipo)
@@ -698,7 +813,14 @@ export default function MovimientosEmpleadosPage() {
         origen: 'MOVIMIENTO_INVENTARIO',
         fecha: formatFecha(fechaHora),
         hora: formatHora(fechaHora),
+        fechaEvento: formatFecha(fechaEvento),
+        horaEvento: formatHora(fechaEvento),
+        fechaRegistro: formatFecha(fechaRegistro),
+        horaRegistro: formatHora(fechaRegistro),
+        fechaHoraEventoOrden: fechaEvento,
+        fechaHoraRegistroOrden: fechaRegistro,
         fechaHoraOrden: fechaHora,
+        diasDiferenciaRegistro: diffDiasFecha(fechaEvento, fechaRegistro),
         usuarioId: mov.user_id,
         usuarioTexto: usuario,
         seccion: 'Inventario granja',
@@ -720,7 +842,9 @@ export default function MovimientosEmpleadosPage() {
     })
 
     const accionesEventos: AccionEmpleado[] = eventosCerdas.map((ev) => {
-      const fechaHora = fechaHoraValor(ev.fecha, ev.created_at)
+      const fechaEvento = fechaEventoValor(ev.fecha)
+      const fechaRegistro = fechaRegistroValor(ev.created_at)
+      const fechaHora = tipoFechaFiltro === 'EVENTO' ? fechaEvento : fechaRegistro || fechaEvento
       const ubicacion = ubicacionTexto(ev.granja_ubicaciones)
       const codigo = ev.granja_ubicaciones?.codigo || '—'
       const tipoLegible = tipoEventoLegible(ev.tipo)
@@ -771,7 +895,14 @@ export default function MovimientosEmpleadosPage() {
         origen: 'EVENTO_CERDA',
         fecha: formatFecha(fechaHora),
         hora: formatHora(fechaHora),
+        fechaEvento: formatFecha(fechaEvento),
+        horaEvento: formatHora(fechaEvento),
+        fechaRegistro: formatFecha(fechaRegistro),
+        horaRegistro: formatHora(fechaRegistro),
+        fechaHoraEventoOrden: fechaEvento,
+        fechaHoraRegistroOrden: fechaRegistro,
         fechaHoraOrden: fechaHora,
+        diasDiferenciaRegistro: diffDiasFecha(fechaEvento, fechaRegistro),
         usuarioId: ev.user_id,
         usuarioTexto: usuario,
         seccion: 'Eventos de cerdas',
@@ -795,7 +926,7 @@ export default function MovimientosEmpleadosPage() {
     return [...accionesMovimientos, ...accionesEventos].sort((a, b) =>
       b.fechaHoraOrden.localeCompare(a.fechaHoraOrden)
     )
-  }, [movimientos, eventosCerdas, usuarioTexto])
+  }, [movimientos, eventosCerdas, usuarioTexto, tipoFechaFiltro])
 
   const tiposDisponibles = useMemo(() => {
     return Array.from(new Set(accionesBase.map((a) => a.tipoAccion))).sort((a, b) =>
@@ -891,6 +1022,7 @@ export default function MovimientosEmpleadosPage() {
   const totalSalidas = accionesFiltradas.reduce((sum, a) => sum + a.salidas, 0)
   const totalAjustes = accionesFiltradas.reduce((sum, a) => sum + a.ajustes, 0)
   const totalCambio = accionesFiltradas.reduce((sum, a) => sum + a.cambioNeto, 0)
+  const totalRegistrosTardios = accionesFiltradas.filter((a) => a.diasDiferenciaRegistro > 0).length
 
   const imprimirPdf = () => {
     generarPdf(accionesFiltradas, resumen, {
@@ -903,6 +1035,12 @@ export default function MovimientosEmpleadosPage() {
       ubicacion: ubicacionFiltro,
       tipo: tipoFiltro,
       texto: textoFiltro,
+      tipoFecha:
+        tipoFechaFiltro === 'REGISTRO'
+          ? 'Fecha de registro'
+          : tipoFechaFiltro === 'EVENTO'
+            ? 'Fecha del evento'
+            : 'Registro o evento',
     })
   }
 
@@ -916,7 +1054,7 @@ export default function MovimientosEmpleadosPage() {
         <div>
           <h1 className="text-2xl font-bold">Movimientos de empleados</h1>
           <p className="text-xs text-gray-600">
-            Busca cambios por fecha, hora, usuario, ubicación, tipo de acción y referencia.
+            Busca cambios por fecha del evento, fecha de registro, hora, usuario, ubicación, tipo de acción y referencia.
           </p>
         </div>
 
@@ -931,7 +1069,20 @@ export default function MovimientosEmpleadosPage() {
       <div className="border rounded-lg bg-white p-4 mb-4">
         <h2 className="font-semibold mb-3">Filtros de búsqueda</h2>
 
-        <div className="grid md:grid-cols-6 gap-3 text-sm">
+        <div className="grid md:grid-cols-7 gap-3 text-sm">
+          <div>
+            <label className="block text-xs font-semibold mb-1">Buscar por fecha</label>
+            <select
+              className="border rounded p-2 w-full"
+              value={tipoFechaFiltro}
+              onChange={(e) => setTipoFechaFiltro(e.target.value as 'REGISTRO' | 'EVENTO' | 'AMBAS')}
+            >
+              <option value="REGISTRO">Registro</option>
+              <option value="EVENTO">Evento</option>
+              <option value="AMBAS">Ambas</option>
+            </select>
+          </div>
+
           <div>
             <label className="block text-xs font-semibold mb-1">Desde fecha</label>
             <input
@@ -1051,7 +1202,7 @@ export default function MovimientosEmpleadosPage() {
               placeholder="Ej: AR1023, parto, destete, TR8, traslado, baja..."
             />
             <div className="text-[11px] text-gray-500 mt-1">
-              TR8 y TR08 se buscan como el mismo tramo.
+              TR8 y TR08 se buscan como el mismo tramo. Usa "Registro" para ver cuándo se capturó en el sistema y "Evento" para ver la fecha real asignada al movimiento.
             </div>
           </div>
         </div>
@@ -1074,7 +1225,7 @@ export default function MovimientosEmpleadosPage() {
         </div>
       </div>
 
-      <div className="grid md:grid-cols-4 gap-3 mb-4">
+      <div className="grid md:grid-cols-5 gap-3 mb-4">
         <div className="border rounded bg-white p-3">
           <div className="text-xs text-gray-600">Entradas</div>
           <div className="text-xl font-bold text-emerald-700">+{totalEntradas}</div>
@@ -1112,6 +1263,13 @@ export default function MovimientosEmpleadosPage() {
             }`}
           >
             {totalCambio > 0 ? `+${totalCambio}` : totalCambio}
+          </div>
+        </div>
+
+        <div className="border rounded bg-white p-3">
+          <div className="text-xs text-gray-600">Registrados tarde</div>
+          <div className="text-xl font-bold text-amber-700">
+            {totalRegistrosTardios}
           </div>
         </div>
       </div>
@@ -1189,8 +1347,10 @@ export default function MovimientosEmpleadosPage() {
           <table className="w-full text-xs">
             <thead className="bg-gray-200 sticky top-0">
               <tr>
-                <th className="p-2 text-left">Fecha</th>
-                <th className="p-2 text-left">Hora</th>
+                <th className="p-2 text-left">Fecha evento</th>
+                <th className="p-2 text-left">Hora evento</th>
+                <th className="p-2 text-left">Fecha registro</th>
+                <th className="p-2 text-left">Hora registro</th>
                 <th className="p-2 text-left">Usuario</th>
                 <th className="p-2 text-left">Sección</th>
                 <th className="p-2 text-left">Tipo</th>
@@ -1204,15 +1364,17 @@ export default function MovimientosEmpleadosPage() {
             <tbody>
               {accionesFiltradas.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="p-3 text-gray-500">
+                  <td colSpan={11} className="p-3 text-gray-500">
                     No hay acciones con los filtros aplicados.
                   </td>
                 </tr>
               ) : (
                 accionesFiltradas.map((a) => (
                   <tr key={a.id} className="border-t align-top">
-                    <td className="p-2">{a.fecha}</td>
-                    <td className="p-2">{a.hora}</td>
+                    <td className="p-2">{a.fechaEvento}</td>
+                    <td className="p-2">{a.horaEvento}</td>
+                    <td className="p-2">{a.fechaRegistro}</td>
+                    <td className="p-2">{a.horaRegistro}</td>
                     <td className="p-2">{a.usuarioTexto}</td>
                     <td className="p-2">{a.seccion}</td>
                     <td className="p-2 font-semibold">{a.tipoAccion}</td>
@@ -1233,6 +1395,11 @@ export default function MovimientosEmpleadosPage() {
                       <div>{a.detalle || '—'}</div>
                       {a.observaciones ? (
                         <div className="text-gray-500 mt-1">{a.observaciones}</div>
+                      ) : null}
+                      {a.diasDiferenciaRegistro > 0 ? (
+                        <div className="text-amber-700 mt-1">
+                          Registrado {a.diasDiferenciaRegistro} día(s) después del evento.
+                        </div>
                       ) : null}
                     </td>
                   </tr>
