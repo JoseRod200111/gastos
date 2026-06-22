@@ -4,9 +4,22 @@ import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabaseClient'
 
-type Ubicacion = { id: number; codigo: string; nombre: string | null; activo: boolean | null }
-type Cliente = { id: number; nombre: string }
-type Lote = { id: number; codigo: string }
+type Ubicacion = {
+  id: number
+  codigo: string
+  nombre: string | null
+  activo: boolean | null
+}
+
+type Cliente = {
+  id: number
+  nombre: string
+}
+
+type Lote = {
+  id: number
+  codigo: string
+}
 
 type LineaTramo = {
   ubicacion_id: string
@@ -19,24 +32,57 @@ type VentaReciente = {
   cantidad: number
   peso_total_lb: number
   total: number
+  observaciones: string | null
+  multi_id: string | null
+  multi_folio: number | null
   clientes?: { nombre?: string } | null
   granja_ubicaciones?: { codigo?: string; nombre?: string } | null
   granja_lotes?: { codigo?: string } | null
 }
 
-const toNum = (v: any) => {
+const toNum = (v: unknown) => {
   const n = Number(v)
   return Number.isFinite(n) ? n : 0
 }
 
-const round2 = (n: number) => Math.round(n * 100) / 100
+const round2 = (n: number) => Math.round((Number(n || 0) + Number.EPSILON) * 100) / 100
 
-// ✅ sin ts-ignore / ts-expect-error
-const genGrupoId = () => {
-  // crypto.randomUUID existe en la mayoría de browsers modernos; si no, fallback seguro
-  const anyCrypto = globalThis.crypto as unknown as { randomUUID?: () => string } | undefined
-  if (anyCrypto?.randomUUID) return anyCrypto.randomUUID()
-  return `g_${Date.now()}_${Math.random().toString(16).slice(2)}`
+const genUUID = () => {
+  const cryptoObj = globalThis.crypto as unknown as { randomUUID?: () => string } | undefined
+
+  if (cryptoObj?.randomUUID) return cryptoObj.randomUUID()
+
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = Math.floor(Math.random() * 16)
+    const v = c === 'x' ? r : (r & 0x3) | 0x8
+    return v.toString(16)
+  })
+}
+
+const codigoMulti = (folio: number | null | undefined) => {
+  if (!folio || !Number.isFinite(Number(folio))) return ''
+
+  return `MT${String(Number(folio)).padStart(3, '0')}`
+}
+
+const extraerCodigoMulti = (observaciones: string | null | undefined) => {
+  if (!observaciones) return ''
+
+  const match = observaciones.match(/MULTI:([A-Za-z0-9_-]+)/)
+  return match ? match[1] : ''
+}
+
+const unirObservacionMulti = (
+  observaciones: string,
+  codigo: string,
+  indice: number,
+  total: number
+) => {
+  const base = observaciones.trim()
+
+  const etiqueta = `MULTI:${codigo} (${indice}/${total})`
+
+  return base ? `${base} | ${etiqueta}` : etiqueta
 }
 
 export default function SalidaVentaPage() {
@@ -47,10 +93,11 @@ export default function SalidaVentaPage() {
 
   const [fecha, setFecha] = useState('')
   const [clienteId, setClienteId] = useState('')
-  const [loteId, setLoteId] = useState('') // opcional
+  const [loteId, setLoteId] = useState('')
 
-  // ✅ ahora es múltiple
-  const [lineas, setLineas] = useState<LineaTramo[]>([{ ubicacion_id: '', cantidad: '' }])
+  const [lineas, setLineas] = useState<LineaTramo[]>([
+    { ubicacion_id: '', cantidad: '' },
+  ])
 
   const [pesoTotalLb, setPesoTotalLb] = useState('')
   const [precioPorLibra, setPrecioPorLibra] = useState('')
@@ -59,8 +106,15 @@ export default function SalidaVentaPage() {
 
   const [saving, setSaving] = useState(false)
 
-  const totalCantidad = useMemo(() => lineas.reduce((acc, l) => acc + toNum(l.cantidad), 0), [lineas])
-  const totalVenta = useMemo(() => round2(toNum(pesoTotalLb) * toNum(precioPorLibra)), [pesoTotalLb, precioPorLibra])
+  const totalCantidad = useMemo(
+    () => lineas.reduce((acc, l) => acc + toNum(l.cantidad), 0),
+    [lineas]
+  )
+
+  const totalVenta = useMemo(
+    () => round2(toNum(pesoTotalLb) * toNum(precioPorLibra)),
+    [pesoTotalLb, precioPorLibra]
+  )
 
   const deuda = useMemo(() => {
     const d = totalVenta - toNum(pagado)
@@ -78,7 +132,14 @@ export default function SalidaVentaPage() {
       .from('granja_ventas_cerdos')
       .select(
         `
-        id, fecha, cantidad, peso_total_lb, total,
+        id,
+        fecha,
+        cantidad,
+        peso_total_lb,
+        total,
+        observaciones,
+        multi_id,
+        multi_folio,
         clientes ( nombre ),
         granja_ubicaciones ( codigo, nombre ),
         granja_lotes ( codigo )
@@ -88,10 +149,11 @@ export default function SalidaVentaPage() {
       .limit(30)
 
     if (error) {
-      console.error(error)
+      console.error('Error cargando ventas recientes', error)
       return
     }
-    setVentas((data || []) as any)
+
+    setVentas((data || []) as VentaReciente[])
   }
 
   const cargarTodo = async () => {
@@ -101,17 +163,25 @@ export default function SalidaVentaPage() {
         .select('id,codigo,nombre,activo')
         .eq('activo', true)
         .order('codigo', { ascending: true }),
-      supabase.from('clientes').select('id,nombre').order('nombre', { ascending: true }),
-      supabase.from('granja_lotes').select('id,codigo').order('codigo', { ascending: true }),
+
+      supabase
+        .from('clientes')
+        .select('id,nombre')
+        .order('nombre', { ascending: true }),
+
+      supabase
+        .from('granja_lotes')
+        .select('id,codigo')
+        .order('codigo', { ascending: true }),
     ])
 
-    if (uRes.error) console.error(uRes.error)
-    if (cRes.error) console.error(cRes.error)
-    if (lRes.error) console.error(lRes.error)
+    if (uRes.error) console.error('Error cargando ubicaciones', uRes.error)
+    if (cRes.error) console.error('Error cargando clientes', cRes.error)
+    if (lRes.error) console.error('Error cargando lotes', lRes.error)
 
-    setUbicaciones((uRes.data || []) as any)
-    setClientes((cRes.data || []) as any)
-    setLotes((lRes.data || []) as any)
+    setUbicaciones((uRes.data || []) as Ubicacion[])
+    setClientes((cRes.data || []) as Cliente[])
+    setLotes((lRes.data || []) as Lote[])
 
     await cargarVentasRecientes()
   }
@@ -121,14 +191,18 @@ export default function SalidaVentaPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const addLinea = () => setLineas(prev => [...prev, { ubicacion_id: '', cantidad: '' }])
+  const addLinea = () => {
+    setLineas((prev) => [...prev, { ubicacion_id: '', cantidad: '' }])
+  }
 
   const removeLinea = (idx: number) => {
-    setLineas(prev => prev.filter((_, i) => i !== idx))
+    setLineas((prev) => prev.filter((_, i) => i !== idx))
   }
 
   const updateLinea = (idx: number, key: keyof LineaTramo, val: string) => {
-    setLineas(prev => prev.map((l, i) => (i === idx ? { ...l, [key]: val } : l)))
+    setLineas((prev) =>
+      prev.map((l, i) => (i === idx ? { ...l, [key]: val } : l))
+    )
   }
 
   const limpiar = () => {
@@ -146,32 +220,67 @@ export default function SalidaVentaPage() {
     if (!clienteId) return 'Seleccione un cliente.'
 
     const validas = lineas
-      .map(l => ({ ubicacion_id: l.ubicacion_id, cantidad: toNum(l.cantidad) }))
-      .filter(l => l.ubicacion_id && l.cantidad > 0)
+      .map((l) => ({
+        ubicacion_id: l.ubicacion_id,
+        cantidad: toNum(l.cantidad),
+      }))
+      .filter((l) => l.ubicacion_id && l.cantidad > 0)
 
-    if (validas.length === 0) return 'Agregue al menos un tramo con cantidad > 0.'
-    if (toNum(pesoTotalLb) <= 0) return 'Peso total (lb) debe ser > 0.'
-    if (toNum(precioPorLibra) <= 0) return 'Precio por libra debe ser > 0.'
+    if (validas.length === 0) return 'Agregue al menos un tramo con cantidad mayor que 0.'
+    if (toNum(pesoTotalLb) <= 0) return 'Peso total en libras debe ser mayor que 0.'
+    if (toNum(precioPorLibra) <= 0) return 'Precio por libra debe ser mayor que 0.'
     if (toNum(pagado) < 0) return 'Pagado no puede ser negativo.'
 
-    const setU = new Set(validas.map(v => v.ubicacion_id))
-    if (setU.size !== validas.length) return 'No repitas la misma ubicación; usa una sola línea por tramo.'
+    const setU = new Set(validas.map((v) => v.ubicacion_id))
+
+    if (setU.size !== validas.length) {
+      return 'No repitas la misma ubicación; usa una sola línea por tramo.'
+    }
 
     return ''
   }
 
+  const obtenerSiguienteFolioMulti = async () => {
+    const { data, error } = await supabase.rpc('next_granja_multitramo_folio')
+
+    if (!error && data != null) {
+      return Number(data)
+    }
+
+    console.error('No se pudo usar next_granja_multitramo_folio, usando fallback.', error)
+
+    const { data: ultimas, error: maxErr } = await supabase
+      .from('granja_ventas_cerdos')
+      .select('multi_folio')
+      .not('multi_folio', 'is', null)
+      .order('multi_folio', { ascending: false })
+      .limit(1)
+
+    if (maxErr) {
+      console.error('Error obteniendo último folio multitramo', maxErr)
+      throw new Error(
+        'No se pudo generar el código multitramo. Verifica que el SQL de secuencia esté ejecutado.'
+      )
+    }
+
+    const ultimo = ultimas && ultimas.length > 0 ? Number(ultimas[0].multi_folio) : 0
+    return ultimo + 1
+  }
+
   const guardarVenta = async () => {
     const msg = validar()
+
     if (msg) {
       alert(msg)
       return
     }
 
-    const grupo = genGrupoId()
-
     const validas = lineas
-      .map(l => ({ ubicacion_id: Number(l.ubicacion_id), cantidad: toNum(l.cantidad) }))
-      .filter(l => !!l.ubicacion_id && l.cantidad > 0)
+      .map((l) => ({
+        ubicacion_id: Number(l.ubicacion_id),
+        cantidad: toNum(l.cantidad),
+      }))
+      .filter((l) => !!l.ubicacion_id && l.cantidad > 0)
 
     const cantidadTotal = validas.reduce((acc, x) => acc + x.cantidad, 0)
 
@@ -183,16 +292,21 @@ export default function SalidaVentaPage() {
     const deudaTotal = round2(Math.max(0, total - pagadoTotal))
 
     setSaving(true)
+
     try {
       const { data: userData } = await supabase.auth.getUser()
       const userId = userData?.user?.id ?? null
+
+      const multiId = genUUID()
+      const multiFolio = await obtenerSiguienteFolioMulti()
+      const multiCodigo = codigoMulti(multiFolio)
 
       let restoPeso = pesoLbTotal
       let restoTotal = total
       let restoPagado = pagadoTotal
       let restoDeuda = deudaTotal
 
-      for (let i = 0; i < validas.length; i++) {
+      for (let i = 0; i < validas.length; i += 1) {
         const l = validas[i]
         const isLast = i === validas.length - 1
         const frac = cantidadTotal > 0 ? l.cantidad / cantidadTotal : 0
@@ -207,7 +321,12 @@ export default function SalidaVentaPage() {
         restoPagado = round2(restoPagado - pagadoPart)
         restoDeuda = round2(restoDeuda - deudaPart)
 
-        const obsFinal = `${observaciones || ''}${observaciones ? ' | ' : ''}MULTI:${grupo} (${i + 1}/${validas.length})`
+        const obsFinal = unirObservacionMulti(
+          observaciones,
+          multiCodigo,
+          i + 1,
+          validas.length
+        )
 
         const { data: ventaIns, error: ventaErr } = await supabase
           .from('granja_ventas_cerdos')
@@ -224,41 +343,56 @@ export default function SalidaVentaPage() {
             deuda: deudaPart,
             observaciones: obsFinal,
             user_id: userId,
+            multi_id: multiId,
+            multi_folio: multiFolio,
           })
           .select('id')
           .single()
 
         if (ventaErr) {
-          console.error(ventaErr)
-          alert('Error guardando venta (por tramo). Revisa consola.')
+          console.error('Error guardando venta por tramo', ventaErr)
+          alert(`Error guardando venta por tramo: ${ventaErr.message}`)
           return
         }
 
-        const ventaId = ventaIns?.id as number
+        const ventaId = Number(ventaIns?.id)
 
-        const { error: movErr } = await supabase.from('granja_movimientos').insert({
-          fecha: new Date(fecha + 'T12:00:00').toISOString(),
-          ubicacion_id: l.ubicacion_id,
-          tipo: 'SALIDA_VENTA',
-          lote_id: loteId ? Number(loteId) : null,
-          cantidad: l.cantidad,
-          peso_total_kg: round2(pesoPart * 0.45359237),
-          referencia_tabla: 'granja_ventas_cerdos',
-          referencia_id: ventaId,
-          user_id: userId,
-          observaciones: obsFinal,
-        })
+        const { error: movErr } = await supabase
+          .from('granja_movimientos')
+          .insert({
+            fecha: new Date(`${fecha}T12:00:00`).toISOString(),
+            ubicacion_id: l.ubicacion_id,
+            tipo: 'SALIDA_VENTA',
+            lote_id: loteId ? Number(loteId) : null,
+            cantidad: l.cantidad,
+            peso_total_kg: round2(pesoPart * 0.45359237),
+            referencia_tabla: 'granja_ventas_cerdos',
+            referencia_id: ventaId,
+            user_id: userId,
+            observaciones: obsFinal,
+          })
 
         if (movErr) {
-          console.error(movErr)
-          alert('Venta guardada, pero falló registrar movimiento. Revisa consola.')
+          console.error('Error registrando movimiento', movErr)
+          alert(
+            `Venta #${ventaId} guardada, pero falló registrar movimiento: ${movErr.message}`
+          )
           return
         }
       }
 
-      alert('Venta guardada (multi-tramo) y movimientos registrados.')
+      alert(`Venta multitramo guardada correctamente con código ${multiCodigo}.`)
+
       limpiar()
       await cargarVentasRecientes()
+    } catch (error) {
+      console.error(error)
+
+      alert(
+        error instanceof Error
+          ? error.message
+          : 'Ocurrió un error guardando la venta multitramo.'
+      )
     } finally {
       setSaving(false)
     }
@@ -268,13 +402,19 @@ export default function SalidaVentaPage() {
     <div className="p-6 max-w-7xl mx-auto">
       <div className="mb-4 flex items-center gap-3">
         <img src="/logo.png" alt="Logo" className="h-10" />
+
         <div>
           <h1 className="text-2xl font-bold">Granja — Salida por venta</h1>
-          <p className="text-xs text-gray-600">Registrar ventas de cerdos y debitar el inventario por ubicación.</p>
+          <p className="text-xs text-gray-600">
+            Registrar ventas de cerdos y debitar el inventario por ubicación.
+          </p>
         </div>
 
-        <Link href="/granja" className="ml-auto inline-block bg-slate-700 hover:bg-slate-800 text-white px-3 py-2 rounded text-sm">
-          ⬅ Menú de Granja
+        <Link
+          href="/granja"
+          className="ml-auto inline-block bg-slate-700 hover:bg-slate-800 text-white px-3 py-2 rounded text-sm"
+        >
+          ← Menú de Granja
         </Link>
       </div>
 
@@ -284,14 +424,24 @@ export default function SalidaVentaPage() {
 
           <div className="mb-3">
             <label className="block text-sm font-medium mb-1">Fecha</label>
-            <input type="date" className="w-full border rounded px-3 py-2" value={fecha} onChange={e => setFecha(e.target.value)} />
+            <input
+              type="date"
+              className="w-full border rounded px-3 py-2"
+              value={fecha}
+              onChange={(e) => setFecha(e.target.value)}
+            />
           </div>
 
           <div className="mb-3">
             <label className="block text-sm font-medium mb-1">Cliente</label>
-            <select className="w-full border rounded px-3 py-2" value={clienteId} onChange={e => setClienteId(e.target.value)}>
+            <select
+              className="w-full border rounded px-3 py-2"
+              value={clienteId}
+              onChange={(e) => setClienteId(e.target.value)}
+            >
               <option value="">Seleccione un cliente</option>
-              {clientes.map(c => (
+
+              {clientes.map((c) => (
                 <option key={c.id} value={c.id}>
                   {c.nombre}
                 </option>
@@ -300,10 +450,15 @@ export default function SalidaVentaPage() {
           </div>
 
           <div className="mb-3">
-            <label className="block text-sm font-medium mb-1">Lote (opcional)</label>
-            <select className="w-full border rounded px-3 py-2" value={loteId} onChange={e => setLoteId(e.target.value)}>
+            <label className="block text-sm font-medium mb-1">Lote opcional</label>
+            <select
+              className="w-full border rounded px-3 py-2"
+              value={loteId}
+              onChange={(e) => setLoteId(e.target.value)}
+            >
               <option value="">Sin lote específico</option>
-              {lotes.map(l => (
+
+              {lotes.map((l) => (
                 <option key={l.id} value={l.id}>
                   {l.codigo}
                 </option>
@@ -313,8 +468,15 @@ export default function SalidaVentaPage() {
 
           <div className="mb-3">
             <div className="flex items-center justify-between">
-              <label className="block text-sm font-medium mb-1">Tramos (puede ser más de uno)</label>
-              <button type="button" onClick={addLinea} className="text-sm px-2 py-1 rounded bg-slate-100 hover:bg-slate-200">
+              <label className="block text-sm font-medium mb-1">
+                Tramos
+              </label>
+
+              <button
+                type="button"
+                onClick={addLinea}
+                className="text-sm px-2 py-1 rounded bg-slate-100 hover:bg-slate-200"
+              >
                 + Agregar tramo
               </button>
             </div>
@@ -323,21 +485,42 @@ export default function SalidaVentaPage() {
               {lineas.map((l, idx) => (
                 <div key={idx} className="grid grid-cols-12 gap-2 items-center">
                   <div className="col-span-7">
-                    <select className="w-full border rounded px-3 py-2" value={l.ubicacion_id} onChange={e => updateLinea(idx, 'ubicacion_id', e.target.value)}>
+                    <select
+                      className="w-full border rounded px-3 py-2"
+                      value={l.ubicacion_id}
+                      onChange={(e) =>
+                        updateLinea(idx, 'ubicacion_id', e.target.value)
+                      }
+                    >
                       <option value="">Seleccione una ubicación</option>
-                      {ubicaciones.map(u => (
+
+                      {ubicaciones.map((u) => (
                         <option key={u.id} value={u.id}>
                           {u.codigo} — {u.nombre || ''}
                         </option>
                       ))}
                     </select>
                   </div>
+
                   <div className="col-span-4">
-                    <input type="number" className="w-full border rounded px-3 py-2" placeholder="Cantidad" value={l.cantidad} onChange={e => updateLinea(idx, 'cantidad', e.target.value)} />
+                    <input
+                      type="number"
+                      className="w-full border rounded px-3 py-2"
+                      placeholder="Cantidad"
+                      value={l.cantidad}
+                      onChange={(e) =>
+                        updateLinea(idx, 'cantidad', e.target.value)
+                      }
+                    />
                   </div>
+
                   <div className="col-span-1 text-right">
                     {lineas.length > 1 && (
-                      <button type="button" onClick={() => removeLinea(idx)} className="text-red-600 text-sm">
+                      <button
+                        type="button"
+                        onClick={() => removeLinea(idx)}
+                        className="text-red-600 text-sm"
+                      >
                         ✕
                       </button>
                     )}
@@ -347,49 +530,104 @@ export default function SalidaVentaPage() {
             </div>
 
             <div className="mt-2 text-xs text-gray-600">
-              Cantidad total (sumada): <span className="font-semibold">{totalCantidad}</span>
+              Cantidad total:{' '}
+              <span className="font-semibold">{totalCantidad}</span>
             </div>
           </div>
 
           <div className="grid grid-cols-2 gap-3 mb-3">
             <div>
-              <label className="block text-sm font-medium mb-1">Peso total (lb)</label>
-              <input type="number" className="w-full border rounded px-3 py-2" value={pesoTotalLb} onChange={e => setPesoTotalLb(e.target.value)} />
+              <label className="block text-sm font-medium mb-1">
+                Peso total lb
+              </label>
+              <input
+                type="number"
+                className="w-full border rounded px-3 py-2"
+                value={pesoTotalLb}
+                onChange={(e) => setPesoTotalLb(e.target.value)}
+              />
             </div>
+
             <div>
-              <label className="block text-sm font-medium mb-1">Precio por libra (Q)</label>
-              <input type="number" className="w-full border rounded px-3 py-2" value={precioPorLibra} onChange={e => setPrecioPorLibra(e.target.value)} />
+              <label className="block text-sm font-medium mb-1">
+                Precio por libra Q
+              </label>
+              <input
+                type="number"
+                className="w-full border rounded px-3 py-2"
+                value={precioPorLibra}
+                onChange={(e) => setPrecioPorLibra(e.target.value)}
+              />
             </div>
           </div>
 
           <div className="grid grid-cols-2 gap-3 mb-3">
             <div>
-              <label className="block text-sm font-medium mb-1">Total venta (Q)</label>
-              <input type="number" className="w-full border rounded px-3 py-2 bg-slate-100" value={totalVenta} readOnly />
-              <div className="text-[11px] text-gray-500 mt-1">Se calcula con peso total por precio por libra.</div>
+              <label className="block text-sm font-medium mb-1">
+                Total venta Q
+              </label>
+              <input
+                type="number"
+                className="w-full border rounded px-3 py-2 bg-slate-100"
+                value={totalVenta}
+                readOnly
+              />
+
+              <div className="text-[11px] text-gray-500 mt-1">
+                Se calcula con peso total por precio por libra.
+              </div>
             </div>
+
             <div>
-              <label className="block text-sm font-medium mb-1">Pagado (Q)</label>
-              <input type="number" className="w-full border rounded px-3 py-2" value={pagado} onChange={e => setPagado(e.target.value)} />
+              <label className="block text-sm font-medium mb-1">Pagado Q</label>
+              <input
+                type="number"
+                className="w-full border rounded px-3 py-2"
+                value={pagado}
+                onChange={(e) => setPagado(e.target.value)}
+              />
             </div>
           </div>
 
           <div className="mb-3">
-            <label className="block text-sm font-medium mb-1">Deuda (Q)</label>
-            <input type="number" className="w-full border rounded px-3 py-2 bg-slate-100" value={deuda} readOnly />
-            <div className="text-[11px] text-gray-500 mt-1">Total menos pagado. Se reparte proporcionalmente entre tramos.</div>
+            <label className="block text-sm font-medium mb-1">Deuda Q</label>
+            <input
+              type="number"
+              className="w-full border rounded px-3 py-2 bg-slate-100"
+              value={deuda}
+              readOnly
+            />
+
+            <div className="text-[11px] text-gray-500 mt-1">
+              Total menos pagado. Se reparte proporcionalmente entre tramos.
+            </div>
           </div>
 
           <div className="mb-4">
             <label className="block text-sm font-medium mb-1">Observaciones</label>
-            <textarea className="w-full border rounded px-3 py-2" rows={4} value={observaciones} onChange={e => setObservaciones(e.target.value)} />
+            <textarea
+              className="w-full border rounded px-3 py-2"
+              rows={4}
+              value={observaciones}
+              onChange={(e) => setObservaciones(e.target.value)}
+            />
           </div>
 
           <div className="flex gap-2">
-            <button type="button" onClick={guardarVenta} disabled={saving} className="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white px-4 py-2 rounded">
+            <button
+              type="button"
+              onClick={guardarVenta}
+              disabled={saving}
+              className="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white px-4 py-2 rounded"
+            >
               {saving ? 'Guardando...' : 'Guardar venta'}
             </button>
-            <button type="button" onClick={limpiar} className="bg-slate-200 hover:bg-slate-300 px-4 py-2 rounded">
+
+            <button
+              type="button"
+              onClick={limpiar}
+              className="bg-slate-200 hover:bg-slate-300 px-4 py-2 rounded"
+            >
               Limpiar
             </button>
           </div>
@@ -403,6 +641,7 @@ export default function SalidaVentaPage() {
               <thead className="bg-slate-100 sticky top-0">
                 <tr>
                   <th className="p-2 text-left">Fecha</th>
+                  <th className="p-2 text-left">Código</th>
                   <th className="p-2 text-left">Ubicación</th>
                   <th className="p-2 text-left">Cliente</th>
                   <th className="p-2 text-left">Lote</th>
@@ -411,24 +650,50 @@ export default function SalidaVentaPage() {
                   <th className="p-2 text-right">Total</th>
                 </tr>
               </thead>
+
               <tbody>
-                {ventas.map(v => (
-                  <tr key={v.id} className="border-t">
-                    <td className="p-2">{v.fecha}</td>
-                    <td className="p-2">
-                      <div className="font-medium">{v.granja_ubicaciones?.codigo || '—'}</div>
-                      <div className="text-[11px] text-gray-500">{v.granja_ubicaciones?.nombre || ''}</div>
-                    </td>
-                    <td className="p-2">{v.clientes?.nombre || '—'}</td>
-                    <td className="p-2">{v.granja_lotes?.codigo || '—'}</td>
-                    <td className="p-2 text-right">{v.cantidad}</td>
-                    <td className="p-2 text-right">{v.peso_total_lb}</td>
-                    <td className="p-2 text-right">Q{toNum(v.total).toFixed(2)}</td>
-                  </tr>
-                ))}
+                {ventas.map((v) => {
+                  const codigo =
+                    codigoMulti(v.multi_folio) ||
+                    extraerCodigoMulti(v.observaciones) ||
+                    '—'
+
+                  return (
+                    <tr key={v.id} className="border-t">
+                      <td className="p-2">{v.fecha}</td>
+
+                      <td className="p-2 font-semibold">
+                        {codigo}
+                      </td>
+
+                      <td className="p-2">
+                        <div className="font-medium">
+                          {v.granja_ubicaciones?.codigo || '—'}
+                        </div>
+
+                        <div className="text-[11px] text-gray-500">
+                          {v.granja_ubicaciones?.nombre || ''}
+                        </div>
+                      </td>
+
+                      <td className="p-2">{v.clientes?.nombre || '—'}</td>
+
+                      <td className="p-2">{v.granja_lotes?.codigo || '—'}</td>
+
+                      <td className="p-2 text-right">{v.cantidad}</td>
+
+                      <td className="p-2 text-right">{v.peso_total_lb}</td>
+
+                      <td className="p-2 text-right">
+                        Q{toNum(v.total).toFixed(2)}
+                      </td>
+                    </tr>
+                  )
+                })}
+
                 {ventas.length === 0 && (
                   <tr>
-                    <td className="p-3 text-gray-500" colSpan={7}>
+                    <td className="p-3 text-gray-500" colSpan={8}>
                       Sin ventas aún.
                     </td>
                   </tr>
@@ -438,7 +703,8 @@ export default function SalidaVentaPage() {
           </div>
 
           <div className="mt-2 text-[11px] text-gray-500">
-            Nota: ventas multi-tramo aparecen como varias filas (una por tramo) con <b>MULTI:</b> en observaciones.
+            Las ventas multitramo ahora usan códigos cortos como{' '}
+            <b>MT001</b>, <b>MT002</b> o <b>MT003</b>.
           </div>
         </div>
       </div>
