@@ -21,6 +21,8 @@ type VentaRow = {
   deuda: number
   observaciones: string | null
   created_at: string | null
+  multi_id: string | null
+  multi_folio: number | null
   clientes?: { nombre?: string; nit?: string } | null
   granja_ubicaciones?: { codigo?: string; nombre?: string } | null
   granja_lotes?: { codigo?: string } | null
@@ -43,10 +45,35 @@ const toNum = (v: any) => {
 }
 const round2 = (n: number) => Math.round(n * 100) / 100
 
+const codigoMultiFolio = (folio: number | null | undefined) => {
+  const n = Number(folio)
+  if (!Number.isFinite(n) || n <= 0) return null
+  return `MT${String(Math.trunc(n)).padStart(3, '0')}`
+}
+
 const extraerMulti = (obs: string | null | undefined) => {
   if (!obs) return null
   const m = obs.match(/MULTI:([a-zA-Z0-9_-]+)/)
   return m ? m[1] : null
+}
+
+const codigoMultiVenta = (venta: Pick<VentaRow, 'multi_folio' | 'observaciones'>) => {
+  const porFolio = codigoMultiFolio(venta.multi_folio)
+  if (porFolio) return porFolio
+
+  const porObs = extraerMulti(venta.observaciones)
+  if (!porObs) return null
+
+  if (/^MT\d+$/i.test(porObs)) return porObs.toUpperCase()
+
+  return `LEGADO-${porObs.slice(0, 8).toUpperCase()}`
+}
+
+const limpiarObservacionMulti = (obs: string | null | undefined) => {
+  return String(obs || '')
+    .replace(/\s*\|?\s*MULTI:[a-zA-Z0-9_-]+\s*\(\d+\/\d+\)/g, '')
+    .replace(/\s*\|?\s*MULTI:[a-zA-Z0-9_-]+/g, '')
+    .trim()
 }
 
 async function fetchLogoDataUrl(): Promise<string | null> {
@@ -127,7 +154,7 @@ export default function ReporteVentasGranjaPage() {
       const selectStr = `
         id, fecha, cliente_id, ubicacion_id, lote_id,
         cantidad, peso_total_lb, precio_por_libra, total, pagado, deuda,
-        observaciones, created_at,
+        observaciones, created_at, multi_id, multi_folio,
         ${selectClientes},
         ${selectUbic},
         ${selectLote}
@@ -151,7 +178,7 @@ export default function ReporteVentasGranjaPage() {
       if (lt) query = query.ilike('granja_lotes.codigo', `%${lt}%`)
 
       // multi-tramo (server-side)
-      if (filtros.solo_multi) query = query.ilike('observaciones', `%MULTI:%`)
+      if (filtros.solo_multi) query = query.or('multi_id.not.is.null,multi_folio.not.is.null,observaciones.ilike.%MULTI:%')
 
       const { data, error } = await query
       if (error) {
@@ -246,7 +273,7 @@ export default function ReporteVentasGranjaPage() {
         fmtQ(toNum(v.total)),
         fmtQ(toNum(v.pagado)),
         fmtQ(toNum(v.deuda)),
-        extraerMulti(v.observaciones) || '—',
+        codigoMultiVenta(v) || '—',
       ]),
       styles: { fontSize: 7 },
       columnStyles: { 2: { cellWidth: 30 } },
@@ -259,41 +286,82 @@ export default function ReporteVentasGranjaPage() {
   }
 
   const obtenerFilasParaRecibo = async (baseRow: VentaRow) => {
-    const multi = extraerMulti(baseRow.observaciones)
-    if (!multi) return { filas: [baseRow], multi: null }
+    const multiCodigo = codigoMultiVenta(baseRow)
+    const multiObs = extraerMulti(baseRow.observaciones)
+    const multiFolio = codigoMultiFolio(baseRow.multi_folio) ? Number(baseRow.multi_folio) : null
+    const multiId = baseRow.multi_id || null
 
-    // 1) por MULTI exacto
-    const { data: multiRows, error: multiErr } = await supabase
-      .from('granja_ventas_cerdos')
-      .select(`
-        id, fecha, cliente_id, ubicacion_id, lote_id,
-        cantidad, peso_total_lb, precio_por_libra, total, pagado, deuda,
-        observaciones, created_at,
-        clientes ( nombre, nit ),
-        granja_ubicaciones ( codigo, nombre ),
-        granja_lotes ( codigo )
-      `)
-      .ilike('observaciones', `%MULTI:${multi}%`)
-      .order('id', { ascending: true })
+    if (!multiCodigo && !multiObs && multiFolio === null && !multiId) {
+      return { filas: [baseRow], multi: null }
+    }
 
-    if (!multiErr && (multiRows || []).length > 0) {
-      const all = ((multiRows || []) as any) as VentaRow[]
-      const sameClient = all.filter((r) => r.cliente_id === baseRow.cliente_id)
+    let multiRows: VentaRow[] = []
+    let multiErr: unknown = null
+
+    const selectMulti = `
+      id, fecha, cliente_id, ubicacion_id, lote_id,
+      cantidad, peso_total_lb, precio_por_libra, total, pagado, deuda,
+      observaciones, created_at, multi_id, multi_folio,
+      clientes ( nombre, nit ),
+      granja_ubicaciones ( codigo, nombre ),
+      granja_lotes ( codigo )
+    `
+
+    if (multiFolio !== null) {
+      const res = await supabase
+        .from('granja_ventas_cerdos')
+        .select(selectMulti)
+        .eq('multi_folio', multiFolio)
+        .order('id', { ascending: true })
+
+      multiRows = ((res.data || []) as any) as VentaRow[]
+      multiErr = res.error
+    } else if (multiId) {
+      const res = await supabase
+        .from('granja_ventas_cerdos')
+        .select(selectMulti)
+        .eq('multi_id', multiId)
+        .order('id', { ascending: true })
+
+      multiRows = ((res.data || []) as any) as VentaRow[]
+      multiErr = res.error
+    } else if (multiObs) {
+      const res = await supabase
+        .from('granja_ventas_cerdos')
+        .select(selectMulti)
+        .ilike('observaciones', `%MULTI:${multiObs}%`)
+        .order('id', { ascending: true })
+
+      multiRows = ((res.data || []) as any) as VentaRow[]
+      multiErr = res.error
+    }
+
+    if (!multiErr && multiRows.length > 0) {
+      const sameClient = multiRows.filter((r) => r.cliente_id === baseRow.cliente_id)
       const sameFecha = sameClient.filter((r) => r.fecha === baseRow.fecha)
-      let filas = sameFecha.length > 0 ? sameFecha : (sameClient.length > 0 ? sameClient : [baseRow])
+      let filas =
+        sameFecha.length > 0
+          ? sameFecha
+          : sameClient.length > 0
+            ? sameClient
+            : [baseRow]
 
       filas = [...filas].sort((a, b) => {
         const ca = a.granja_ubicaciones?.codigo || ''
         const cb = b.granja_ubicaciones?.codigo || ''
-        return ca.localeCompare(cb, 'es')
+        return ca.localeCompare(cb, 'es', {
+          numeric: true,
+          sensitivity: 'base',
+        })
       })
 
-      if (filas.length > 1) return { filas, multi }
+      if (filas.length > 1) return { filas, multi: multiCodigo || multiObs }
     }
 
-    // 2) fallback por ventana de tiempo
+    // Fallback para ventas viejas sin multi_folio/multi_id consistente:
+    // agrupa filas creadas en una ventana corta para el mismo cliente, fecha y precio.
     const baseCreated = safeDate(baseRow.created_at)
-    if (!baseCreated) return { filas: [baseRow], multi }
+    if (!baseCreated) return { filas: [baseRow], multi: multiCodigo || multiObs }
 
     const windowMinutes = 3
     const minT = new Date(baseCreated.getTime() - windowMinutes * 60 * 1000)
@@ -301,21 +369,16 @@ export default function ReporteVentasGranjaPage() {
 
     const { data: candRows, error: candErr } = await supabase
       .from('granja_ventas_cerdos')
-      .select(`
-        id, fecha, cliente_id, ubicacion_id, lote_id,
-        cantidad, peso_total_lb, precio_por_libra, total, pagado, deuda,
-        observaciones, created_at,
-        clientes ( nombre, nit ),
-        granja_ubicaciones ( codigo, nombre ),
-        granja_lotes ( codigo )
-      `)
+      .select(selectMulti)
       .eq('cliente_id', baseRow.cliente_id)
       .eq('fecha', baseRow.fecha)
       .gte('created_at', minT.toISOString())
       .lte('created_at', maxT.toISOString())
       .order('id', { ascending: true })
 
-    if (candErr || !candRows || candRows.length === 0) return { filas: [baseRow], multi }
+    if (candErr || !candRows || candRows.length === 0) {
+      return { filas: [baseRow], multi: multiCodigo || multiObs }
+    }
 
     let filas = (((candRows || []) as any) as VentaRow[]).filter((r) => {
       return round2(toNum(r.precio_por_libra)) === round2(toNum(baseRow.precio_por_libra))
@@ -326,10 +389,13 @@ export default function ReporteVentasGranjaPage() {
     filas = [...filas].sort((a, b) => {
       const ca = a.granja_ubicaciones?.codigo || ''
       const cb = b.granja_ubicaciones?.codigo || ''
-      return ca.localeCompare(cb, 'es')
+      return ca.localeCompare(cb, 'es', {
+        numeric: true,
+        sensitivity: 'base',
+      })
     })
 
-    return { filas, multi }
+    return { filas, multi: multiCodigo || multiObs }
   }
 
   const generarReciboPDF = async (ventaId: number) => {
@@ -340,7 +406,7 @@ export default function ReporteVentasGranjaPage() {
         .select(`
           id, fecha, cliente_id, ubicacion_id, lote_id,
           cantidad, peso_total_lb, precio_por_libra, total, pagado, deuda,
-          observaciones, created_at,
+          observaciones, created_at, multi_id, multi_folio,
           clientes ( nombre, nit ),
           granja_ubicaciones ( codigo, nombre ),
           granja_lotes ( codigo )
@@ -363,7 +429,7 @@ export default function ReporteVentasGranjaPage() {
       const totalPagado = filas.reduce((a, r) => a + toNum(r.pagado), 0)
       const totalDeuda = filas.reduce((a, r) => a + toNum(r.deuda), 0)
 
-      const reciboNo = multi ? `MULTI-${multi.slice(0, 8).toUpperCase()}` : `V-${baseRow.id}`
+      const reciboNo = multi ? String(multi).toUpperCase() : `V-${baseRow.id}`
 
       const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
       const logo = await fetchLogoDataUrl()
@@ -386,7 +452,7 @@ export default function ReporteVentasGranjaPage() {
           clienteNom,
           clienteNit,
           multi ? 'Multi-tramo' : 'Normal',
-          multi ? `MULTI:${multi}` : `ID:${baseRow.id}`,
+          multi ? String(multi).toUpperCase() : `ID:${baseRow.id}`,
         ]],
         styles: { fontSize: 9 },
       })
@@ -432,10 +498,7 @@ export default function ReporteVentasGranjaPage() {
       const yObs = (doc as any).lastAutoTable.finalY + 6
       doc.setFontSize(9)
 
-      const obs = (baseRow.observaciones || '')
-        .replace(/MULTI:[a-zA-Z0-9_-]+/g, '')
-        .replace(/\(\d+\/\d+\)/g, '')
-        .trim()
+      const obs = limpiarObservacionMulti(baseRow.observaciones)
 
       if (obs) {
         doc.text('Observaciones:', 14, yObs)
@@ -562,7 +625,7 @@ export default function ReporteVentasGranjaPage() {
               <tr><td className="p-4 text-gray-500" colSpan={14}>No hay datos con esos filtros.</td></tr>
             ) : (
               ventas.map((v) => {
-                const multi = extraerMulti(v.observaciones)
+                const multi = codigoMultiVenta(v)
                 return (
                   <tr key={v.id} className="border-t">
                     <td className="p-2">{v.fecha}</td>
@@ -577,7 +640,7 @@ export default function ReporteVentasGranjaPage() {
                     <td className="p-2 text-right">{fmtQ(toNum(v.total))}</td>
                     <td className="p-2 text-right">{fmtQ(toNum(v.pagado))}</td>
                     <td className="p-2 text-right">{fmtQ(toNum(v.deuda))}</td>
-                    <td className="p-2">{multi ? `MULTI-${multi.slice(0, 8).toUpperCase()}` : '—'}</td>
+                    <td className="p-2 font-semibold">{multi || '—'}</td>
                     <td className="p-2">
                       <button
                         onClick={() => generarReciboPDF(v.id)}
