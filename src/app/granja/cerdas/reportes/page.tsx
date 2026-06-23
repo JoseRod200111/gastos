@@ -270,13 +270,6 @@ const filtrarEventosIntervalo = (
   })
 }
 
-const nombreCerda = (cerda?: Cerda | null) => {
-  if (!cerda) return '—'
-  if (!cerda.nombre || cerda.nombre.trim() === '' || cerda.nombre === cerda.arete) {
-    return cerda.arete
-  }
-  return `${cerda.arete} — ${cerda.nombre}`
-}
 
 const mapCerdas = (cerdas: Cerda[]) => {
   const m = new Map<number, Cerda>()
