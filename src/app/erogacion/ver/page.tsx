@@ -209,7 +209,7 @@ export default function VerErogaciones() {
       if (!grouped[key]) grouped[key] = []
 
       grouped[key].push({
-        ...(row as DetalleCompra),
+        ...(row as unknown as DetalleCompra),
         erogacion_id: key,
         producto_id: row.producto_id === null ? null : Number(row.producto_id),
         cantidad: toNum(row.cantidad),
