@@ -649,6 +649,28 @@ export default function RrhhPlanillaPage() {
     )
   }
 
+  const marcarTodosPagados = () => {
+    const fecha = todayISO()
+
+    setFilas((prev) =>
+      prev.map((row) => (
+        row.estado === 'ANULADO'
+          ? row
+          : { ...row, estado: 'PAGADO', fecha_pago: row.fecha_pago || fecha }
+      ))
+    )
+  }
+
+  const marcarTodosPendientes = () => {
+    setFilas((prev) =>
+      prev.map((row) => (
+        row.estado === 'ANULADO'
+          ? row
+          : { ...row, estado: 'PENDIENTE', fecha_pago: '' }
+      ))
+    )
+  }
+
   const usarSaldoCliente = (empleadoId: number) => {
     setFilas((prev) =>
       prev.map((row) => {
@@ -674,6 +696,94 @@ export default function RrhhPlanillaPage() {
     ]
 
     return detalles.filter((d) => toNum(d.monto) !== 0)
+  }
+
+  const aplicarMovimientosPagados = async (p: Periodo) => {
+    const filasPagadas = filas.filter((row) => row.estado === 'PAGADO')
+    const empleadosConAnticipos = filasPagadas
+      .filter((row) => toNum(row.anticipos) > 0)
+      .map((row) => row.empleado_id)
+
+    const empleadosConPrestamos = filasPagadas
+      .filter((row) => toNum(row.prestamos) > 0)
+      .map((row) => row.empleado_id)
+
+    if (empleadosConAnticipos.length > 0) {
+      const { error } = await supabase
+        .from('rrhh_anticipos')
+        .update({ estado: 'APLICADO', periodo_id: p.id })
+        .in('empleado_id', empleadosConAnticipos)
+        .eq('estado', 'PENDIENTE')
+        .lte('fecha', p.fecha_fin)
+
+      if (error) throw new Error(`Error aplicando anticipos: ${error.message}`)
+    }
+
+    if (empleadosConPrestamos.length > 0) {
+      const { data: cuotasData, error: cuotasError } = await supabase
+        .from('rrhh_prestamo_cuotas')
+        .select('id,prestamo_id,rrhh_prestamos!inner(empleado_id)')
+        .eq('estado', 'PENDIENTE')
+        .eq('periodo_id', p.id)
+        .in('rrhh_prestamos.empleado_id', empleadosConPrestamos)
+
+      if (cuotasError) throw new Error(`Error buscando cuotas de préstamo: ${cuotasError.message}`)
+
+      const cuotas = (cuotasData || []) as unknown[]
+      const cuotaIds: number[] = []
+      const prestamoIds = new Set<number>()
+
+      cuotas.forEach((item) => {
+        const row = item as { id?: number; prestamo_id?: number }
+        const cuotaId = Number(row.id || 0)
+        const prestamoId = Number(row.prestamo_id || 0)
+
+        if (cuotaId > 0) cuotaIds.push(cuotaId)
+        if (prestamoId > 0) prestamoIds.add(prestamoId)
+      })
+
+      if (cuotaIds.length > 0) {
+        const { error } = await supabase
+          .from('rrhh_prestamo_cuotas')
+          .update({ estado: 'APLICADA' })
+          .in('id', cuotaIds)
+
+        if (error) throw new Error(`Error aplicando cuotas de préstamo: ${error.message}`)
+      }
+
+      for (const prestamoId of Array.from(prestamoIds)) {
+        const { count, error: countError } = await supabase
+          .from('rrhh_prestamo_cuotas')
+          .select('id', { count: 'exact', head: true })
+          .eq('prestamo_id', prestamoId)
+          .eq('estado', 'PENDIENTE')
+
+        if (countError) throw new Error(`Error revisando préstamo: ${countError.message}`)
+
+        if ((count || 0) === 0) {
+          const { error } = await supabase
+            .from('rrhh_prestamos')
+            .update({ estado: 'PAGADO' })
+            .eq('id', prestamoId)
+
+          if (error) throw new Error(`Error cerrando préstamo: ${error.message}`)
+        }
+      }
+    }
+
+    const hayPendientes = filas.some((row) => row.estado === 'PENDIENTE')
+    const hayPagadas = filas.some((row) => row.estado === 'PAGADO')
+    const nuevoEstadoPeriodo = hayPendientes ? 'ABIERTO' : hayPagadas ? 'PAGADO' : 'ANULADO'
+
+    const { error: periodoError } = await supabase
+      .from('rrhh_periodos_planilla')
+      .update({
+        estado: nuevoEstadoPeriodo,
+        pagado_en: nuevoEstadoPeriodo === 'PAGADO' ? new Date().toISOString() : null,
+      })
+      .eq('id', p.id)
+
+    if (periodoError) throw new Error(`Error actualizando período: ${periodoError.message}`)
   }
 
   const guardarPlanilla = async () => {
@@ -769,11 +879,13 @@ export default function RrhhPlanillaPage() {
         }
       }
 
+      await aplicarMovimientosPagados(p)
+
       setFilas((prev) =>
         prev.map((row) => ({ ...row, id: idByEmpleado.get(row.empleado_id) || row.id }))
       )
 
-      setMensaje('Planilla guardada correctamente.')
+      setMensaje('Planilla guardada correctamente. Los anticipos y cuotas de empleados marcados como pagados quedaron aplicados.')
     } catch (err) {
       console.error(err)
       setMensaje(err instanceof Error ? err.message : 'Error guardando planilla.')
@@ -1063,7 +1175,23 @@ export default function RrhhPlanillaPage() {
         </div>
       </section>
 
-      <div className="flex justify-end mb-3 gap-2">
+      <div className="flex flex-wrap justify-end gap-2 mb-3">
+        <button
+          type="button"
+          onClick={marcarTodosPagados}
+          disabled={filas.length === 0}
+          className="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white px-4 py-2 rounded text-sm"
+        >
+          Marcar todos pagados
+        </button>
+        <button
+          type="button"
+          onClick={marcarTodosPendientes}
+          disabled={filas.length === 0}
+          className="bg-slate-500 hover:bg-slate-600 disabled:opacity-60 text-white px-4 py-2 rounded text-sm"
+        >
+          Marcar todos pendientes
+        </button>
         <button
           type="button"
           onClick={imprimirReporteGeneral}
@@ -1185,6 +1313,9 @@ export default function RrhhPlanillaPage() {
                     value={row.anticipos}
                     onChange={(e) => updateRow(row.empleado_id, 'anticipos', e.target.value)}
                   />
+                  {toNum(row.anticipos) > 0 && (
+                    <div className="text-[10px] text-slate-500 mt-1">Se aplicará al pagar</div>
+                  )}
                 </td>
 
                 <td className="border p-2">
@@ -1194,6 +1325,9 @@ export default function RrhhPlanillaPage() {
                     value={row.prestamos}
                     onChange={(e) => updateRow(row.empleado_id, 'prestamos', e.target.value)}
                   />
+                  {toNum(row.prestamos) > 0 && (
+                    <div className="text-[10px] text-slate-500 mt-1">Cuota del período</div>
+                  )}
                 </td>
 
                 <td className="border p-2">
