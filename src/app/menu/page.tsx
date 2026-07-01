@@ -63,6 +63,13 @@ export default function Dashboard() {
           🐷 Granja
         </Link>
 
+        <Link
+          href="/rrhh"
+          className="block bg-slate-700 hover:bg-slate-800 text-white text-center py-4 rounded shadow"
+        >
+          Recursos Humanos
+        </Link>
+
         <button
           type="button"
           onClick={handleLogout}
