@@ -623,9 +623,9 @@ export default function RrhhPlanillaPage() {
   }
 
   useEffect(() => {
-    cargarCatalogos().catch((err) => {
+    cargarPlanilla().catch((err) => {
       console.error(err)
-      setMensaje(err instanceof Error ? err.message : 'Error cargando catálogos.')
+      setMensaje(err instanceof Error ? err.message : 'Error cargando planilla.')
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
