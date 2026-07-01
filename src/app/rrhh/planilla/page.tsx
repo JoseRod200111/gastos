@@ -249,6 +249,7 @@ export default function RrhhPlanillaPage() {
   const [mes, setMes] = useState(String(now.getMonth() + 1))
   const [quincena, setQuincena] = useState<'1' | '2'>(now.getDate() <= 15 ? '1' : '2')
 
+  const [empleados, setEmpleados] = useState<Empleado[]>([])
   const [areas, setAreas] = useState<Area[]>([])
   const [distribuciones, setDistribuciones] = useState<Distribucion[]>([])
   const [periodo, setPeriodo] = useState<Periodo | null>(null)
@@ -320,6 +321,7 @@ export default function RrhhPlanillaPage() {
     if (areaRes.error) throw new Error(`Error cargando áreas: ${areaRes.error.message}`)
     if (distRes.error) throw new Error(`Error cargando distribución: ${distRes.error.message}`)
 
+    setEmpleados((empRes.data || []) as Empleado[])
     setAreas((areaRes.data || []) as Area[])
     setDistribuciones((distRes.data || []) as Distribucion[])
 
