@@ -438,14 +438,15 @@ export default function RrhhPlanillaPage() {
     return map
   }
 
-  const cargarCuotasPrestamo = async (empleadosList: Empleado[]) => {
+  const cargarCuotasPrestamo = async (empleadosList: Empleado[], periodoId: number) => {
     const ids = empleadosList.map((e) => e.id)
     if (ids.length === 0) return new Map<number, number>()
 
     const { data, error } = await supabase
       .from('rrhh_prestamo_cuotas')
-      .select('monto, rrhh_prestamos!inner(empleado_id, estado)')
+      .select('monto,periodo_id, rrhh_prestamos!inner(empleado_id, estado)')
       .eq('estado', 'PENDIENTE')
+      .eq('periodo_id', periodoId)
       .eq('rrhh_prestamos.estado', 'ACTIVO')
       .in('rrhh_prestamos.empleado_id', ids)
 
@@ -474,10 +475,10 @@ export default function RrhhPlanillaPage() {
     return map
   }
 
-  const generarFilasIniciales = async (empleadosList: Empleado[]) => {
+  const generarFilasIniciales = async (empleadosList: Empleado[], periodoId: number) => {
     const saldoMap = await cargarSaldosCliente(empleadosList)
     const anticiposMap = await cargarAnticipos(empleadosList)
-    const prestamosMap = await cargarCuotasPrestamo(empleadosList)
+    const prestamosMap = await cargarCuotasPrestamo(empleadosList, periodoId)
 
     const rows = empleadosList.map((emp) => {
       const salarioDiario = round2(toNum(emp.salario_base) / 30)
@@ -557,7 +558,7 @@ export default function RrhhPlanillaPage() {
       const guardadas = (data || []) as PlanillaGuardada[]
 
       if (guardadas.length === 0) {
-        await generarFilasIniciales(empleadosList)
+        await generarFilasIniciales(empleadosList, p.id)
         setMensaje('Planilla preparada con empleados activos. Revisa y guarda para fijar los cálculos.')
         return
       }
