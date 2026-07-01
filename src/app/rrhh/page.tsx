@@ -49,27 +49,45 @@ export default function RrhhMenuPage() {
         </section>
 
         <section className="border rounded-lg p-4 shadow-sm bg-white">
-          <h2 className="font-semibold mb-3">Anticipos y préstamos</h2>
+          <h2 className="font-semibold mb-3">Anticipos</h2>
           <div className="grid gap-2">
-            <button
-              type="button"
-              disabled
-              className="block bg-slate-300 text-slate-700 text-center py-3 rounded cursor-not-allowed"
+            <Link
+              href="/rrhh/anticipos"
+              className="block bg-orange-600 hover:bg-orange-700 text-white text-center py-3 rounded"
             >
-              Sección pendiente
-            </button>
+              Registrar anticipos
+            </Link>
           </div>
         </section>
 
         <section className="border rounded-lg p-4 shadow-sm bg-white">
-          <h2 className="font-semibold mb-3">Reportes y finiquitos</h2>
+          <h2 className="font-semibold mb-3">Préstamos</h2>
           <div className="grid gap-2">
+            <Link
+              href="/rrhh/prestamos"
+              className="block bg-purple-600 hover:bg-purple-700 text-white text-center py-3 rounded"
+            >
+              Registrar préstamos y cuotas
+            </Link>
+          </div>
+        </section>
+
+        <section className="border rounded-lg p-4 shadow-sm bg-white md:col-span-2">
+          <h2 className="font-semibold mb-3">Reportes, descuentos y finiquitos</h2>
+          <div className="grid gap-2 md:grid-cols-2">
             <button
               type="button"
               disabled
               className="block bg-slate-300 text-slate-700 text-center py-3 rounded cursor-not-allowed"
             >
-              Sección pendiente
+              Descuentos por ventas pendiente
+            </button>
+            <button
+              type="button"
+              disabled
+              className="block bg-slate-300 text-slate-700 text-center py-3 rounded cursor-not-allowed"
+            >
+              Finiquitos pendiente
             </button>
           </div>
         </section>
