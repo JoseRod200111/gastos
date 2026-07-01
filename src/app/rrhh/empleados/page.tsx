@@ -8,7 +8,7 @@ type Area = {
   id: number
   codigo: string
   nombre: string
-  activa: boolean
+  activo: boolean
 }
 
 type Cliente = {
@@ -30,7 +30,7 @@ type Division = {
 type Empleado = {
   id: number
   codigo: string
-  nombre: string
+  nombre_completo: string
   dpi: string | null
   nit: string | null
   telefono: string | null
@@ -44,7 +44,7 @@ type Empleado = {
   cliente_id: number | null
   empresa_id: number | null
   division_id: number | null
-  notas: string | null
+  observaciones: string | null
   updated_at: string | null
 }
 
@@ -72,7 +72,7 @@ type FormState = {
   cliente_id: string
   empresa_id: string
   division_id: string
-  notas: string
+  observaciones: string
 }
 
 const emptyForm = (): FormState => ({
@@ -92,7 +92,7 @@ const emptyForm = (): FormState => ({
   cliente_id: '',
   empresa_id: '',
   division_id: '',
-  notas: '',
+  observaciones: '',
 })
 
 const toNum = (value: string | number | null | undefined) => {
@@ -100,9 +100,7 @@ const toNum = (value: string | number | null | undefined) => {
   return Number.isFinite(n) ? n : 0
 }
 
-const money = (value: string | number | null | undefined) => {
-  return `Q${toNum(value).toFixed(2)}`
-}
+const money = (value: string | number | null | undefined) => `Q${toNum(value).toFixed(2)}`
 
 const todayISO = () => {
   const d = new Date()
@@ -132,31 +130,35 @@ export default function RrhhEmpleadosPage() {
     setLoading(true)
     setMensaje('')
 
-    const [empRes, cliRes, empCatRes, divRes, areasRes, distRes] = await Promise.all([
+    const [empleadosRes, clientesRes, empresasRes, divisionesRes, areasRes, distRes] = await Promise.all([
       supabase
         .from('rrhh_empleados')
         .select(
-          'id,codigo,nombre,dpi,nit,telefono,direccion,fecha_ingreso,fecha_baja,motivo_baja,estado,salario_base,bono_produccion_diario,cliente_id,empresa_id,division_id,notas,updated_at'
+          'id,codigo,nombre_completo,dpi,nit,telefono,direccion,fecha_ingreso,fecha_baja,motivo_baja,estado,salario_base,bono_produccion_diario,cliente_id,empresa_id,division_id,observaciones,updated_at'
         )
-        .order('nombre', { ascending: true }),
+        .order('nombre_completo', { ascending: true }),
       supabase.from('clientes').select('id,nombre,nit').order('nombre', { ascending: true }),
       supabase.from('empresas').select('id,nombre').order('nombre', { ascending: true }),
       supabase.from('divisiones').select('id,nombre').order('nombre', { ascending: true }),
-      supabase.from('rrhh_areas').select('id,codigo,nombre,activa').eq('activa', true).order('id', { ascending: true }),
+      supabase
+        .from('rrhh_areas')
+        .select('id,codigo,nombre,activo')
+        .eq('activo', true)
+        .order('id', { ascending: true }),
       supabase.from('rrhh_empleado_distribucion').select('id,empleado_id,area_id,porcentaje'),
     ])
 
-    if (empRes.error) setMensaje(`Error cargando empleados: ${empRes.error.message}`)
-    if (cliRes.error) setMensaje(`Error cargando clientes: ${cliRes.error.message}`)
-    if (empCatRes.error) setMensaje(`Error cargando empresas: ${empCatRes.error.message}`)
-    if (divRes.error) setMensaje(`Error cargando divisiones: ${divRes.error.message}`)
+    if (empleadosRes.error) setMensaje(`Error cargando empleados: ${empleadosRes.error.message}`)
+    if (clientesRes.error) setMensaje(`Error cargando clientes: ${clientesRes.error.message}`)
+    if (empresasRes.error) setMensaje(`Error cargando empresas: ${empresasRes.error.message}`)
+    if (divisionesRes.error) setMensaje(`Error cargando divisiones: ${divisionesRes.error.message}`)
     if (areasRes.error) setMensaje(`Error cargando áreas: ${areasRes.error.message}`)
     if (distRes.error) setMensaje(`Error cargando distribución: ${distRes.error.message}`)
 
-    setEmpleados((empRes.data || []) as Empleado[])
-    setClientes((cliRes.data || []) as Cliente[])
-    setEmpresas((empCatRes.data || []) as Empresa[])
-    setDivisiones((divRes.data || []) as Division[])
+    setEmpleados((empleadosRes.data || []) as Empleado[])
+    setClientes((clientesRes.data || []) as Cliente[])
+    setEmpresas((empresasRes.data || []) as Empresa[])
+    setDivisiones((divisionesRes.data || []) as Division[])
     setAreas((areasRes.data || []) as Area[])
     setDistribuciones((distRes.data || []) as Distribucion[])
 
@@ -165,6 +167,7 @@ export default function RrhhEmpleadosPage() {
 
   useEffect(() => {
     cargarTodo()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   useEffect(() => {
@@ -204,7 +207,7 @@ export default function RrhhEmpleadosPage() {
 
     return empleados.filter((empleado) => {
       const estadoOk = estadoFiltro === 'TODOS' || empleado.estado === estadoFiltro
-      const texto = `${empleado.codigo} ${empleado.nombre} ${empleado.dpi || ''} ${empleado.nit || ''}`.toLowerCase()
+      const texto = `${empleado.codigo} ${empleado.nombre_completo} ${empleado.dpi || ''} ${empleado.nit || ''}`.toLowerCase()
       const textoOk = q === '' || texto.includes(q)
       return estadoOk && textoOk
     })
@@ -241,7 +244,7 @@ export default function RrhhEmpleadosPage() {
     setForm({
       id: empleado.id,
       codigo: empleado.codigo || '',
-      nombre: empleado.nombre || '',
+      nombre: empleado.nombre_completo || '',
       dpi: empleado.dpi || '',
       nit: empleado.nit || '',
       telefono: empleado.telefono || '',
@@ -255,7 +258,7 @@ export default function RrhhEmpleadosPage() {
       cliente_id: empleado.cliente_id ? String(empleado.cliente_id) : '',
       empresa_id: empleado.empresa_id ? String(empleado.empresa_id) : '',
       division_id: empleado.division_id ? String(empleado.division_id) : '',
-      notas: empleado.notas || '',
+      observaciones: empleado.observaciones || '',
     })
 
     setPorcentajes(nuevoPorcentaje)
@@ -273,17 +276,24 @@ export default function RrhhEmpleadosPage() {
     return ''
   }
 
-  const guardarAuditoria = async (empleadoId: number, accion: string, descripcion: string, snapshot: unknown) => {
+  const guardarAuditoria = async (
+    empleadoId: number,
+    accion: string,
+    observaciones: string,
+    detalle: unknown
+  ) => {
     const { data } = await supabase.auth.getUser()
     const user = data?.user ?? null
 
     await supabase.from('rrhh_auditoria').insert({
-      empleado_id: empleadoId,
+      tabla: 'rrhh_empleados',
       accion,
-      descripcion,
-      snapshot,
-      user_id: user?.id ?? null,
-      user_email: user?.email ?? null,
+      registro_id: String(empleadoId),
+      empleado_id: empleadoId,
+      usuario_id: user?.id ?? null,
+      usuario_email: user?.email ?? null,
+      detalle,
+      observaciones,
     })
   }
 
@@ -300,10 +310,12 @@ export default function RrhhEmpleadosPage() {
 
     const { data: authData } = await supabase.auth.getUser()
     const userId = authData?.user?.id ?? null
+    const userEmail = authData?.user?.email ?? null
+    const now = new Date().toISOString()
 
     const payload = {
       codigo: form.codigo.trim(),
-      nombre: form.nombre.trim(),
+      nombre_completo: form.nombre.trim(),
       dpi: form.dpi.trim() || null,
       nit: form.nit.trim() || null,
       telefono: form.telefono.trim() || null,
@@ -317,8 +329,11 @@ export default function RrhhEmpleadosPage() {
       cliente_id: form.cliente_id ? Number(form.cliente_id) : null,
       empresa_id: form.empresa_id ? Number(form.empresa_id) : null,
       division_id: form.division_id ? Number(form.division_id) : null,
-      notas: form.notas.trim() || null,
-      updated_by: userId,
+      observaciones: form.observaciones.trim() || null,
+      user_id: userId,
+      updated_at: now,
+      editado_por: userEmail,
+      editado_en: now,
     }
 
     let empleadoId = form.id
@@ -337,10 +352,7 @@ export default function RrhhEmpleadosPage() {
 
       const { data, error } = await supabase
         .from('rrhh_empleados')
-        .insert({
-          ...payload,
-          created_by: userId,
-        })
+        .insert(payload)
         .select('id')
         .single()
 
@@ -404,7 +416,7 @@ export default function RrhhEmpleadosPage() {
   }
 
   const darDeBaja = async (empleado: Empleado) => {
-    const motivo = window.prompt(`Motivo de baja para ${empleado.nombre}:`, empleado.motivo_baja || '')
+    const motivo = window.prompt(`Motivo de baja para ${empleado.nombre_completo}:`, empleado.motivo_baja || '')
 
     if (motivo === null) return
 
@@ -414,6 +426,8 @@ export default function RrhhEmpleadosPage() {
 
     const { data: authData } = await supabase.auth.getUser()
     const userId = authData?.user?.id ?? null
+    const userEmail = authData?.user?.email ?? null
+    const now = new Date().toISOString()
 
     const { error } = await supabase
       .from('rrhh_empleados')
@@ -421,7 +435,10 @@ export default function RrhhEmpleadosPage() {
         estado: 'BAJA',
         fecha_baja: fecha || todayISO(),
         motivo_baja: motivo.trim() || null,
-        updated_by: userId,
+        user_id: userId,
+        updated_at: now,
+        editado_por: userEmail,
+        editado_en: now,
       })
       .eq('id', empleado.id)
 
@@ -440,11 +457,13 @@ export default function RrhhEmpleadosPage() {
   }
 
   const reactivar = async (empleado: Empleado) => {
-    const confirmar = window.confirm(`¿Reactivar a ${empleado.nombre}?`)
+    const confirmar = window.confirm(`¿Reactivar a ${empleado.nombre_completo}?`)
     if (!confirmar) return
 
     const { data: authData } = await supabase.auth.getUser()
     const userId = authData?.user?.id ?? null
+    const userEmail = authData?.user?.email ?? null
+    const now = new Date().toISOString()
 
     const { error } = await supabase
       .from('rrhh_empleados')
@@ -452,7 +471,10 @@ export default function RrhhEmpleadosPage() {
         estado: 'ACTIVO',
         fecha_baja: null,
         motivo_baja: null,
-        updated_by: userId,
+        user_id: userId,
+        updated_at: now,
+        editado_por: userEmail,
+        editado_en: now,
       })
       .eq('id', empleado.id)
 
@@ -486,11 +508,7 @@ export default function RrhhEmpleadosPage() {
         </Link>
       </div>
 
-      {mensaje && (
-        <div className="mb-4 border rounded p-3 text-sm bg-slate-50">
-          {mensaje}
-        </div>
-      )}
+      {mensaje && <div className="mb-4 border rounded p-3 text-sm bg-slate-50">{mensaje}</div>}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
         <section className="border rounded-lg p-4 bg-white shadow-sm">
@@ -673,9 +691,7 @@ export default function RrhhEmpleadosPage() {
                     type="number"
                     className="w-full border rounded px-3 py-2"
                     value={porcentajes[area.id] ?? '0'}
-                    onChange={(e) =>
-                      setPorcentajes({ ...porcentajes, [area.id]: e.target.value })
-                    }
+                    onChange={(e) => setPorcentajes({ ...porcentajes, [area.id]: e.target.value })}
                   />
                 </div>
               ))}
@@ -718,12 +734,12 @@ export default function RrhhEmpleadosPage() {
           </div>
 
           <div className="mt-3">
-            <label className="block text-xs font-semibold mb-1">Notas</label>
+            <label className="block text-xs font-semibold mb-1">Observaciones</label>
             <textarea
               className="w-full border rounded px-3 py-2"
               rows={3}
-              value={form.notas}
-              onChange={(e) => setForm({ ...form, notas: e.target.value })}
+              value={form.observaciones}
+              onChange={(e) => setForm({ ...form, observaciones: e.target.value })}
             />
           </div>
 
@@ -803,7 +819,7 @@ export default function RrhhEmpleadosPage() {
                     <tr key={empleado.id} className="border-t align-top">
                       <td className="p-2 font-semibold">{empleado.codigo}</td>
                       <td className="p-2">
-                        <div className="font-semibold">{empleado.nombre}</div>
+                        <div className="font-semibold">{empleado.nombre_completo}</div>
                         <div className="text-xs text-gray-600">Ingreso: {empleado.fecha_ingreso}</div>
                         {empleado.dpi && <div className="text-xs text-gray-600">DPI: {empleado.dpi}</div>}
                       </td>
