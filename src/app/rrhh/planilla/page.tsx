@@ -249,7 +249,6 @@ export default function RrhhPlanillaPage() {
   const [mes, setMes] = useState(String(now.getMonth() + 1))
   const [quincena, setQuincena] = useState<'1' | '2'>(now.getDate() <= 15 ? '1' : '2')
 
-  const [empleados, setEmpleados] = useState<Empleado[]>([])
   const [areas, setAreas] = useState<Area[]>([])
   const [distribuciones, setDistribuciones] = useState<Distribucion[]>([])
   const [periodo, setPeriodo] = useState<Periodo | null>(null)
@@ -259,6 +258,8 @@ export default function RrhhPlanillaPage() {
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [mensaje, setMensaje] = useState('')
+  const [busquedaEmpleado, setBusquedaEmpleado] = useState('')
+  const [estadoFiltro, setEstadoFiltro] = useState<'TODOS' | 'PENDIENTE' | 'PAGADO' | 'ANULADO'>('TODOS')
 
   const fechas = useMemo(() => {
     return calcularFechasPeriodo(Number(anio), Number(mes), Number(quincena))
@@ -278,6 +279,22 @@ export default function RrhhPlanillaPage() {
       { empleados: 0, pagados: 0, pendientes: 0, devengado: 0, descuentos: 0, liquido: 0 }
     )
   }, [filas])
+
+
+  const filasVisibles = useMemo(() => {
+    const q = busquedaEmpleado.trim().toLowerCase()
+
+    return filas.filter((row) => {
+      const matchTexto = !q
+        || row.codigo.toLowerCase().includes(q)
+        || row.nombre.toLowerCase().includes(q)
+        || String(row.empleado_id).includes(q)
+
+      const matchEstado = estadoFiltro === 'TODOS' || row.estado === estadoFiltro
+
+      return matchTexto && matchEstado
+    })
+  }, [filas, busquedaEmpleado, estadoFiltro])
 
   const distribucionesPorEmpleado = useMemo(() => {
     const map = new Map<number, Distribucion[]>()
@@ -321,7 +338,6 @@ export default function RrhhPlanillaPage() {
     if (areaRes.error) throw new Error(`Error cargando áreas: ${areaRes.error.message}`)
     if (distRes.error) throw new Error(`Error cargando distribución: ${distRes.error.message}`)
 
-    setEmpleados((empRes.data || []) as Empleado[])
     setAreas((areaRes.data || []) as Area[])
     setDistribuciones((distRes.data || []) as Distribucion[])
 
@@ -521,6 +537,13 @@ export default function RrhhPlanillaPage() {
 
     try {
       const { empleadosList } = await cargarCatalogos()
+
+      if (empleadosList.length === 0) {
+        setFilas([])
+        setMensaje('No se encontraron empleados activos. Si sí aparecen en SQL, revisa permisos/RLS de rrhh_empleados y rrhh_empleado_distribucion.')
+        return
+      }
+
       const p = await obtenerOCrearPeriodo()
 
       const { data, error } = await supabase
@@ -1005,6 +1028,40 @@ export default function RrhhPlanillaPage() {
         </div>
       </section>
 
+      <section className="border rounded-lg p-3 bg-white mb-3">
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-3 items-end">
+          <label className="text-sm md:col-span-2">
+            Buscar empleado
+            <input
+              type="text"
+              className="mt-1 border rounded px-3 py-2 w-full"
+              placeholder="Código, nombre o ID"
+              value={busquedaEmpleado}
+              onChange={(e) => setBusquedaEmpleado(e.target.value)}
+            />
+          </label>
+
+          <label className="text-sm">
+            Estado
+            <select
+              className="mt-1 border rounded px-3 py-2 w-full"
+              value={estadoFiltro}
+              onChange={(e) => setEstadoFiltro(e.target.value as typeof estadoFiltro)}
+            >
+              <option value="TODOS">Todos</option>
+              <option value="PENDIENTE">Pendientes</option>
+              <option value="PAGADO">Pagados</option>
+              <option value="ANULADO">Anulados</option>
+            </select>
+          </label>
+
+          <div className="text-sm border rounded px-3 py-2 bg-slate-50">
+            <div className="text-slate-600">Mostrando</div>
+            <div className="font-semibold">{filasVisibles.length} de {filas.length}</div>
+          </div>
+        </div>
+      </section>
+
       <div className="flex justify-end mb-3 gap-2">
         <button
           type="button"
@@ -1039,7 +1096,7 @@ export default function RrhhPlanillaPage() {
           </thead>
 
           <tbody>
-            {filas.map((row) => (
+            {filasVisibles.map((row) => (
               <tr key={row.empleado_id} className="align-top">
                 <td className="border p-2 min-w-[220px]">
                   <div className="font-semibold">{row.codigo}</div>
@@ -1214,6 +1271,14 @@ export default function RrhhPlanillaPage() {
               <tr>
                 <td className="p-4 text-slate-600" colSpan={15}>
                   Carga o genera una planilla para ver empleados.
+                </td>
+              </tr>
+            )}
+
+            {filas.length > 0 && filasVisibles.length === 0 && (
+              <tr>
+                <td className="p-4 text-slate-600" colSpan={15}>
+                  No hay empleados que coincidan con el filtro aplicado.
                 </td>
               </tr>
             )}
