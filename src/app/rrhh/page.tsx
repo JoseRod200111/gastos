@@ -81,13 +81,12 @@ export default function RrhhMenuPage() {
             >
               Descuentos por ventas
             </Link>
-            <button
-              type="button"
-              disabled
-              className="block bg-slate-300 text-slate-700 text-center py-3 rounded cursor-not-allowed"
+            <Link
+              href="/rrhh/finiquitos"
+              className="block bg-slate-700 hover:bg-slate-800 text-white text-center py-3 rounded"
             >
-              Finiquitos pendiente
-            </button>
+              Finiquitos y bajas
+            </Link>
           </div>
         </section>
       </div>
