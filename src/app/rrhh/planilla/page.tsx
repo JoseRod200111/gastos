@@ -475,10 +475,48 @@ export default function RrhhPlanillaPage() {
     return map
   }
 
+  const cargarCuotasVentas = async (empleadosList: Empleado[], periodoId: number) => {
+    const ids = empleadosList.map((e) => e.id)
+    if (ids.length === 0) return new Map<number, number>()
+
+    const { data, error } = await supabase
+      .from('rrhh_descuentos_ventas_cuotas')
+      .select('monto,periodo_id, rrhh_descuentos_ventas!inner(empleado_id, estado)')
+      .eq('estado', 'PENDIENTE')
+      .eq('periodo_id', periodoId)
+      .eq('rrhh_descuentos_ventas.estado', 'PENDIENTE')
+      .in('rrhh_descuentos_ventas.empleado_id', ids)
+
+    if (error) {
+      console.error('Error cargando cuotas de ventas', error)
+      return new Map<number, number>()
+    }
+
+    const map = new Map<number, number>()
+
+    ;((data || []) as unknown[]).forEach((item) => {
+      const row = item as {
+        monto?: number
+        rrhh_descuentos_ventas?: { empleado_id?: number } | { empleado_id?: number }[]
+      }
+      const descuento = Array.isArray(row.rrhh_descuentos_ventas)
+        ? row.rrhh_descuentos_ventas[0]
+        : row.rrhh_descuentos_ventas
+      const empleadoId = Number(descuento?.empleado_id || 0)
+
+      if (empleadoId > 0) {
+        map.set(empleadoId, round2((map.get(empleadoId) || 0) + toNum(row.monto)))
+      }
+    })
+
+    return map
+  }
+
   const generarFilasIniciales = async (empleadosList: Empleado[], periodoId: number) => {
     const saldoMap = await cargarSaldosCliente(empleadosList)
     const anticiposMap = await cargarAnticipos(empleadosList)
     const prestamosMap = await cargarCuotasPrestamo(empleadosList, periodoId)
+    const ventasCuotasMap = await cargarCuotasVentas(empleadosList, periodoId)
 
     const rows = empleadosList.map((emp) => {
       const salarioDiario = round2(toNum(emp.salario_base) / 30)
@@ -516,7 +554,7 @@ export default function RrhhPlanillaPage() {
           irtra: String(irtra),
           anticipos: String(anticiposMap.get(emp.id) || 0),
           prestamos: String(prestamosMap.get(emp.id) || 0),
-          descuentos_ventas: '0',
+          descuentos_ventas: String(ventasCuotasMap.get(emp.id) || 0),
           descuentos_manual: '0',
           total_devengado: 0,
           total_descuentos: 0,
@@ -671,15 +709,6 @@ export default function RrhhPlanillaPage() {
     )
   }
 
-  const usarSaldoCliente = (empleadoId: number) => {
-    setFilas((prev) =>
-      prev.map((row) => {
-        if (row.empleado_id !== empleadoId) return row
-        return calcularFila({ ...row, descuentos_ventas: String(row.saldo_cliente) }, parametros)
-      })
-    )
-  }
-
   const detalleParaFila = (row: PlanillaRow) => {
     const detalles = [
       { tipo: 'DEVENGADO', concepto: 'Salario ordinario', monto: row.salario_ordinario },
@@ -706,6 +735,10 @@ export default function RrhhPlanillaPage() {
 
     const empleadosConPrestamos = filasPagadas
       .filter((row) => toNum(row.prestamos) > 0)
+      .map((row) => row.empleado_id)
+
+    const empleadosConVentas = filasPagadas
+      .filter((row) => toNum(row.descuentos_ventas) > 0)
       .map((row) => row.empleado_id)
 
     if (empleadosConAnticipos.length > 0) {
@@ -767,6 +800,58 @@ export default function RrhhPlanillaPage() {
             .eq('id', prestamoId)
 
           if (error) throw new Error(`Error cerrando préstamo: ${error.message}`)
+        }
+      }
+    }
+
+    if (empleadosConVentas.length > 0) {
+      const { data: cuotasData, error: cuotasError } = await supabase
+        .from('rrhh_descuentos_ventas_cuotas')
+        .select('id,descuento_id,rrhh_descuentos_ventas!inner(empleado_id)')
+        .eq('estado', 'PENDIENTE')
+        .eq('periodo_id', p.id)
+        .in('rrhh_descuentos_ventas.empleado_id', empleadosConVentas)
+
+      if (cuotasError) throw new Error(`Error buscando cuotas de ventas: ${cuotasError.message}`)
+
+      const cuotasVentas = (cuotasData || []) as unknown[]
+      const cuotaIds: number[] = []
+      const descuentoIds = new Set<number>()
+
+      cuotasVentas.forEach((item) => {
+        const row = item as { id?: number; descuento_id?: number }
+        const cuotaId = Number(row.id || 0)
+        const descuentoId = Number(row.descuento_id || 0)
+
+        if (cuotaId > 0) cuotaIds.push(cuotaId)
+        if (descuentoId > 0) descuentoIds.add(descuentoId)
+      })
+
+      if (cuotaIds.length > 0) {
+        const { error } = await supabase
+          .from('rrhh_descuentos_ventas_cuotas')
+          .update({ estado: 'APLICADA' })
+          .in('id', cuotaIds)
+
+        if (error) throw new Error(`Error aplicando cuotas de ventas: ${error.message}`)
+      }
+
+      for (const descuentoId of Array.from(descuentoIds)) {
+        const { count, error: countError } = await supabase
+          .from('rrhh_descuentos_ventas_cuotas')
+          .select('id', { count: 'exact', head: true })
+          .eq('descuento_id', descuentoId)
+          .eq('estado', 'PENDIENTE')
+
+        if (countError) throw new Error(`Error revisando descuento de ventas: ${countError.message}`)
+
+        if ((count || 0) === 0) {
+          const { error } = await supabase
+            .from('rrhh_descuentos_ventas')
+            .update({ estado: 'APLICADO' })
+            .eq('id', descuentoId)
+
+          if (error) throw new Error(`Error cerrando descuento de ventas: ${error.message}`)
         }
       }
     }
@@ -1338,13 +1423,12 @@ export default function RrhhPlanillaPage() {
                     onChange={(e) => updateRow(row.empleado_id, 'descuentos_ventas', e.target.value)}
                   />
                   {row.saldo_cliente > 0 && (
-                    <button
-                      type="button"
-                      onClick={() => usarSaldoCliente(row.empleado_id)}
-                      className="block mt-1 text-[10px] bg-red-600 text-white rounded px-2 py-1"
+                    <Link
+                      href="/rrhh/descuentos-ventas"
+                      className="block mt-1 text-[10px] bg-red-600 text-white rounded px-2 py-1 text-center"
                     >
-                      Usar saldo
-                    </button>
+                      Programar
+                    </Link>
                   )}
                 </td>
 
