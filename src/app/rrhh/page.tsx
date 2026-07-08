@@ -75,13 +75,12 @@ export default function RrhhMenuPage() {
         <section className="border rounded-lg p-4 shadow-sm bg-white md:col-span-2">
           <h2 className="font-semibold mb-3">Reportes, descuentos y finiquitos</h2>
           <div className="grid gap-2 md:grid-cols-2">
-            <button
-              type="button"
-              disabled
-              className="block bg-slate-300 text-slate-700 text-center py-3 rounded cursor-not-allowed"
+            <Link
+              href="/rrhh/descuentos-ventas"
+              className="block bg-red-600 hover:bg-red-700 text-white text-center py-3 rounded"
             >
-              Descuentos por ventas pendiente
-            </button>
+              Descuentos por ventas
+            </Link>
             <button
               type="button"
               disabled
