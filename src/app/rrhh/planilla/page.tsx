@@ -727,6 +727,127 @@ export default function RrhhPlanillaPage() {
     return detalles.filter((d) => toNum(d.monto) !== 0)
   }
 
+
+  const crearDescuentosVentasDirectos = async (p: Periodo, userId: string | null) => {
+    const filasPagadasConVentas = filas.filter(
+      (row) => row.estado === 'PAGADO' && toNum(row.descuentos_ventas) > 0
+    )
+
+    if (filasPagadasConVentas.length === 0) return
+
+    const empleadoIds = filasPagadasConVentas.map((row) => row.empleado_id)
+
+    const { data: cuotasExistentes, error: cuotasError } = await supabase
+      .from('rrhh_descuentos_ventas_cuotas')
+      .select('monto,estado,rrhh_descuentos_ventas!inner(empleado_id,estado,modulo)')
+      .eq('periodo_id', p.id)
+      .in('rrhh_descuentos_ventas.empleado_id', empleadoIds)
+
+    if (cuotasError) throw new Error(`Error revisando descuentos de ventas existentes: ${cuotasError.message}`)
+
+    const programadoPorEmpleado = new Map<number, number>()
+
+    ;((cuotasExistentes || []) as unknown[]).forEach((item) => {
+      const row = item as {
+        monto?: number
+        estado?: string
+        rrhh_descuentos_ventas?: { empleado_id?: number; estado?: string } | { empleado_id?: number; estado?: string }[]
+      }
+      const descuento = Array.isArray(row.rrhh_descuentos_ventas)
+        ? row.rrhh_descuentos_ventas[0]
+        : row.rrhh_descuentos_ventas
+
+      if (!descuento || descuento.estado === 'ANULADO' || row.estado === 'ANULADA') return
+
+      const empleadoId = Number(descuento.empleado_id || 0)
+      if (empleadoId > 0) {
+        programadoPorEmpleado.set(
+          empleadoId,
+          round2((programadoPorEmpleado.get(empleadoId) || 0) + toNum(row.monto))
+        )
+      }
+    })
+
+    const crearDescuento = async (
+      row: PlanillaRow,
+      modulo: 'VENTAS' | 'GRANJA_CERDOS',
+      monto: number
+    ) => {
+      if (monto <= 0) return
+      if (!row.cliente_id) {
+        throw new Error(`El empleado ${row.codigo} - ${row.nombre} no tiene cliente vinculado.`)
+      }
+
+      const { data: descData, error: descError } = await supabase
+        .from('rrhh_descuentos_ventas')
+        .insert({
+          empleado_id: row.empleado_id,
+          cliente_id: row.cliente_id,
+          periodo_id: p.id,
+          modulo,
+          fecha: p.fecha_fin,
+          monto_total: round2(monto),
+          numero_cuotas: 1,
+          monto_cuota: round2(monto),
+          estado: 'PENDIENTE',
+          observaciones: `DESCUENTO DIRECTO DESDE PLANILLA ${p.fecha_inicio} a ${p.fecha_fin}.`,
+          user_id: userId,
+        })
+        .select('id')
+        .single()
+
+      if (descError) throw new Error(`Error creando descuento directo de ventas: ${descError.message}`)
+
+      const descuentoId = Number(descData?.id || 0)
+      if (!descuentoId) throw new Error('No se pudo obtener el ID del descuento directo.')
+
+      const { error: cuotaError } = await supabase
+        .from('rrhh_descuentos_ventas_cuotas')
+        .insert({
+          descuento_id: descuentoId,
+          numero_cuota: 1,
+          periodo_id: p.id,
+          monto: round2(monto),
+          estado: 'PENDIENTE',
+        })
+
+      if (cuotaError) throw new Error(`Error creando cuota directa de ventas: ${cuotaError.message}`)
+    }
+
+    for (const row of filasPagadasConVentas) {
+      const montoEnPlanilla = round2(toNum(row.descuentos_ventas))
+      const montoYaProgramado = round2(programadoPorEmpleado.get(row.empleado_id) || 0)
+      const faltantePorProgramar = round2(montoEnPlanilla - montoYaProgramado)
+
+      if (faltantePorProgramar <= 0) continue
+
+      if (!row.cliente_id) {
+        throw new Error(`El empleado ${row.codigo} - ${row.nombre} tiene descuento de ventas pero no tiene cliente vinculado.`)
+      }
+
+      let restante = faltantePorProgramar
+      const montoVentasRegulares = round2(Math.min(restante, Math.max(row.saldo_ventas, 0)))
+      restante = round2(restante - montoVentasRegulares)
+      const montoVentasGranja = round2(Math.min(restante, Math.max(row.saldo_granja, 0)))
+      restante = round2(restante - montoVentasGranja)
+
+      if (montoVentasRegulares > 0) {
+        await crearDescuento(row, 'VENTAS', montoVentasRegulares)
+      }
+
+      if (montoVentasGranja > 0) {
+        await crearDescuento(row, 'GRANJA_CERDOS', montoVentasGranja)
+      }
+
+      if (restante > 0) {
+        throw new Error(
+          `El descuento de ventas de ${row.codigo} - ${row.nombre} excede la deuda actual por ${money(restante)}. `
+          + `Deuda actual: ventas ${money(row.saldo_ventas)}, granja ${money(row.saldo_granja)}.`
+        )
+      }
+    }
+  }
+
   const aplicarMovimientosPagados = async (p: Periodo) => {
     const filasPagadas = filas.filter((row) => row.estado === 'PAGADO')
     const empleadosConAnticipos = filasPagadas
@@ -964,6 +1085,7 @@ export default function RrhhPlanillaPage() {
         }
       }
 
+      await crearDescuentosVentasDirectos(p, userId)
       await aplicarMovimientosPagados(p)
 
       setFilas((prev) =>
@@ -1423,12 +1545,17 @@ export default function RrhhPlanillaPage() {
                     onChange={(e) => updateRow(row.empleado_id, 'descuentos_ventas', e.target.value)}
                   />
                   {row.saldo_cliente > 0 && (
-                    <Link
-                      href="/rrhh/descuentos-ventas"
-                      className="block mt-1 text-[10px] bg-red-600 text-white rounded px-2 py-1 text-center"
-                    >
-                      Programar
-                    </Link>
+                    <>
+                      <div className="text-[10px] text-slate-600 mt-1">
+                        Deuda: {money(row.saldo_cliente)}
+                      </div>
+                      <Link
+                        href="/rrhh/descuentos-ventas"
+                        className="block mt-1 text-[10px] bg-red-600 text-white rounded px-2 py-1 text-center"
+                      >
+                        Programar
+                      </Link>
+                    </>
                   )}
                 </td>
 
