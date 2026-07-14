@@ -32,35 +32,35 @@ export default function Dashboard() {
           href="/inventario"
           className="block bg-emerald-600 hover:bg-emerald-700 text-white text-center py-4 rounded shadow"
         >
-          📦 Inventario
+          Inventario
         </Link>
 
         <Link
           href="/dashboard"
           className="block bg-blue-600 hover:bg-blue-700 text-white text-center py-4 rounded shadow"
         >
-          💸 Erogaciones
+          Erogaciones
         </Link>
 
         <Link
           href="/ventas"
           className="block bg-indigo-600 hover:bg-indigo-700 text-white text-center py-4 rounded shadow"
         >
-          🛒 Ventas
+          Ventas
         </Link>
 
         <Link
           href="/vehiculos"
           className="block bg-amber-600 hover:bg-amber-700 text-white text-center py-4 rounded shadow"
         >
-          🚚 Vehículos
+          Vehículos
         </Link>
 
         <Link
           href="/granja"
           className="block bg-pink-600 hover:bg-pink-700 text-white text-center py-4 rounded shadow"
         >
-          🐷 Granja
+          Granja
         </Link>
 
         <Link
@@ -75,7 +75,7 @@ export default function Dashboard() {
           onClick={handleLogout}
           className="w-full bg-red-600 hover:bg-red-700 text-white text-center py-4 rounded shadow mt-4"
         >
-          🔒 Cerrar sesión
+          Cerrar sesión
         </button>
       </div>
     </div>
