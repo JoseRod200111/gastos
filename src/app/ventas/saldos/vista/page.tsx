@@ -407,6 +407,24 @@ function VistaDeudasClienteInner() {
       const { error: insErr } = await supabase.from('pagos_venta').insert(inserts)
       if (insErr) throw insErr
 
+      const ventasAplicadas = Array.from(
+        new Set(inserts.map((x) => Number(x.venta_id)).filter((x) => Number.isFinite(x) && x > 0))
+      )
+
+      // Refuerzo del trigger SQL: al quedar saldada una venta individual,
+      // cambia sus detalles de Pendiente de Pago al método usado en este abono.
+      for (const ventaIdAplicada of ventasAplicadas) {
+        const { error: syncErr } = await supabase.rpc('ventas_sincronizar_estado_pago', {
+          p_venta_id: ventaIdAplicada,
+          p_metodo_pago_id: metodo_pago_id,
+          p_documento: documento,
+        })
+
+        if (syncErr) {
+          console.warn('No se pudo sincronizar estado de venta saldada:', syncErr)
+        }
+      }
+
       alert('Pago registrado correctamente.')
 
       setPago((p) => ({
