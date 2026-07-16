@@ -122,6 +122,8 @@ type AutoTableDoc = jsPDF & {
   lastAutoTable?: { finalY: number }
 }
 
+const RRHH_LOGO_URL = '/Logo%20Tech%209_Fondo%20Transparente.png'
+
 const defaultParametros: Parametros = {
   horasDia: 8,
   multiplicadorHoraExtra: 1.5,
@@ -213,8 +215,10 @@ const calcularFila = (row: PlanillaRow, parametros: Parametros) => {
   }
 }
 
-const getLogoDataUrl = async () => {
-  const response = await fetch('/logo.png')
+const getImageDataUrl = async (url: string) => {
+  const response = await fetch(url)
+  if (!response.ok) throw new Error(`No se pudo cargar la imagen: ${url}`)
+
   const blob = await response.blob()
 
   return await new Promise<string>((resolve, reject) => {
@@ -225,10 +229,18 @@ const getLogoDataUrl = async () => {
   })
 }
 
+const getLogoDataUrl = async () => {
+  try {
+    return await getImageDataUrl(RRHH_LOGO_URL)
+  } catch {
+    return await getImageDataUrl('/logo.png')
+  }
+}
+
 const addHeader = async (doc: jsPDF, titulo: string) => {
   try {
     const logo = await getLogoDataUrl()
-    doc.addImage(logo, 'PNG', 14, 8, 28, 20)
+    doc.addImage(logo, 'PNG', 14, 7, 22, 22)
   } catch {
     doc.setFontSize(9)
     doc.text('AGRO INDUSTRIAS RYB', 14, 15)
@@ -1239,7 +1251,7 @@ export default function RrhhPlanillaPage() {
   return (
     <div className="p-6 max-w-7xl mx-auto">
       <div className="flex items-center gap-3 mb-4">
-        <img src="/logo.png" alt="Logo" className="h-12" />
+        <img src={RRHH_LOGO_URL} alt="Logo Tech Nine" className="h-14" />
         <div>
           <h1 className="text-2xl font-bold">Recursos Humanos — Planilla</h1>
           <p className="text-sm text-slate-600">
