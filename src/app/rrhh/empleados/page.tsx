@@ -4,6 +4,8 @@ import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabaseClient'
 
+
+const RRHH_LOGO_URL = '/Logo%20Tech%209_Fondo%20Transparente.png'
 type Area = {
   id: number
   codigo: string
@@ -491,7 +493,7 @@ export default function RrhhEmpleadosPage() {
   return (
     <div className="p-6 max-w-7xl mx-auto">
       <div className="flex items-start gap-4 mb-5">
-        <img src="/logo.png" alt="Logo" className="h-12" />
+        <img src={RRHH_LOGO_URL} alt="Logo Tech Nine" className="h-12" />
 
         <div>
           <h1 className="text-2xl font-bold">Recursos Humanos — Empleados</h1>
