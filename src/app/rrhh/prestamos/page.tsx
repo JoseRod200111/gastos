@@ -4,6 +4,8 @@ import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabaseClient'
 
+
+const RRHH_LOGO_URL = '/Logo%20Tech%209_Fondo%20Transparente.png'
 type Empleado = {
   id: number
   codigo: string
@@ -521,7 +523,7 @@ export default function RrhhPrestamosPage() {
     <div className="p-6 max-w-7xl mx-auto">
       <div className="flex items-start justify-between gap-4 mb-6">
         <div className="flex items-center gap-4">
-          <img src="/logo.png" alt="Logo Empresa" className="h-14" />
+          <img src={RRHH_LOGO_URL} alt="Logo Tech Nine" className="h-14" />
           <div>
             <h1 className="text-2xl font-bold">Recursos Humanos — Préstamos</h1>
             <p className="text-sm text-slate-600">Registra préstamos y divide el descuento en cuotas por quincena.</p>
