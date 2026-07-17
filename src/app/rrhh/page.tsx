@@ -2,13 +2,11 @@
 
 import Link from 'next/link'
 
-
-const RRHH_LOGO_URL = '/Logo%20Tech%209_Fondo%20Transparente.png'
 export default function RrhhMenuPage() {
   return (
     <div className="p-6 max-w-3xl mx-auto">
       <div className="flex justify-center mb-6">
-        <img src={RRHH_LOGO_URL} alt="Logo Tech Nine" className="h-16" />
+        <img src="/Logo%20Tech%209_Fondo%20Transparente.png" alt="Logo Empresa" className="h-16" />
       </div>
 
       <h1 className="text-2xl font-bold text-center mb-2">Recursos Humanos</h1>
@@ -16,8 +14,6 @@ export default function RrhhMenuPage() {
         Control de empleados, planilla, anticipos, préstamos, descuentos y finiquitos.
       </p>
 
-      
-      
       <div className="flex justify-end mb-4">
         <Link
           href="/menu"
