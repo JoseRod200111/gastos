@@ -8,10 +8,11 @@ const PUBLIC_PATHS = ['/login']
 
 const SESSION_STARTED_KEY = 'agro_session_started_at'
 const LAST_ACTIVITY_KEY = 'agro_last_activity_at'
+const SUPABASE_STORAGE_KEY = 'agro_session'
 
 const MAX_SESSION_MS = 8 * 60 * 60 * 1000
 const INACTIVITY_LIMIT_MS = 45 * 60 * 1000
-const CHECK_INTERVAL_MS = 30 * 1000
+const CHECK_INTERVAL_MS = 2 * 60 * 1000
 
 function now() {
   return Date.now()
@@ -27,6 +28,19 @@ function clearLocalSessionMarkers() {
 
   localStorage.removeItem(SESSION_STARTED_KEY)
   localStorage.removeItem(LAST_ACTIVITY_KEY)
+}
+
+function clearSupabaseStorage() {
+  if (typeof window === 'undefined') return
+
+  localStorage.removeItem(SUPABASE_STORAGE_KEY)
+
+  Object.keys(localStorage).forEach((key) => {
+    const normalized = key.toLowerCase()
+    if (normalized.includes('supabase') || normalized.includes('sb-') || normalized.includes(SUPABASE_STORAGE_KEY)) {
+      localStorage.removeItem(key)
+    }
+  })
 }
 
 function ensureLocalSessionMarkers() {
@@ -66,55 +80,73 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
   const [checking, setChecking] = useState(true)
   const [authorized, setAuthorized] = useState(false)
 
-  const logoutAndRedirect = useCallback(async () => {
-    clearLocalSessionMarkers()
-    await supabase.auth.signOut()
-
+  const redirectToLogin = useCallback(() => {
     const next = pathname && pathname !== '/login' ? `?next=${encodeURIComponent(pathname)}` : ''
-
     router.replace(`/login${next}`)
   }, [pathname, router])
 
+  const logoutAndRedirect = useCallback(async () => {
+    clearLocalSessionMarkers()
+    clearSupabaseStorage()
+
+    try {
+      await supabase.auth.signOut({ scope: 'local' })
+    } catch {
+      // Si Supabase ya tiene el token vencido o corrupto, basta limpiar localStorage.
+    }
+
+    if (!publicPath) redirectToLogin()
+  }, [publicPath, redirectToLogin])
+
   const validateSession = useCallback(async () => {
-    const { data, error } = await supabase.auth.getSession()
-    const session = data?.session ?? null
+    try {
+      const { data, error } = await supabase.auth.getSession()
+      const session = data?.session ?? null
 
-    if (error || !session) {
-      clearLocalSessionMarkers()
-      setAuthorized(false)
+      if (error || !session) {
+        clearLocalSessionMarkers()
+        clearSupabaseStorage()
+        setAuthorized(false)
 
-      if (!publicPath) {
-        const next = pathname && pathname !== '/login' ? `?next=${encodeURIComponent(pathname)}` : ''
-        router.replace(`/login${next}`)
+        if (!publicPath) redirectToLogin()
+
+        setChecking(false)
+        return
+      }
+
+      ensureLocalSessionMarkers()
+
+      const startedAt = getStoredNumber(SESSION_STARTED_KEY)
+      const lastActivityAt = getStoredNumber(LAST_ACTIVITY_KEY)
+      const current = now()
+
+      const sessionTooOld = startedAt > 0 && current - startedAt > MAX_SESSION_MS
+      const sessionInactive = lastActivityAt > 0 && current - lastActivityAt > INACTIVITY_LIMIT_MS
+
+      if (sessionTooOld || sessionInactive) {
+        await logoutAndRedirect()
+        setAuthorized(false)
+        setChecking(false)
+        return
+      }
+
+      setAuthorized(true)
+
+      if (pathname === '/login') {
+        router.replace('/menu')
       }
 
       setChecking(false)
-      return
-    }
+    } catch {
+      clearLocalSessionMarkers()
+      clearSupabaseStorage()
+      setAuthorized(false)
 
-    ensureLocalSessionMarkers()
+      if (!publicPath) redirectToLogin()
 
-    const startedAt = getStoredNumber(SESSION_STARTED_KEY)
-    const lastActivityAt = getStoredNumber(LAST_ACTIVITY_KEY)
-    const current = now()
-
-    const sessionTooOld = startedAt > 0 && current - startedAt > MAX_SESSION_MS
-    const sessionInactive = lastActivityAt > 0 && current - lastActivityAt > INACTIVITY_LIMIT_MS
-
-    if (sessionTooOld || sessionInactive) {
-      await logoutAndRedirect()
       setChecking(false)
-      return
     }
-
-    setAuthorized(true)
-
-    if (pathname === '/login') {
-      router.replace('/menu')
-    }
-
-    setChecking(false)
-  }, [logoutAndRedirect, pathname, publicPath, router])
+  }, [logoutAndRedirect, pathname, publicPath, redirectToLogin, router])
 
   useEffect(() => {
     validateSession()
@@ -129,8 +161,13 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
         setAuthorized(true)
       }
 
+      if (event === 'TOKEN_REFRESHED' && session) {
+        setAuthorized(true)
+      }
+
       if (event === 'SIGNED_OUT') {
         clearLocalSessionMarkers()
+        clearSupabaseStorage()
         setAuthorized(false)
 
         if (!isPublicPath(window.location.pathname)) {
@@ -147,7 +184,7 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!authorized) return
 
-    const events = ['click', 'keydown', 'mousemove', 'scroll', 'touchstart']
+    const events = ['click', 'keydown', 'scroll', 'touchstart']
 
     events.forEach((event) => {
       window.addEventListener(event, updateLastActivity, { passive: true })
