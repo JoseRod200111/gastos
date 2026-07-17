@@ -213,31 +213,56 @@ const calcularFila = (row: PlanillaRow, parametros: Parametros) => {
   }
 }
 
-const RRHH_LOGO_PATH = '/Logo Tech 9_Fondo Transparente.png'
+const RRHH_LOGO_PATH = '/Logo%20Tech%209_Fondo%20Transparente.png'
 const FALLBACK_LOGO_PATH = '/logo.png'
 
-const getLogoDataUrl = async () => {
-  const paths = [RRHH_LOGO_PATH, FALLBACK_LOGO_PATH]
+let cachedLogoDataUrl: string | null = null
+let cachedLogoPromise: Promise<string> | null = null
 
-  for (const path of paths) {
-    try {
-      const response = await fetch(path)
-      if (!response.ok) continue
+const imageToDataUrl = (path: string) => {
+  return new Promise<string>((resolve, reject) => {
+    const img = new Image()
+    img.crossOrigin = 'anonymous'
+    img.onload = () => {
+      const canvas = document.createElement('canvas')
+      canvas.width = img.naturalWidth || img.width
+      canvas.height = img.naturalHeight || img.height
+      const ctx = canvas.getContext('2d')
 
-      const blob = await response.blob()
+      if (!ctx || canvas.width === 0 || canvas.height === 0) {
+        reject(new Error('No se pudo preparar el logo para PDF.'))
+        return
+      }
 
-      return await new Promise<string>((resolve, reject) => {
-        const reader = new FileReader()
-        reader.onloadend = () => resolve(String(reader.result))
-        reader.onerror = reject
-        reader.readAsDataURL(blob)
-      })
-    } catch {
-      // Intenta el siguiente logo.
+      ctx.clearRect(0, 0, canvas.width, canvas.height)
+      ctx.drawImage(img, 0, 0)
+      resolve(canvas.toDataURL('image/png'))
     }
-  }
+    img.onerror = () => reject(new Error(`No se pudo cargar el logo: ${path}`))
+    img.src = path
+  })
+}
 
-  return ''
+const getLogoDataUrl = async () => {
+  if (cachedLogoDataUrl !== null) return cachedLogoDataUrl
+  if (cachedLogoPromise) return cachedLogoPromise
+
+  cachedLogoPromise = (async () => {
+    for (const path of [RRHH_LOGO_PATH, FALLBACK_LOGO_PATH]) {
+      try {
+        const dataUrl = await imageToDataUrl(path)
+        cachedLogoDataUrl = dataUrl
+        return dataUrl
+      } catch {
+        // Intenta el siguiente logo.
+      }
+    }
+
+    cachedLogoDataUrl = ''
+    return ''
+  })()
+
+  return cachedLogoPromise
 }
 
 const addHeader = async (doc: jsPDF, titulo: string) => {
@@ -247,7 +272,9 @@ const addHeader = async (doc: jsPDF, titulo: string) => {
     doc.addImage(logo, 'PNG', 14, 6, 24, 24)
   } else {
     doc.setFontSize(9)
+    doc.setFont('helvetica', 'bold')
     doc.text('TECH NINE', 14, 15)
+    doc.setFont('helvetica', 'normal')
   }
 
   doc.setFontSize(15)
