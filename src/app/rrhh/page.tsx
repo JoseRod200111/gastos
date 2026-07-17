@@ -17,6 +17,7 @@ export default function RrhhMenuPage() {
       </p>
 
       
+      
       <div className="flex justify-end mb-4">
         <Link
           href="/menu"
