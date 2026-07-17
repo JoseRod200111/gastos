@@ -16,6 +16,7 @@ export default function RrhhMenuPage() {
         Control de empleados, planilla, anticipos, préstamos, descuentos y finiquitos.
       </p>
 
+      
       <div className="flex justify-end mb-4">
         <Link
           href="/menu"
