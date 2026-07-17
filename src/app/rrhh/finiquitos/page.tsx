@@ -4,8 +4,6 @@ import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabaseClient'
 
-const RRHH_LOGO_PATH = '/Logo Tech 9_Fondo Transparente.png'
-
 type Empleado = {
   id: number
   codigo: string
@@ -237,7 +235,6 @@ const fechaLegal = (lugar: string, fecha: string) => {
 const buildFiniquitoHtml = (form: FormState) => {
   const montoLetras = form.monto_letras.trim() || quetzalesALetras(form.monto_total)
   const dpi = form.dpi.trim() || 'SIN DPI REGISTRADO'
-  const logoUrl = `${window.location.origin}${RRHH_LOGO_PATH}`
 
   return `
 <!doctype html>
@@ -250,8 +247,6 @@ const buildFiniquitoHtml = (form: FormState) => {
   * { box-sizing: border-box; }
   body { font-family: Arial, Helvetica, sans-serif; color: #111827; font-size: 12.5px; line-height: 1.42; }
   .doc { max-width: 760px; margin: 0 auto; }
-  .logo { text-align: center; margin-bottom: 8px; }
-  .logo img { width: 82px; height: 82px; object-fit: contain; }
   h1 { text-align: center; font-size: 16px; margin: 0 0 12px 0; text-transform: uppercase; }
   h2 { text-align: center; font-size: 14px; margin: 0 0 12px 0; text-transform: uppercase; }
   .fecha { text-align: center; font-weight: 700; margin-bottom: 14px; text-transform: uppercase; }
@@ -271,7 +266,6 @@ const buildFiniquitoHtml = (form: FormState) => {
 <body>
 <div class="doc">
   <div class="no-print"><button onclick="window.print()">Imprimir / Guardar PDF</button></div>
-  <div class="logo"><img src="${logoUrl}" alt="Logo Tech Nine" /></div>
   <h1>Finiquito laboral por ${escapeHtml(form.tipo_finiquito)}</h1>
   <div class="fecha">${escapeHtml(fechaLegal(form.lugar, form.fecha_documento))}</div>
   <h2>Finiquito laboral, ${escapeHtml(form.tipo_finiquito)} y recibo de pago total</h2>
@@ -570,7 +564,7 @@ export default function RrhhFiniquitosPage() {
     <div className="p-6 max-w-7xl mx-auto">
       <div className="flex items-center justify-between mb-6 gap-4">
         <div className="flex items-center gap-4">
-          <img src={RRHH_LOGO_PATH} alt="Logo Tech Nine" className="h-16 w-16 object-contain" />
+          <img src="/Logo%20Tech%209_Fondo%20Transparente.png" alt="Logo Empresa" className="h-16" />
           <div>
             <h1 className="text-2xl font-bold">Recursos Humanos — Finiquitos</h1>
             <p className="text-sm text-slate-600">
