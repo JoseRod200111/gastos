@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
@@ -213,68 +213,25 @@ const calcularFila = (row: PlanillaRow, parametros: Parametros) => {
   }
 }
 
-const RRHH_LOGO_PATH = '/Logo%20Tech%209_Fondo%20Transparente.png'
-const FALLBACK_LOGO_PATH = '/logo.png'
+const getLogoDataUrl = async () => {
+  const response = await fetch('/Logo%20Tech%209_Fondo%20Transparente.png')
+  const blob = await response.blob()
 
-let cachedLogoDataUrl: string | null = null
-let cachedLogoPromise: Promise<string> | null = null
-
-const imageToDataUrl = (path: string) => {
-  return new Promise<string>((resolve, reject) => {
-    const img = new Image()
-    img.crossOrigin = 'anonymous'
-    img.onload = () => {
-      const canvas = document.createElement('canvas')
-      canvas.width = img.naturalWidth || img.width
-      canvas.height = img.naturalHeight || img.height
-      const ctx = canvas.getContext('2d')
-
-      if (!ctx || canvas.width === 0 || canvas.height === 0) {
-        reject(new Error('No se pudo preparar el logo para PDF.'))
-        return
-      }
-
-      ctx.clearRect(0, 0, canvas.width, canvas.height)
-      ctx.drawImage(img, 0, 0)
-      resolve(canvas.toDataURL('image/png'))
-    }
-    img.onerror = () => reject(new Error(`No se pudo cargar el logo: ${path}`))
-    img.src = path
+  return await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onloadend = () => resolve(String(reader.result))
+    reader.onerror = reject
+    reader.readAsDataURL(blob)
   })
 }
 
-const getLogoDataUrl = async () => {
-  if (cachedLogoDataUrl !== null) return cachedLogoDataUrl
-  if (cachedLogoPromise) return cachedLogoPromise
-
-  cachedLogoPromise = (async () => {
-    for (const path of [RRHH_LOGO_PATH, FALLBACK_LOGO_PATH]) {
-      try {
-        const dataUrl = await imageToDataUrl(path)
-        cachedLogoDataUrl = dataUrl
-        return dataUrl
-      } catch {
-        // Intenta el siguiente logo.
-      }
-    }
-
-    cachedLogoDataUrl = ''
-    return ''
-  })()
-
-  return cachedLogoPromise
-}
-
 const addHeader = async (doc: jsPDF, titulo: string) => {
-  const logo = await getLogoDataUrl()
-
-  if (logo) {
-    doc.addImage(logo, 'PNG', 14, 6, 24, 24)
-  } else {
+  try {
+    const logo = await getLogoDataUrl()
+    doc.addImage(logo, 'PNG', 14, 8, 28, 20)
+  } catch {
     doc.setFontSize(9)
-    doc.setFont('helvetica', 'bold')
     doc.text('TECH NINE', 14, 15)
-    doc.setFont('helvetica', 'normal')
   }
 
   doc.setFontSize(15)
@@ -300,7 +257,7 @@ export default function RrhhPlanillaPage() {
 
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
-  const [mensaje, setMensaje] = useState('Selecciona el período y presiona Cargar / generar. La planilla ya no se carga automáticamente al entrar.')
+  const [mensaje, setMensaje] = useState('')
   const [busquedaEmpleado, setBusquedaEmpleado] = useState('')
   const [estadoFiltro, setEstadoFiltro] = useState<'TODOS' | 'PENDIENTE' | 'PAGADO' | 'ANULADO'>('TODOS')
 
@@ -703,6 +660,14 @@ export default function RrhhPlanillaPage() {
       setLoading(false)
     }
   }
+
+  useEffect(() => {
+    cargarPlanilla().catch((err) => {
+      console.error(err)
+      setMensaje(err instanceof Error ? err.message : 'Error cargando planilla.')
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const updateRow = (empleadoId: number, field: keyof PlanillaRow, value: string) => {
     setFilas((prev) =>
@@ -1274,7 +1239,7 @@ export default function RrhhPlanillaPage() {
   return (
     <div className="p-6 max-w-7xl mx-auto">
       <div className="flex items-center gap-3 mb-4">
-        <img src={RRHH_LOGO_PATH} alt="Logo Tech Nine" className="h-16 w-16 object-contain" />
+        <img src="/Logo%20Tech%209_Fondo%20Transparente.png" alt="Logo" className="h-12" />
         <div>
           <h1 className="text-2xl font-bold">Recursos Humanos — Planilla</h1>
           <p className="text-sm text-slate-600">
@@ -1651,7 +1616,7 @@ export default function RrhhPlanillaPage() {
             {filas.length === 0 && (
               <tr>
                 <td className="p-4 text-slate-600" colSpan={15}>
-                  Presiona Cargar / generar para ver empleados.
+                  Carga o genera una planilla para ver empleados.
                 </td>
               </tr>
             )}
