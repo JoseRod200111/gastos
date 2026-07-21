@@ -157,18 +157,24 @@ function VistaDeudasClienteInner() {
     setLoading(true)
 
     try {
-      const { data: mp } = await supabase
+      const { data: metodosPendientes, error: mpErr } = await supabase
         .from('forma_pago')
-        .select('id')
-        .ilike('metodo', '%pendiente de pago%')
-        .limit(1)
-        .maybeSingle()
+        .select('id, metodo')
+        .ilike('metodo', '%pendiente%')
 
-      const metodoPendienteId = mp?.id as number | undefined
+      if (mpErr) {
+        console.error('Error cargando método pendiente:', mpErr)
+        setVentas([])
+        return
+      }
+
+      const idsPendientes = new Set(
+        ((metodosPendientes || []) as { id: number }[]).map((m) => Number(m.id))
+      )
 
       const { data: rowsDV, error: dvErr } = await supabase
         .from('detalle_venta')
-        .select('venta_id, importe, forma_pago_id, ventas!inner(id, cliente_id, fecha)')
+        .select('venta_id, importe, forma_pago_id, documento, ventas!inner(id, cliente_id, fecha)')
         .eq('ventas.cliente_id', id)
 
       if (dvErr) {
@@ -189,15 +195,19 @@ function VistaDeudasClienteInner() {
 
       for (const r of (rowsDV || []) as any[]) {
         const vId = Number(r.venta_id)
-        const fecha = r.ventas?.fecha as string
-        const fpId = r.forma_pago_id as number | null
+        const ventaRel = Array.isArray(r.ventas) ? r.ventas[0] : r.ventas
+        const fecha = ventaRel?.fecha as string
+        const fpId = r.forma_pago_id == null ? null : Number(r.forma_pago_id)
+        const documento = String(r.documento || '').toLowerCase()
         const imp = toNum(r.importe)
 
-        if (!agg[vId]) agg[vId] = { fecha, credito: 0, abonado: 0 }
+        const esPendiente =
+          (fpId != null && idsPendientes.has(fpId)) || documento.includes('pend')
 
-        if (metodoPendienteId && fpId === metodoPendienteId) {
-          agg[vId].credito += imp
-        }
+        if (!vId || !esPendiente) continue
+
+        if (!agg[vId]) agg[vId] = { fecha, credito: 0, abonado: 0 }
+        agg[vId].credito += imp
       }
 
       const vIds = Object.keys(agg).map(Number)
@@ -221,7 +231,7 @@ function VistaDeudasClienteInner() {
           venta_id: Number(venta_id),
           fecha: v.fecha,
           credito: round2(v.credito),
-          abonado: round2(v.abonado),
+          abonado: round2(Math.min(v.abonado, v.credito)),
           saldo: round2(v.credito - v.abonado),
         }))
         .filter((v) => v.saldo > 0.000001)
@@ -470,9 +480,9 @@ function VistaDeudasClienteInner() {
         startY: 52,
         head: [['Resumen', 'Valor']],
         body: [
-          ['Total crédito', formatoQ(totales.tCred)],
-          ['Total abonado', formatoQ(totales.tAbo)],
-          ['Total saldo', formatoQ(totales.tSal)],
+          ['Total crédito histórico pendiente', formatoQ(totales.tCred)],
+          ['Total abonado aplicado', formatoQ(totales.tAbo)],
+          ['Saldo pendiente actual', formatoQ(totales.tSal)],
         ],
         theme: 'grid',
         styles: {
@@ -676,10 +686,11 @@ function VistaDeudasClienteInner() {
         </div>
 
         <div className="mt-4 border rounded p-3 bg-gray-50 text-sm">
-          <div>Total crédito: {formatoQ(totales.tCred)}</div>
-          <div>Total abonado: {formatoQ(totales.tAbo)}</div>
-          <div>
-            <b>Total saldo: {formatoQ(totales.tSal)}</b>
+          <div>Total crédito histórico pendiente: {formatoQ(totales.tCred)}</div>
+          <div>Total abonado aplicado: {formatoQ(totales.tAbo)}</div>
+          <div>Total saldo histórico pendiente: {formatoQ(totales.tSal)}</div>
+          <div className="mt-2 pt-2 border-t text-base">
+            <b>Saldo pendiente actual: {formatoQ(totales.tSal)}</b>
           </div>
         </div>
       </div>
