@@ -94,30 +94,141 @@ export default function SaldosPorClientePage() {
     setLoading(true)
 
     try {
-      let q = supabase.from('v_saldos_clientes').select('*')
+      const { data: metodosPendientes, error: mpErr } = await supabase
+        .from('forma_pago')
+        .select('id, metodo')
+        .ilike('metodo', '%pendiente%')
 
-      if (selectedClienteId) {
-        q = q.eq('cliente_id', Number(selectedClienteId))
-      }
-
-      const { data, error } = await q.order('nombre', { ascending: true })
-
-      if (error) {
-        console.error('Error cargando saldos:', error)
+      if (mpErr) {
+        console.error('Error cargando métodos pendientes:', mpErr)
         setRows([])
         return
       }
 
-      const normalizados = ((data as SaldoItem[]) || [])
+      const idsPendientes = new Set(
+        ((metodosPendientes || []) as { id: number }[]).map((m) => Number(m.id))
+      )
+
+      let q = supabase
+        .from('detalle_venta')
+        .select('venta_id, importe, forma_pago_id, documento, ventas!inner(id, cliente_id, fecha)')
+
+      if (selectedClienteId) {
+        q = q.eq('ventas.cliente_id', Number(selectedClienteId))
+      }
+
+      const { data: detallesRows, error: detErr } = await q
+
+      if (detErr) {
+        console.error('Error cargando detalle de saldos:', detErr)
+        setRows([])
+        return
+      }
+
+      type VentaAgg = {
+        venta_id: number
+        cliente_id: number
+        credito: number
+        abonado: number
+      }
+
+      const porVenta: Record<number, VentaAgg> = {}
+
+      for (const raw of (detallesRows || []) as any[]) {
+        const ventaId = Number(raw.venta_id)
+        const ventaRel = Array.isArray(raw.ventas) ? raw.ventas[0] : raw.ventas
+        const clienteId = Number(ventaRel?.cliente_id)
+        const formaPagoId = raw.forma_pago_id == null ? null : Number(raw.forma_pago_id)
+        const documento = String(raw.documento || '').toLowerCase()
+
+        const esPendiente =
+          (formaPagoId != null && idsPendientes.has(formaPagoId)) || documento.includes('pend')
+
+        if (!ventaId || !clienteId || !esPendiente) continue
+
+        if (!porVenta[ventaId]) {
+          porVenta[ventaId] = {
+            venta_id: ventaId,
+            cliente_id: clienteId,
+            credito: 0,
+            abonado: 0,
+          }
+        }
+
+        porVenta[ventaId].credito += toNum(raw.importe)
+      }
+
+      const ventasIds = Object.keys(porVenta).map(Number)
+
+      if (ventasIds.length > 0) {
+        const { data: pagosRows, error: pagosErr } = await supabase
+          .from('pagos_venta')
+          .select('venta_id, monto')
+          .in('venta_id', ventasIds)
+
+        if (pagosErr) {
+          console.error('Error cargando abonos:', pagosErr)
+        } else {
+          for (const pago of (pagosRows || []) as any[]) {
+            const ventaId = Number(pago.venta_id)
+            if (porVenta[ventaId]) porVenta[ventaId].abonado += toNum(pago.monto)
+          }
+        }
+      }
+
+      const clienteIds = Array.from(new Set(Object.values(porVenta).map((v) => v.cliente_id)))
+      const clientesMap = new Map<number, Cliente>()
+
+      if (clienteIds.length > 0) {
+        const { data: clientesRows, error: clientesErr } = await supabase
+          .from('clientes')
+          .select('id, nombre, nit')
+          .in('id', clienteIds)
+
+        if (clientesErr) {
+          console.error('Error cargando clientes de saldos:', clientesErr)
+        } else {
+          for (const c of (clientesRows || []) as Cliente[]) {
+            clientesMap.set(Number(c.id), c)
+          }
+        }
+      }
+
+      const porCliente: Record<number, SaldoItem> = {}
+
+      for (const venta of Object.values(porVenta)) {
+        const credito = round2(venta.credito)
+        const abonado = round2(venta.abonado)
+        const saldoVenta = round2(credito - abonado)
+
+        if (saldoVenta <= 0.000001) continue
+
+        const c = clientesMap.get(venta.cliente_id)
+
+        if (!porCliente[venta.cliente_id]) {
+          porCliente[venta.cliente_id] = {
+            cliente_id: venta.cliente_id,
+            nombre: c?.nombre || `Cliente #${venta.cliente_id}`,
+            nit: c?.nit || null,
+            credito: 0,
+            abonado: 0,
+            saldo: 0,
+          }
+        }
+
+        porCliente[venta.cliente_id].credito += credito
+        porCliente[venta.cliente_id].abonado += Math.min(abonado, credito)
+        porCliente[venta.cliente_id].saldo += saldoVenta
+      }
+
+      const normalizados = Object.values(porCliente)
         .map((r) => ({
-          cliente_id: Number(r.cliente_id),
-          nombre: r.nombre || `Cliente #${r.cliente_id}`,
-          nit: r.nit || null,
-          credito: toNum(r.credito),
-          abonado: toNum(r.abonado),
-          saldo: toNum(r.saldo),
+          ...r,
+          credito: round2(r.credito),
+          abonado: round2(r.abonado),
+          saldo: round2(r.saldo),
         }))
-        .filter((r) => r.saldo > 0.000001)
+        .sort((a, b) => a.nombre.localeCompare(b.nombre))
 
       setRows(normalizados)
     } finally {
