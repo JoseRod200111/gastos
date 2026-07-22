@@ -19,6 +19,9 @@ type Empleado = {
   salario_base: number
   bono_produccion_diario: number
   cliente_id: number | null
+  fecha_ingreso: string
+  fecha_baja: string | null
+  estado: 'ACTIVO' | 'BAJA'
 }
 
 type Distribucion = {
@@ -153,6 +156,38 @@ const monthISO = (anio: number, mes: number, dia: number) => {
 }
 
 const lastDayOfMonth = (anio: number, mes: number) => new Date(anio, mes, 0).getDate()
+
+const parseDateOnly = (value: string) => {
+  const [year, month, day] = value.split('-').map(Number)
+  return new Date(year, month - 1, day)
+}
+
+const dateOnlyToISO = (date: Date) => {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+const maxDateOnly = (a: string, b: string) => dateOnlyToISO(parseDateOnly(a) > parseDateOnly(b) ? parseDateOnly(a) : parseDateOnly(b))
+const minDateOnly = (a: string, b: string) => dateOnlyToISO(parseDateOnly(a) < parseDateOnly(b) ? parseDateOnly(a) : parseDateOnly(b))
+
+const diasEntreInclusivo = (inicio: string, fin: string) => {
+  const start = parseDateOnly(inicio).getTime()
+  const end = parseDateOnly(fin).getTime()
+  const days = Math.floor((end - start) / 86400000) + 1
+  return Number.isFinite(days) ? Math.max(0, days) : 0
+}
+
+const calcularDiasEmpleadoEnPeriodo = (empleado: Empleado, fechaInicio: string, fechaFin: string) => {
+  if (!empleado.fecha_ingreso) return 15
+
+  const inicioReal = maxDateOnly(fechaInicio, empleado.fecha_ingreso)
+  const finReal = empleado.fecha_baja ? minDateOnly(fechaFin, empleado.fecha_baja) : fechaFin
+  const dias = diasEntreInclusivo(inicioReal, finReal)
+
+  return Math.min(15, Math.max(0, dias))
+}
 
 const calcularFechasPeriodo = (anio: number, mes: number, quincena: number) => {
   if (quincena === 1) {
@@ -314,8 +349,9 @@ export default function RrhhPlanillaPage() {
     const [empRes, areaRes, distRes, paramsRes] = await Promise.all([
       supabase
         .from('rrhh_empleados')
-        .select('id,codigo,nombre_completo,salario_base,bono_produccion_diario,cliente_id')
-        .eq('estado', 'ACTIVO')
+        .select('id,codigo,nombre_completo,salario_base,bono_produccion_diario,cliente_id,fecha_ingreso,fecha_baja,estado')
+        .lte('fecha_ingreso', fechas.fechaFin)
+        .or(`fecha_baja.is.null,fecha_baja.gte.${fechas.fechaInicio}`)
         .order('codigo', { ascending: true }),
 
       supabase
@@ -512,60 +548,74 @@ export default function RrhhPlanillaPage() {
     return map
   }
 
+  const crearFilaInicial = (
+    emp: Empleado,
+    saldoMap: Map<number, SaldoCliente>,
+    anticiposMap: Map<number, number>,
+    prestamosMap: Map<number, number>,
+    ventasCuotasMap: Map<number, number>
+  ) => {
+    const salarioDiario = round2(toNum(emp.salario_base) / 30)
+    const horaNormal = round2(salarioDiario / parametros.horasDia)
+    const dias = calcularDiasEmpleadoEnPeriodo(emp, fechas.fechaInicio, fechas.fechaFin)
+    const bonoLey = quincena === '2' ? parametros.bonificacionLeyMensual : 0
+    const salarioOrdinario = round2(salarioDiario * dias)
+    const igss = quincena === '2' ? round2(salarioOrdinario * (parametros.igssPorcentaje / 100)) : 0
+    const irtra = quincena === '2' ? round2(salarioOrdinario * (parametros.irtraPorcentaje / 100)) : 0
+    const saldo = emp.cliente_id ? saldoMap.get(emp.cliente_id) : undefined
+
+    return calcularFila(
+      {
+        id: null,
+        empleado_id: emp.id,
+        codigo: emp.codigo,
+        nombre: emp.nombre_completo,
+        cliente_id: emp.cliente_id,
+        saldo_cliente: round2(toNum(saldo?.saldo_total)),
+        saldo_ventas: round2(toNum(saldo?.saldo_ventas)),
+        saldo_granja: round2(toNum(saldo?.saldo_granja)),
+        salario_base: String(toNum(emp.salario_base)),
+        salario_diario: salarioDiario,
+        hora_normal: horaNormal,
+        dias_trabajados: String(dias),
+        horas_extra: '0',
+        valor_hora_extra: round2(horaNormal * parametros.multiplicadorHoraExtra),
+        salario_ordinario: 0,
+        monto_horas_extra: 0,
+        bono_produccion_diario: String(toNum(emp.bono_produccion_diario)),
+        bono_produccion_total: 0,
+        bonificacion_ley: String(bonoLey),
+        otros_bonos: '0',
+        igss: String(igss),
+        irtra: String(irtra),
+        anticipos: String(anticiposMap.get(emp.id) || 0),
+        prestamos: String(prestamosMap.get(emp.id) || 0),
+        descuentos_ventas: String(ventasCuotasMap.get(emp.id) || 0),
+        descuentos_manual: '0',
+        total_devengado: 0,
+        total_descuentos: 0,
+        liquido_pagar: 0,
+        estado: 'PENDIENTE',
+        fecha_pago: '',
+        observaciones: dias < 15 ? `Ingreso/baja parcial en período. Días calculados: ${dias}.` : '',
+      },
+      parametros
+    )
+  }
+
   const generarFilasIniciales = async (empleadosList: Empleado[], periodoId: number) => {
-    const saldoMap = await cargarSaldosCliente(empleadosList)
-    const anticiposMap = await cargarAnticipos(empleadosList)
-    const prestamosMap = await cargarCuotasPrestamo(empleadosList, periodoId)
-    const ventasCuotasMap = await cargarCuotasVentas(empleadosList, periodoId)
+    const empleadosDelPeriodo = empleadosList.filter(
+      (emp) => calcularDiasEmpleadoEnPeriodo(emp, fechas.fechaInicio, fechas.fechaFin) > 0
+    )
 
-    const rows = empleadosList.map((emp) => {
-      const salarioDiario = round2(toNum(emp.salario_base) / 30)
-      const horaNormal = round2(salarioDiario / parametros.horasDia)
-      const dias = 15
-      const bonoLey = quincena === '2' ? parametros.bonificacionLeyMensual : 0
-      const salarioOrdinario = round2(salarioDiario * dias)
-      const igss = quincena === '2' ? round2(salarioOrdinario * (parametros.igssPorcentaje / 100)) : 0
-      const irtra = quincena === '2' ? round2(salarioOrdinario * (parametros.irtraPorcentaje / 100)) : 0
-      const saldo = emp.cliente_id ? saldoMap.get(emp.cliente_id) : undefined
+    const saldoMap = await cargarSaldosCliente(empleadosDelPeriodo)
+    const anticiposMap = await cargarAnticipos(empleadosDelPeriodo)
+    const prestamosMap = await cargarCuotasPrestamo(empleadosDelPeriodo, periodoId)
+    const ventasCuotasMap = await cargarCuotasVentas(empleadosDelPeriodo, periodoId)
 
-      return calcularFila(
-        {
-          id: null,
-          empleado_id: emp.id,
-          codigo: emp.codigo,
-          nombre: emp.nombre_completo,
-          cliente_id: emp.cliente_id,
-          saldo_cliente: round2(toNum(saldo?.saldo_total)),
-          saldo_ventas: round2(toNum(saldo?.saldo_ventas)),
-          saldo_granja: round2(toNum(saldo?.saldo_granja)),
-          salario_base: String(toNum(emp.salario_base)),
-          salario_diario: salarioDiario,
-          hora_normal: horaNormal,
-          dias_trabajados: String(dias),
-          horas_extra: '0',
-          valor_hora_extra: round2(horaNormal * parametros.multiplicadorHoraExtra),
-          salario_ordinario: 0,
-          monto_horas_extra: 0,
-          bono_produccion_diario: String(toNum(emp.bono_produccion_diario)),
-          bono_produccion_total: 0,
-          bonificacion_ley: String(bonoLey),
-          otros_bonos: '0',
-          igss: String(igss),
-          irtra: String(irtra),
-          anticipos: String(anticiposMap.get(emp.id) || 0),
-          prestamos: String(prestamosMap.get(emp.id) || 0),
-          descuentos_ventas: String(ventasCuotasMap.get(emp.id) || 0),
-          descuentos_manual: '0',
-          total_devengado: 0,
-          total_descuentos: 0,
-          liquido_pagar: 0,
-          estado: 'PENDIENTE',
-          fecha_pago: '',
-          observaciones: '',
-        },
-        parametros
-      )
-    })
+    const rows = empleadosDelPeriodo.map((emp) =>
+      crearFilaInicial(emp, saldoMap, anticiposMap, prestamosMap, ventasCuotasMap)
+    )
 
     setFilas(rows)
   }
@@ -579,7 +629,7 @@ export default function RrhhPlanillaPage() {
 
       if (empleadosList.length === 0) {
         setFilas([])
-        setMensaje('No se encontraron empleados activos. Si sí aparecen en SQL, revisa permisos/RLS de rrhh_empleados y rrhh_empleado_distribucion.')
+        setMensaje('No se encontraron empleados aplicables a este período. Revisa fecha de ingreso, fecha de baja o permisos/RLS de rrhh_empleados.')
         return
       }
 
@@ -597,14 +647,18 @@ export default function RrhhPlanillaPage() {
 
       if (guardadas.length === 0) {
         await generarFilasIniciales(empleadosList, p.id)
-        setMensaje('Planilla preparada con empleados activos. Revisa y guarda para fijar los cálculos.')
+        setMensaje('Planilla preparada con empleados aplicables al período. Los ingresos a media quincena se calculan con días proporcionales. Revisa y guarda para fijar los cálculos.')
         return
       }
 
-      const saldoMap = await cargarSaldosCliente(empleadosList)
-      const empMap = new Map(empleadosList.map((e) => [e.id, e]))
+      const empleadosDelPeriodo = empleadosList.filter(
+        (emp) => calcularDiasEmpleadoEnPeriodo(emp, fechas.fechaInicio, fechas.fechaFin) > 0
+      )
+      const saldoMap = await cargarSaldosCliente(empleadosDelPeriodo)
+      const empMap = new Map(empleadosDelPeriodo.map((e) => [e.id, e]))
+      const guardadasEmpleadoIds = new Set(guardadas.map((g) => Number(g.empleado_id)))
 
-      const rows = guardadas
+      const rowsGuardadas = guardadas
         .map((g) => {
           const emp = empMap.get(g.empleado_id)
           if (!emp) return null
@@ -651,8 +705,27 @@ export default function RrhhPlanillaPage() {
         })
         .filter((row): row is PlanillaRow => row !== null)
 
+      const empleadosFaltantes = empleadosDelPeriodo.filter((emp) => !guardadasEmpleadoIds.has(emp.id))
+      let filasNuevas: PlanillaRow[] = []
+
+      if (empleadosFaltantes.length > 0) {
+        const anticiposMap = await cargarAnticipos(empleadosFaltantes)
+        const prestamosMap = await cargarCuotasPrestamo(empleadosFaltantes, p.id)
+        const ventasCuotasMap = await cargarCuotasVentas(empleadosFaltantes, p.id)
+
+        filasNuevas = empleadosFaltantes.map((emp) =>
+          crearFilaInicial(emp, saldoMap, anticiposMap, prestamosMap, ventasCuotasMap)
+        )
+      }
+
+      const rows = [...rowsGuardadas, ...filasNuevas].sort((a, b) => a.codigo.localeCompare(b.codigo))
+
       setFilas(rows)
-      setMensaje('Planilla cargada desde registros guardados.')
+      setMensaje(
+        filasNuevas.length > 0
+          ? `Planilla cargada desde registros guardados. Se agregaron ${filasNuevas.length} empleado(s) nuevo(s) que trabajaron en este período.`
+          : 'Planilla cargada desde registros guardados.'
+      )
     } catch (err) {
       console.error(err)
       setMensaje(err instanceof Error ? err.message : 'Error cargando planilla.')
