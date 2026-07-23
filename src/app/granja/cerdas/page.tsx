@@ -94,6 +94,28 @@ const normalizarArete = (valor: string) => {
 
 const claveArete = (valor: string) => normalizarArete(valor)
 
+const getErrorMessage = (error: unknown, fallback: string) => {
+  if (error instanceof Error && error.message) return error.message
+
+  if (typeof error === 'object' && error !== null) {
+    const err = error as { message?: unknown; details?: unknown; hint?: unknown; code?: unknown }
+    const parts = [err.message, err.details, err.hint]
+      .filter((item): item is string => typeof item === 'string' && item.trim() !== '')
+      .map((item) => item.trim())
+
+    if (parts.length > 0) return parts.join(' | ')
+
+    if (typeof err.code === 'string' && err.code.trim() !== '') {
+      return `${fallback} Código: ${err.code}`
+    }
+  }
+
+  if (typeof error === 'string' && error.trim() !== '') return error.trim()
+
+  return fallback
+}
+
+
 const fechaISOaTimestampMediodia = (fechaISO: string) => {
   return new Date(`${fechaISO}T12:00:00.000Z`).toISOString()
 }
@@ -224,7 +246,7 @@ export default function GranjaCerdasPage() {
       setCerdas((res.data ?? []) as Cerda[])
     } catch (error) {
       console.error('Error cargando cerdas', error)
-      const message = error instanceof Error ? error.message : 'Error cargando cerdas.'
+      const message = getErrorMessage(error, 'Error cargando cerdas.')
       setMsg(message)
     } finally {
       setLoading(false)
@@ -381,7 +403,7 @@ export default function GranjaCerdasPage() {
       await cargarCatalogos()
     } catch (error) {
       console.error('Error creando cerda', error)
-      const message = error instanceof Error ? error.message : 'Error creando cerda.'
+      const message = getErrorMessage(error, 'Error creando cerda.')
       setMsg(message)
       alert(message)
     } finally {
@@ -400,7 +422,7 @@ export default function GranjaCerdasPage() {
       )
     } catch (error) {
       console.error('Error actualizando cerda', error)
-      const message = error instanceof Error ? error.message : 'No se pudo guardar el cambio.'
+      const message = getErrorMessage(error, 'No se pudo guardar el cambio.')
       setMsg(message)
       alert(message)
     }
@@ -591,7 +613,7 @@ export default function GranjaCerdasPage() {
 
       const { data: userData } = await supabase.auth.getUser()
 
-      const { error } = await supabase.rpc('granja_cambiar_arete_cerda', {
+      const { error } = await supabase.rpc('granja_cambiar_arete_cerda_v2', {
         p_cerda_id: cerda.id,
         p_arete_nuevo: nuevoArete,
         p_fecha: hoyISO(),
@@ -612,7 +634,7 @@ export default function GranjaCerdasPage() {
       await cargarCatalogos()
     } catch (error) {
       console.error('Error cambiando arete', error)
-      const message = error instanceof Error ? error.message : 'No se pudo cambiar el arete.'
+      const message = getErrorMessage(error, 'No se pudo cambiar el arete.')
       setMsg(message)
       alert(message)
       setAreteEdits((prev) =>
