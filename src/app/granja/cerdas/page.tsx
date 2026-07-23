@@ -24,10 +24,24 @@ type Cerda = {
   lote_id: number | null
   fecha_nacimiento: string | null
   peso_lb: number | null
+  paridad: number | null
   notas: string | null
   activa: boolean
   created_at: string
   updated_at: string
+}
+
+type OcupacionUbicacion = {
+  ubicacion_id: number | null
+  arete: string
+  estado: string
+  activa: boolean
+}
+
+type AreteEdit = {
+  arete: string
+  observaciones: string
+  guardando: boolean
 }
 
 type MovimientoGranja = {
@@ -72,6 +86,8 @@ export default function GranjaCerdasPage() {
   const [ubicaciones, setUbicaciones] = useState<Ubicacion[]>([])
   const [lotes, setLotes] = useState<Lote[]>([])
   const [cerdas, setCerdas] = useState<Cerda[]>([])
+  const [ocupacionUbicaciones, setOcupacionUbicaciones] = useState<OcupacionUbicacion[]>([])
+  const [areteEdits, setAreteEdits] = useState<Record<number, AreteEdit>>({})
 
   const [form, setForm] = useState({
     arete: '',
@@ -81,6 +97,7 @@ export default function GranjaCerdasPage() {
     lote_id: '',
     fecha_nacimiento: '',
     peso_lb: '',
+    paridad: '0',
     notas: '',
     activa: true,
   })
@@ -131,6 +148,23 @@ export default function GranjaCerdasPage() {
     if (!lotesRes.error) {
       setLotes((lotesRes.data ?? []) as Lote[])
     }
+
+    const ocupadasRes = await supabase
+      .from('granja_cerdas')
+      .select('ubicacion_id,arete,estado,activa')
+      .eq('activa', true)
+      .not('ubicacion_id', 'is', null)
+
+    if (!ocupadasRes.error) {
+      const ocupadas = ((ocupadasRes.data ?? []) as OcupacionUbicacion[]).filter(
+        (item) =>
+          item.ubicacion_id &&
+          item.activa &&
+          item.estado !== 'MUERTA' &&
+          item.estado !== 'BAJA'
+      )
+      setOcupacionUbicaciones(ocupadas)
+    }
   }, [])
 
   const cargarCerdas = useCallback(async () => {
@@ -141,7 +175,7 @@ export default function GranjaCerdasPage() {
       let query = supabase
         .from('granja_cerdas')
         .select(
-          'id,arete,nombre,estado,ubicacion_id,lote_id,fecha_nacimiento,peso_lb,notas,activa,created_at,updated_at'
+          'id,arete,nombre,estado,ubicacion_id,lote_id,fecha_nacimiento,peso_lb,paridad,notas,activa,created_at,updated_at'
         )
         .order('arete', { ascending: true })
 
@@ -191,6 +225,7 @@ export default function GranjaCerdasPage() {
       lote_id: '',
       fecha_nacimiento: '',
       peso_lb: '',
+      paridad: '0',
       notas: '',
       activa: true,
     })
@@ -230,6 +265,31 @@ export default function GranjaCerdasPage() {
         throw new Error('Peso inválido.')
       }
 
+      const paridad = form.paridad.trim() === '' ? 0 : Number(form.paridad)
+
+      if (!Number.isInteger(paridad) || paridad < 0) {
+        throw new Error('La paridad inicial debe ser un número entero mayor o igual a 0.')
+      }
+
+      const ocupadaRes = await supabase
+        .from('granja_cerdas')
+        .select('id,arete,estado,activa')
+        .eq('ubicacion_id', ubicacionId)
+        .eq('activa', true)
+        .limit(5)
+
+      if (ocupadaRes.error) throw ocupadaRes.error
+
+      const ocupada = (ocupadaRes.data ?? []).find(
+        (item) => item.estado !== 'MUERTA' && item.estado !== 'BAJA'
+      )
+
+      if (ocupada) {
+        throw new Error(
+          `La ubicación seleccionada ya tiene una cerda activa (${ocupada.arete}). Selecciona una jaula libre.`
+        )
+      }
+
       const estadoFinal = form.estado
       const activaFinal =
         form.activa && estadoFinal !== 'MUERTA' && estadoFinal !== 'BAJA'
@@ -245,6 +305,7 @@ export default function GranjaCerdasPage() {
             lote_id: loteId,
             fecha_nacimiento: form.fecha_nacimiento || null,
             peso_lb: pesoLb,
+            paridad,
             notas: form.notas.trim() || null,
             activa: activaFinal,
           },
@@ -283,6 +344,7 @@ export default function GranjaCerdasPage() {
       setMsg('Cerda guardada correctamente.')
       resetForm()
       await cargarCerdas()
+      await cargarCatalogos()
     } catch (error) {
       console.error('Error creando cerda', error)
       const message = error instanceof Error ? error.message : 'Error creando cerda.'
@@ -439,6 +501,73 @@ export default function GranjaCerdasPage() {
     })
   }
 
+  const setAreteEditValue = (cerda: Cerda, patch: Partial<AreteEdit>) => {
+    setAreteEdits((prev) => ({
+      ...prev,
+      [cerda.id]: {
+        arete: prev[cerda.id]?.arete ?? cerda.arete,
+        observaciones: prev[cerda.id]?.observaciones ?? '',
+        guardando: prev[cerda.id]?.guardando ?? false,
+        ...patch,
+      },
+    }))
+  }
+
+  const guardarCambioArete = async (cerda: Cerda) => {
+    const edit = areteEdits[cerda.id]
+    const nuevoArete = (edit?.arete ?? cerda.arete).trim().toUpperCase()
+    const areteActual = cerda.arete.trim().toUpperCase()
+
+    if (!nuevoArete) {
+      alert('El nuevo arete no puede estar vacío.')
+      return
+    }
+
+    if (nuevoArete === areteActual) {
+      alert('El nuevo arete es igual al actual.')
+      return
+    }
+
+    const confirmar = window.confirm(
+      `¿Cambiar el arete de ${cerda.arete} a ${nuevoArete}? Este cambio quedará registrado como evento.`
+    )
+
+    if (!confirmar) return
+
+    try {
+      setAreteEditValue(cerda, { guardando: true })
+
+      const { data: userData } = await supabase.auth.getUser()
+
+      const { error } = await supabase.rpc('granja_cambiar_arete_cerda', {
+        p_cerda_id: cerda.id,
+        p_arete_nuevo: nuevoArete,
+        p_fecha: hoyISO(),
+        p_observaciones: edit?.observaciones?.trim() || null,
+        p_user_id: userData?.user?.id ?? null,
+      })
+
+      if (error) throw error
+
+      setAreteEdits((prev) => {
+        const copy = { ...prev }
+        delete copy[cerda.id]
+        return copy
+      })
+
+      setMsg(`Arete actualizado: ${cerda.arete} → ${nuevoArete}.`)
+      await cargarCerdas()
+      await cargarCatalogos()
+    } catch (error) {
+      console.error('Error cambiando arete', error)
+      const message = error instanceof Error ? error.message : 'No se pudo cambiar el arete.'
+      setMsg(message)
+      alert(message)
+    } finally {
+      setAreteEditValue(cerda, { guardando: false })
+    }
+  }
+
   const ubicMap = useMemo(() => {
     return new Map(ubicaciones.map((ubicacion) => [ubicacion.id, ubicacion]))
   }, [ubicaciones])
@@ -446,6 +575,18 @@ export default function GranjaCerdasPage() {
   const loteMap = useMemo(() => {
     return new Map(lotes.map((lote) => [lote.id, lote]))
   }, [lotes])
+
+  const ubicacionesOcupadasMap = useMemo(() => {
+    const map = new Map<number, OcupacionUbicacion>()
+    ocupacionUbicaciones.forEach((item) => {
+      if (item.ubicacion_id) map.set(Number(item.ubicacion_id), item)
+    })
+    return map
+  }, [ocupacionUbicaciones])
+
+  const ubicacionesDisponiblesCrear = useMemo(() => {
+    return ubicaciones.filter((ubicacion) => !ubicacionesOcupadasMap.has(Number(ubicacion.id)))
+  }, [ubicaciones, ubicacionesOcupadasMap])
 
   return (
     <div className="p-6 max-w-6xl mx-auto">
@@ -519,7 +660,7 @@ export default function GranjaCerdasPage() {
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-3 items-end">
+            <div className="grid grid-cols-3 gap-3 items-end">
               <div>
                 <label className="text-xs text-gray-600">Estado inicial</label>
                 <select
@@ -544,7 +685,24 @@ export default function GranjaCerdasPage() {
                 </select>
               </div>
 
-              <label className="flex items-center gap-2 text-sm">
+              <div>
+                <label className="text-xs text-gray-600">Paridad inicial</label>
+                <input
+                  type="number"
+                  min="0"
+                  step="1"
+                  className="w-full border rounded px-2 py-2"
+                  value={form.paridad}
+                  onChange={(e) =>
+                    setForm((prev) => ({
+                      ...prev,
+                      paridad: e.target.value,
+                    }))
+                  }
+                />
+              </div>
+
+              <label className="flex items-center gap-2 text-sm pb-2">
                 <input
                   type="checkbox"
                   checked={form.activa}
@@ -574,12 +732,15 @@ export default function GranjaCerdasPage() {
                   }
                 >
                   <option value="">— Selecciona —</option>
-                  {ubicaciones.map((ubicacion) => (
+                  {ubicacionesDisponiblesCrear.map((ubicacion) => (
                     <option key={ubicacion.id} value={String(ubicacion.id)}>
                       {ubicacion.codigo} — {ubicacion.nombre ?? ''}
                     </option>
                   ))}
                 </select>
+                <div className="text-[11px] text-gray-500 mt-1">
+                  Solo se muestran ubicaciones sin cerda activa registrada.
+                </div>
               </div>
 
               <div>
@@ -764,7 +925,7 @@ export default function GranjaCerdasPage() {
           </div>
 
           <div className="border rounded overflow-auto">
-            <table className="min-w-[780px] w-full text-sm">
+            <table className="min-w-[980px] w-full text-sm">
               <thead className="bg-gray-100">
                 <tr>
                   <th className="border px-2 py-2 text-left">Arete</th>
@@ -772,6 +933,7 @@ export default function GranjaCerdasPage() {
                   <th className="border px-2 py-2 text-left">Estado</th>
                   <th className="border px-2 py-2 text-left">Ubicación</th>
                   <th className="border px-2 py-2 text-left">Lote</th>
+                  <th className="border px-2 py-2 text-center">Paridad</th>
                   <th className="border px-2 py-2 text-right">Peso lb</th>
                   <th className="border px-2 py-2 text-center">Activa</th>
                 </tr>
@@ -782,7 +944,7 @@ export default function GranjaCerdasPage() {
                   <tr>
                     <td
                       className="border px-2 py-4 text-center text-gray-600"
-                      colSpan={7}
+                      colSpan={8}
                     >
                       No hay registros con esos filtros.
                     </td>
@@ -797,7 +959,33 @@ export default function GranjaCerdasPage() {
 
                     return (
                       <tr key={cerda.id} className="hover:bg-gray-50">
-                        <td className="border px-2 py-2">{cerda.arete}</td>
+                        <td className="border px-2 py-2 min-w-[190px]">
+                          <div className="flex gap-1 items-center">
+                            <input
+                              className="border rounded px-2 py-1 w-24 font-semibold"
+                              value={areteEdits[cerda.id]?.arete ?? cerda.arete}
+                              onChange={(e) =>
+                                setAreteEditValue(cerda, { arete: e.target.value })
+                              }
+                            />
+                            <button
+                              type="button"
+                              onClick={() => guardarCambioArete(cerda)}
+                              disabled={areteEdits[cerda.id]?.guardando}
+                              className="px-2 py-1 rounded bg-amber-600 hover:bg-amber-700 text-white text-[11px] disabled:opacity-60"
+                            >
+                              {areteEdits[cerda.id]?.guardando ? '...' : 'Cambiar'}
+                            </button>
+                          </div>
+                          <input
+                            className="border rounded px-2 py-1 w-full mt-1 text-[11px]"
+                            placeholder="Motivo del cambio"
+                            value={areteEdits[cerda.id]?.observaciones ?? ''}
+                            onChange={(e) =>
+                              setAreteEditValue(cerda, { observaciones: e.target.value })
+                            }
+                          />
+                        </td>
 
                         <td className="border px-2 py-2">{cerda.nombre}</td>
 
@@ -862,6 +1050,10 @@ export default function GranjaCerdasPage() {
                               {lote.codigo}
                             </div>
                           ) : null}
+                        </td>
+
+                        <td className="border px-2 py-2 text-center">
+                          {cerda.paridad ?? 0}
                         </td>
 
                         <td className="border px-2 py-2 text-right">
