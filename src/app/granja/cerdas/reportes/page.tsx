@@ -51,6 +51,7 @@ type CerdaEvento = {
   lote_id: number | null
   datos: unknown
   observaciones: string | null
+  user_id?: string | null
   created_at: string | null
   granja_ubicaciones?: {
     codigo: string | null
@@ -59,6 +60,22 @@ type CerdaEvento = {
   granja_lotes?: {
     codigo: string | null
   } | null
+}
+
+type CambioArete = {
+  evento_id: number
+  cerda_id: number
+  arete_actual: string | null
+  arete_anterior: string | null
+  arete_nuevo: string | null
+  fecha_evento: string | null
+  fecha_hora_registro: string | null
+  fecha_registro: string | null
+  hora_registro: string | null
+  usuario: string | null
+  ubicacion_codigo: string | null
+  ubicacion_nombre: string | null
+  observaciones: string | null
 }
 
 type FormCerda = {
@@ -84,6 +101,7 @@ type ReporteTipo =
   | 'ABORTOS'
   | 'PARTOS_INTERVALO'
   | 'RESUMEN_REPRODUCTIVO'
+  | 'CAMBIOS_ARETE'
 
 type ReporteGenerado = {
   titulo: string
@@ -143,6 +161,11 @@ const REPORTES: Array<{ value: ReporteTipo; label: string; ayuda: string }> = [
     value: 'PARTOS_INTERVALO',
     label: 'Partos por intervalo',
     ayuda: 'Detalle de partos, nacidos vivos, muertos, momias y totales.',
+  },
+  {
+    value: 'CAMBIOS_ARETE',
+    label: 'Cambios de arete',
+    ayuda: 'Muestra cambios de arete con fecha de evento, hora de registro, usuario, arete anterior y arete nuevo.',
   },
   {
     value: 'RESUMEN_REPRODUCTIVO',
@@ -489,13 +512,41 @@ function construirReporte(
   cerdas: Cerda[],
   eventos: CerdaEvento[],
   desde: string,
-  hasta: string
+  hasta: string,
+  cambiosArete: CambioArete[] = []
 ): ReporteGenerado {
   const cerdasMap = mapCerdas(cerdas)
   const hoy = hoyISO()
   const desdeFinal = desde || '1900-01-01'
   const hastaFinal = hasta || '2999-12-31'
   const cerdasActivas = cerdas.filter((c) => c.activa && !['MUERTA', 'BAJA'].includes(normalizar(c.estado)))
+
+  if (tipo === 'CAMBIOS_ARETE') {
+    const cambios = cambiosArete.filter((cambio) => {
+      const fecha = formatFecha(cambio.fecha_evento || cambio.fecha_registro)
+      if (fecha < desdeFinal) return false
+      if (fecha > hastaFinal) return false
+      return true
+    })
+
+    const filas = cambios.map((cambio) => [
+      formatFecha(cambio.fecha_evento),
+      cambio.hora_registro || '—',
+      cambio.usuario || 'Sin usuario',
+      cambio.arete_anterior || '—',
+      cambio.arete_nuevo || '—',
+      cambio.arete_actual || '—',
+      `${cambio.ubicacion_codigo || '—'}${cambio.ubicacion_nombre ? ` — ${cambio.ubicacion_nombre}` : ''}`,
+      cambio.observaciones || '—',
+    ])
+
+    return {
+      titulo: 'Reporte de cambios de arete',
+      columnas: ['Fecha evento', 'Hora registro', 'Usuario', 'Arete anterior', 'Arete nuevo', 'Arete actual', 'Ubicación', 'Observación'],
+      filas,
+      resumen: [['Cambios de arete', String(filas.length)]],
+    }
+  }
 
   if (tipo === 'PARTOS_PROXIMOS') {
     const filas = cerdasActivas
@@ -820,6 +871,7 @@ export default function CerdasReportesPage() {
   const [ubicaciones, setUbicaciones] = useState<Ubicacion[]>([])
   const [lotes, setLotes] = useState<Lote[]>([])
   const [eventos, setEventos] = useState<CerdaEvento[]>([])
+  const [cambiosArete, setCambiosArete] = useState<CambioArete[]>([])
 
   const [loading, setLoading] = useState(false)
   const [guardando, setGuardando] = useState(false)
@@ -901,14 +953,14 @@ export default function CerdasReportesPage() {
   }, [eventos, cerdaSeleccionadaId])
 
   const reporteGenerado = useMemo(() => {
-    return construirReporte(reporteTipo, cerdas, eventos, reporteDesde, reporteHasta)
-  }, [reporteTipo, cerdas, eventos, reporteDesde, reporteHasta])
+    return construirReporte(reporteTipo, cerdas, eventos, reporteDesde, reporteHasta, cambiosArete)
+  }, [reporteTipo, cerdas, eventos, reporteDesde, reporteHasta, cambiosArete])
 
   const cargarDatos = useCallback(async () => {
     setLoading(true)
 
     try {
-      const [cerdasRes, ubicacionesRes, lotesRes, eventosRes] = await Promise.all([
+      const [cerdasRes, ubicacionesRes, lotesRes, eventosRes, cambiosAreteRes] = await Promise.all([
         supabase
           .from('granja_cerdas')
           .select(
@@ -958,6 +1010,7 @@ export default function CerdasReportesPage() {
             lote_id,
             datos,
             observaciones,
+            user_id,
             created_at,
             granja_ubicaciones (
               codigo,
@@ -969,6 +1022,13 @@ export default function CerdasReportesPage() {
           `
           )
           .order('fecha', { ascending: false }),
+
+        supabase
+          .from('granja_v_cambios_arete')
+          .select(
+            'evento_id,cerda_id,arete_actual,arete_anterior,arete_nuevo,fecha_evento,fecha_hora_registro,fecha_registro,hora_registro,usuario,ubicacion_codigo,ubicacion_nombre,observaciones'
+          )
+          .order('fecha_hora_registro', { ascending: false }),
       ])
 
       if (cerdasRes.error) {
@@ -991,10 +1051,17 @@ export default function CerdasReportesPage() {
         return
       }
 
+      if (cambiosAreteRes.error) {
+        console.error(cambiosAreteRes.error)
+        alert(`Error cargando cambios de arete: ${cambiosAreteRes.error.message}`)
+        return
+      }
+
       setCerdas((cerdasRes.data || []) as unknown as Cerda[])
       setUbicaciones((ubicacionesRes.data || []) as Ubicacion[])
       setLotes((lotesRes.data || []) as Lote[])
       setEventos((eventosRes.data || []) as unknown as CerdaEvento[])
+      setCambiosArete((cambiosAreteRes.data || []) as CambioArete[])
     } finally {
       setLoading(false)
     }
@@ -1075,7 +1142,7 @@ export default function CerdasReportesPage() {
       return
     }
 
-    const arete = form.arete.trim()
+    const arete = form.arete.trim().toUpperCase()
     if (!arete) {
       alert('El arete es obligatorio.')
       return
@@ -1098,8 +1165,11 @@ export default function CerdasReportesPage() {
       const { data: userData } = await supabase.auth.getUser()
       const userId = userData?.user?.id ?? null
 
+      const cambioArete = cerdaSeleccionada
+        ? normalizar(cerdaSeleccionada.arete) !== arete
+        : false
+
       const payload = {
-        arete,
         nombre: form.nombre.trim() || null,
         estado: form.estado,
         ubicacion_id: form.ubicacion_id ? Number(form.ubicacion_id) : null,
@@ -1123,6 +1193,22 @@ export default function CerdasReportesPage() {
         return
       }
 
+      if (cambioArete) {
+        const { error: areteError } = await supabase.rpc('granja_cambiar_arete_cerda', {
+          p_cerda_id: cerdaSeleccionadaId,
+          p_arete_nuevo: arete,
+          p_fecha: new Date().toISOString().slice(0, 10),
+          p_observaciones: 'Cambio de arete desde ficha/reportes de cerdas.',
+          p_user_id: userId,
+        })
+
+        if (areteError) {
+          console.error(areteError)
+          alert(`La ficha se guardó, pero no se pudo cambiar el arete: ${areteError.message}`)
+          return
+        }
+      }
+
       const { error: eventoError } = await supabase.from('granja_cerda_eventos').insert({
         cerda_id: cerdaSeleccionadaId,
         fecha: new Date().toISOString().slice(0, 10),
@@ -1130,7 +1216,7 @@ export default function CerdasReportesPage() {
         resultado: 'ACTUALIZADA',
         ubicacion_id: payload.ubicacion_id,
         lote_id: payload.lote_id,
-        datos: { cambios: payload },
+        datos: { cambios: payload, cambio_arete: cambioArete ? { arete_anterior: cerdaSeleccionada?.arete, arete_nuevo: arete } : null },
         observaciones: 'Edición manual desde página de reportes de cerdas.',
         user_id: userId,
       })
