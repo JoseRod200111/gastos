@@ -42,6 +42,7 @@ type AreteEdit = {
   arete: string
   observaciones: string
   guardando: boolean
+  editando: boolean
 }
 
 type MovimientoGranja = {
@@ -73,6 +74,25 @@ const hoyISO = () => {
   const dd = String(d.getDate()).padStart(2, '0')
   return `${yyyy}-${mm}-${dd}`
 }
+
+const normalizarArete = (valor: string) => {
+  const limpio = valor.trim().toUpperCase().replace(/\s+/g, '')
+
+  if (!limpio) return ''
+
+  if (/^\d+$/.test(limpio)) {
+    return `AR${limpio.padStart(4, '0')}`
+  }
+
+  if (/^AR\d+$/.test(limpio)) {
+    const numero = limpio.slice(2)
+    return `AR${numero.padStart(4, '0')}`
+  }
+
+  return limpio
+}
+
+const claveArete = (valor: string) => normalizarArete(valor)
 
 const fechaISOaTimestampMediodia = (fechaISO: string) => {
   return new Date(`${fechaISO}T12:00:00.000Z`).toISOString()
@@ -237,12 +257,26 @@ export default function GranjaCerdasPage() {
     try {
       setGuardando(true)
 
-      const arete = form.arete.trim().toUpperCase()
+      const arete = normalizarArete(form.arete)
       const nombre = form.nombre.trim()
 
       if (!arete) throw new Error('Arete es requerido.')
       if (!nombre) throw new Error('Nombre es requerido.')
       if (!form.ubicacion_id) throw new Error('Ubicación es requerida.')
+
+      const aretesRes = await supabase
+        .from('granja_cerdas')
+        .select('id,arete')
+
+      if (aretesRes.error) throw aretesRes.error
+
+      const areteDuplicado = (aretesRes.data ?? []).find(
+        (item) => claveArete(String(item.arete ?? '')) === arete
+      )
+
+      if (areteDuplicado) {
+        throw new Error(`Ya existe una cerda con el arete ${arete}.`)
+      }
 
       const ubicacionId = Number(form.ubicacion_id)
 
@@ -508,15 +542,24 @@ export default function GranjaCerdasPage() {
         arete: prev[cerda.id]?.arete ?? cerda.arete,
         observaciones: prev[cerda.id]?.observaciones ?? '',
         guardando: prev[cerda.id]?.guardando ?? false,
+        editando: prev[cerda.id]?.editando ?? false,
         ...patch,
       },
     }))
   }
 
+  const cancelarCambioArete = (cerda: Cerda) => {
+    setAreteEdits((prev) => {
+      const copy = { ...prev }
+      delete copy[cerda.id]
+      return copy
+    })
+  }
+
   const guardarCambioArete = async (cerda: Cerda) => {
     const edit = areteEdits[cerda.id]
-    const nuevoArete = (edit?.arete ?? cerda.arete).trim().toUpperCase()
-    const areteActual = cerda.arete.trim().toUpperCase()
+    const nuevoArete = normalizarArete(edit?.arete ?? cerda.arete)
+    const areteActual = normalizarArete(cerda.arete)
 
     if (!nuevoArete) {
       alert('El nuevo arete no puede estar vacío.')
@@ -525,6 +568,15 @@ export default function GranjaCerdasPage() {
 
     if (nuevoArete === areteActual) {
       alert('El nuevo arete es igual al actual.')
+      return
+    }
+
+    const duplicadaLocal = cerdas.find(
+      (item) => item.id !== cerda.id && claveArete(item.arete) === nuevoArete
+    )
+
+    if (duplicadaLocal) {
+      alert(`No se puede cambiar: ya existe otra cerda con el arete ${nuevoArete}.`)
       return
     }
 
@@ -563,8 +615,17 @@ export default function GranjaCerdasPage() {
       const message = error instanceof Error ? error.message : 'No se pudo cambiar el arete.'
       setMsg(message)
       alert(message)
-    } finally {
-      setAreteEditValue(cerda, { guardando: false })
+      setAreteEdits((prev) =>
+        prev[cerda.id]
+          ? {
+              ...prev,
+              [cerda.id]: {
+                ...prev[cerda.id],
+                guardando: false,
+              },
+            }
+          : prev
+      )
     }
   }
 
@@ -639,6 +700,12 @@ export default function GranjaCerdasPage() {
                     setForm((prev) => ({
                       ...prev,
                       arete: e.target.value,
+                    }))
+                  }
+                  onBlur={() =>
+                    setForm((prev) => ({
+                      ...prev,
+                      arete: normalizarArete(prev.arete),
                     }))
                   }
                 />
@@ -959,32 +1026,73 @@ export default function GranjaCerdasPage() {
 
                     return (
                       <tr key={cerda.id} className="hover:bg-gray-50">
-                        <td className="border px-2 py-2 min-w-[190px]">
-                          <div className="flex gap-1 items-center">
-                            <input
-                              className="border rounded px-2 py-1 w-24 font-semibold"
-                              value={areteEdits[cerda.id]?.arete ?? cerda.arete}
-                              onChange={(e) =>
-                                setAreteEditValue(cerda, { arete: e.target.value })
-                              }
-                            />
-                            <button
-                              type="button"
-                              onClick={() => guardarCambioArete(cerda)}
-                              disabled={areteEdits[cerda.id]?.guardando}
-                              className="px-2 py-1 rounded bg-amber-600 hover:bg-amber-700 text-white text-[11px] disabled:opacity-60"
-                            >
-                              {areteEdits[cerda.id]?.guardando ? '...' : 'Cambiar'}
-                            </button>
-                          </div>
-                          <input
-                            className="border rounded px-2 py-1 w-full mt-1 text-[11px]"
-                            placeholder="Motivo del cambio"
-                            value={areteEdits[cerda.id]?.observaciones ?? ''}
-                            onChange={(e) =>
-                              setAreteEditValue(cerda, { observaciones: e.target.value })
-                            }
-                          />
+                        <td className="border px-2 py-2 min-w-[220px]">
+                          {areteEdits[cerda.id]?.editando ? (
+                            <div className="space-y-1">
+                              <div className="text-[11px] text-gray-600">
+                                Actual: <strong>{cerda.arete}</strong>
+                              </div>
+                              <input
+                                className="border rounded px-2 py-1 w-full font-semibold"
+                                value={areteEdits[cerda.id]?.arete ?? cerda.arete}
+                                onChange={(e) =>
+                                  setAreteEditValue(cerda, { arete: e.target.value })
+                                }
+                                onBlur={() =>
+                                  setAreteEditValue(cerda, {
+                                    arete: normalizarArete(
+                                      areteEdits[cerda.id]?.arete ?? cerda.arete
+                                    ),
+                                  })
+                                }
+                              />
+                              <input
+                                className="border rounded px-2 py-1 w-full text-[11px]"
+                                placeholder="Motivo del cambio"
+                                value={areteEdits[cerda.id]?.observaciones ?? ''}
+                                onChange={(e) =>
+                                  setAreteEditValue(cerda, {
+                                    observaciones: e.target.value,
+                                  })
+                                }
+                              />
+                              <div className="flex gap-1">
+                                <button
+                                  type="button"
+                                  onClick={() => guardarCambioArete(cerda)}
+                                  disabled={areteEdits[cerda.id]?.guardando}
+                                  className="px-2 py-1 rounded bg-amber-600 hover:bg-amber-700 text-white text-[11px] disabled:opacity-60"
+                                >
+                                  {areteEdits[cerda.id]?.guardando ? 'Guardando...' : 'Confirmar'}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => cancelarCambioArete(cerda)}
+                                  disabled={areteEdits[cerda.id]?.guardando}
+                                  className="px-2 py-1 rounded bg-gray-200 hover:bg-gray-300 text-[11px] disabled:opacity-60"
+                                >
+                                  Cancelar
+                                </button>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="font-semibold">{cerda.arete}</span>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setAreteEditValue(cerda, {
+                                    arete: cerda.arete,
+                                    observaciones: '',
+                                    editando: true,
+                                  })
+                                }
+                                className="px-2 py-1 rounded bg-amber-600 hover:bg-amber-700 text-white text-[11px]"
+                              >
+                                Cambiar arete
+                              </button>
+                            </div>
+                          )}
                         </td>
 
                         <td className="border px-2 py-2">{cerda.nombre}</td>
