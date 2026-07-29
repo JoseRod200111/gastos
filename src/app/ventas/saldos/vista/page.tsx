@@ -188,6 +188,8 @@ function VistaDeudasClienteInner() {
           fecha: string
           credito: number
           abonado: number
+          tienePendiente: boolean
+          tienePago: boolean
         }
       }
 
@@ -204,10 +206,24 @@ function VistaDeudasClienteInner() {
         const esPendiente =
           (fpId != null && idsPendientes.has(fpId)) || documento.includes('pend')
 
-        if (!vId || !esPendiente) continue
+        if (!vId) continue
 
-        if (!agg[vId]) agg[vId] = { fecha, credito: 0, abonado: 0 }
+        if (!agg[vId]) {
+          agg[vId] = {
+            fecha,
+            credito: 0,
+            abonado: 0,
+            tienePendiente: false,
+            tienePago: false,
+          }
+        }
+
+        // En ventas mixtas, el saldo correcto se calcula como:
+        // total de la venta completa - abonos reales de esa venta.
+        // Antes solo se sumaban las líneas pendientes y luego se restaban todos los abonos,
+        // por eso una venta reabierta podía desaparecer de saldos.
         agg[vId].credito += imp
+        agg[vId].tienePendiente = agg[vId].tienePendiente || esPendiente
       }
 
       const vIds = Object.keys(agg).map(Number)
@@ -220,13 +236,19 @@ function VistaDeudasClienteInner() {
 
         if (!pErr) {
           for (const pr of pagosRows || []) {
+            const ventaId = Number((pr as any).venta_id)
             const m = toNum((pr as any).monto)
-            if (agg[(pr as any).venta_id]) agg[(pr as any).venta_id].abonado += m
+
+            if (agg[ventaId]) {
+              agg[ventaId].abonado += m
+              agg[ventaId].tienePago = true
+            }
           }
         }
       }
 
       const final: VentaRow[] = Object.entries(agg)
+        .filter(([, v]) => v.tienePendiente || v.tienePago)
         .map(([venta_id, v]) => ({
           venta_id: Number(venta_id),
           fecha: v.fecha,
