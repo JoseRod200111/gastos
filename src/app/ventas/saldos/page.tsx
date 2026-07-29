@@ -130,6 +130,8 @@ export default function SaldosPorClientePage() {
         cliente_id: number
         credito: number
         abonado: number
+        tienePendiente: boolean
+        tienePago: boolean
       }
 
       const porVenta: Record<number, VentaAgg> = {}
@@ -144,7 +146,7 @@ export default function SaldosPorClientePage() {
         const esPendiente =
           (formaPagoId != null && idsPendientes.has(formaPagoId)) || documento.includes('pend')
 
-        if (!ventaId || !clienteId || !esPendiente) continue
+        if (!ventaId || !clienteId) continue
 
         if (!porVenta[ventaId]) {
           porVenta[ventaId] = {
@@ -152,10 +154,15 @@ export default function SaldosPorClientePage() {
             cliente_id: clienteId,
             credito: 0,
             abonado: 0,
+            tienePendiente: false,
+            tienePago: false,
           }
         }
 
+        // El crédito de una deuda por venta debe calcularse con el total de la venta completa,
+        // no solo con las líneas pendientes. Así soporta ventas mixtas: una parte pagada y otra pendiente.
         porVenta[ventaId].credito += toNum(raw.importe)
+        porVenta[ventaId].tienePendiente = porVenta[ventaId].tienePendiente || esPendiente
       }
 
       const ventasIds = Object.keys(porVenta).map(Number)
@@ -171,7 +178,10 @@ export default function SaldosPorClientePage() {
         } else {
           for (const pago of (pagosRows || []) as any[]) {
             const ventaId = Number(pago.venta_id)
-            if (porVenta[ventaId]) porVenta[ventaId].abonado += toNum(pago.monto)
+            if (porVenta[ventaId]) {
+              porVenta[ventaId].abonado += toNum(pago.monto)
+              porVenta[ventaId].tienePago = true
+            }
           }
         }
       }
@@ -197,6 +207,11 @@ export default function SaldosPorClientePage() {
       const porCliente: Record<number, SaldoItem> = {}
 
       for (const venta of Object.values(porVenta)) {
+        // Solo se considera deuda si la venta tiene al menos una línea pendiente
+        // o si tiene abonos registrados. Esto evita que ventas pagadas al contado sin abonos
+        // aparezcan como deuda.
+        if (!venta.tienePendiente && !venta.tienePago) continue
+
         const credito = round2(venta.credito)
         const abonado = round2(venta.abonado)
         const saldoVenta = round2(credito - abonado)
@@ -350,7 +365,7 @@ export default function SaldosPorClientePage() {
         <Image src="/logo.png" alt="Logo" width={180} height={72} />
       </div>
 
-      <h1 className="text-2xl font-bold mb-3">💰 Saldos por Cliente</h1>
+      <h1 className="text-2xl font-bold mb-3"> Saldos por Cliente</h1>
 
       <div className="mb-4 flex flex-col md:flex-row items-center gap-3">
         <select
@@ -372,7 +387,7 @@ export default function SaldosPorClientePage() {
           className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded text-sm"
           disabled={loading}
         >
-          🔎 Buscar
+           Buscar
         </button>
 
         <button
@@ -380,7 +395,7 @@ export default function SaldosPorClientePage() {
           className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded text-sm disabled:opacity-60"
           disabled={generando || rows.length === 0}
         >
-          {generando ? 'Generando…' : '📄 Reporte PDF'}
+          {generando ? 'Generando…' : ' Reporte PDF'}
         </button>
 
         {selectedClienteId && (
