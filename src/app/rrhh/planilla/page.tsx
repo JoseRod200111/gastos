@@ -129,8 +129,8 @@ const defaultParametros: Parametros = {
   horasDia: 8,
   multiplicadorHoraExtra: 1.5,
   bonificacionLeyMensual: 250,
-  igssPorcentaje: 4.83,
-  irtraPorcentaje: 1,
+  igssPorcentaje: 5.5,
+  irtraPorcentaje: 1.5,
 }
 
 const toNum = (value: string | number | null | undefined) => {
@@ -560,8 +560,8 @@ export default function RrhhPlanillaPage() {
     const dias = calcularDiasEmpleadoEnPeriodo(emp, fechas.fechaInicio, fechas.fechaFin)
     const bonoLey = quincena === '2' ? parametros.bonificacionLeyMensual : 0
     const salarioOrdinario = round2(salarioDiario * dias)
-    const igss = quincena === '2' ? round2(salarioOrdinario * (parametros.igssPorcentaje / 100)) : 0
-    const irtra = quincena === '2' ? round2(salarioOrdinario * (parametros.irtraPorcentaje / 100)) : 0
+    const igss = quincena === '2' ? round2(toNum(emp.salario_base) * (parametros.igssPorcentaje / 100)) : 0
+    const irtra = quincena === '2' ? round2(toNum(emp.salario_base) * (parametros.irtraPorcentaje / 100)) : 0
     const saldo = emp.cliente_id ? saldoMap.get(emp.cliente_id) : undefined
 
     return calcularFila(
