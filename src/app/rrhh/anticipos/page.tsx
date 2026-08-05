@@ -2,6 +2,8 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
+import jsPDF from 'jspdf'
+import autoTable from 'jspdf-autotable'
 import { supabase } from '@/lib/supabaseClient'
 
 
@@ -47,15 +49,6 @@ type FormState = {
   observaciones: string
 }
 
-type ResumenEmpleadoAnticipo = {
-  empleado: string
-  cantidad: number
-  pendiente: number
-  aplicado: number
-  anulado: number
-  total: number
-}
-
 const emptyForm = (): FormState => ({
   id: null,
   empleado_id: '',
@@ -72,6 +65,7 @@ const toNum = (value: string | number | null | undefined) => {
 }
 
 const money = (value: string | number | null | undefined) => `Q${toNum(value).toFixed(2)}`
+const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100
 
 function todayISO() {
   const d = new Date()
@@ -82,31 +76,56 @@ function todayISO() {
 
 const periodoLabel = (p: Periodo) => `${p.anio}-${String(p.mes).padStart(2, '0')} Q${p.quincena} (${p.fecha_inicio} a ${p.fecha_fin})`
 
-
-const escapeHtml = (value: string | number | null | undefined) =>
-  String(value ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;')
-
-const dateTimeLocal = () => {
-  const d = new Date()
-  return d.toLocaleString('es-GT', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
+function formatDate(fecha: string) {
+  if (!fecha) return 'N/A'
+  const parts = fecha.split('-')
+  if (parts.length !== 3) return fecha
+  return `${parts[2]}/${parts[1]}/${parts[0]}`
 }
 
-const fechaFiltroTexto = (desde: string, hasta: string) => {
-  if (desde && hasta) return `${desde} a ${hasta}`
-  if (desde) return `Desde ${desde}`
-  if (hasta) return `Hasta ${hasta}`
-  return 'Todas las fechas'
+function fileStamp() {
+  const d = new Date()
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`
+}
+
+function cleanFilePart(value: string) {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9áéíóúñ]+/gi, '_')
+    .replace(/^_+|_+$/g, '') || 'reporte'
+}
+
+async function getImageDataUrl(src: string) {
+  try {
+    const res = await fetch(src)
+    const blob = await res.blob()
+
+    return await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onloadend = () => resolve(String(reader.result || ''))
+      reader.onerror = reject
+      reader.readAsDataURL(blob)
+    })
+  } catch (error) {
+    console.error('No se pudo cargar el logo para el PDF', error)
+    return ''
+  }
+}
+
+function addPdfFooter(doc: jsPDF) {
+  const pageCount = doc.getNumberOfPages()
+  const pageWidth = doc.internal.pageSize.getWidth()
+  const pageHeight = doc.internal.pageSize.getHeight()
+
+  for (let i = 1; i <= pageCount; i += 1) {
+    doc.setPage(i)
+    doc.setFont('helvetica', 'normal')
+    doc.setFontSize(8)
+    doc.text('Tech Nine', 14, pageHeight - 10)
+    doc.text(`Página ${i} de ${pageCount}`, pageWidth - 14, pageHeight - 10, { align: 'right' })
+  }
 }
 
 export default function RrhhAnticiposPage() {
@@ -121,6 +140,7 @@ export default function RrhhAnticiposPage() {
   const [mensaje, setMensaje] = useState('')
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [generandoPdf, setGenerandoPdf] = useState(false)
 
   const empleadoMap = useMemo(() => {
     const map = new Map<number, Empleado>()
@@ -357,6 +377,117 @@ export default function RrhhAnticiposPage() {
     }
   }
 
+
+  const generarPDF = async () => {
+    setGenerandoPdf(true)
+    setMensaje('')
+
+    try {
+      const doc = new jsPDF('p', 'mm', 'letter')
+      const pageWidth = doc.internal.pageSize.getWidth()
+      const logo = await getImageDataUrl(RRHH_LOGO_URL)
+
+      if (logo) {
+        doc.addImage(logo, 'PNG', 14, 8, 22, 22)
+      }
+
+      doc.setFont('helvetica', 'bold')
+      doc.setFontSize(15)
+      doc.text('REPORTE DE ANTICIPOS DE EMPLEADO', pageWidth / 2, 17, { align: 'center' })
+
+      doc.setFont('helvetica', 'normal')
+      doc.setFontSize(8)
+      doc.text(`Generado: ${new Date().toLocaleString()}`, pageWidth - 14, 10, { align: 'right' })
+
+      doc.setDrawColor(30, 41, 59)
+      doc.setLineWidth(0.2)
+      doc.line(14, 32, pageWidth - 14, 32)
+
+      doc.setFontSize(9)
+      doc.setFont('helvetica', 'bold')
+      doc.text('Filtros aplicados', 14, 40)
+      doc.setFont('helvetica', 'normal')
+      doc.text(`Búsqueda: ${busqueda.trim() || 'Todas'}`, 14, 46)
+      doc.text(`Estado: ${estadoFiltro === 'TODOS' ? 'Todos' : estadoFiltro}`, 14, 52)
+      doc.text(`Desde: ${desde ? formatDate(desde) : 'Sin fecha inicial'}`, pageWidth / 2, 46)
+      doc.text(`Hasta: ${hasta ? formatDate(hasta) : 'Sin fecha final'}`, pageWidth / 2, 52)
+
+      autoTable(doc, {
+        startY: 60,
+        head: [['Resumen', 'Valor']],
+        body: [
+          ['Registros', String(anticiposFiltrados.length)],
+          ['Pendiente', money(resumen.pendiente)],
+          ['Aplicado', money(resumen.aplicado)],
+          ['Anulado', money(resumen.anulado)],
+          ['Total del filtro', money(resumen.total)],
+        ],
+        styles: { fontSize: 8 },
+        headStyles: { fillColor: [30, 41, 59] },
+      })
+
+      const resumenEmpleado = new Map<string, { empleado: string; pendiente: number; aplicado: number; anulado: number; total: number; registros: number }>()
+      anticiposFiltrados.forEach((a) => {
+        const key = `${a.empleado_codigo} — ${a.empleado_nombre}`
+        const actual = resumenEmpleado.get(key) || { empleado: key, pendiente: 0, aplicado: 0, anulado: 0, total: 0, registros: 0 }
+        const monto = toNum(a.monto)
+        actual.total = round2(actual.total + monto)
+        actual.registros += 1
+        if (a.estado === 'PENDIENTE') actual.pendiente = round2(actual.pendiente + monto)
+        if (a.estado === 'APLICADO') actual.aplicado = round2(actual.aplicado + monto)
+        if (a.estado === 'ANULADO') actual.anulado = round2(actual.anulado + monto)
+        resumenEmpleado.set(key, actual)
+      })
+
+      const finalYResumen = (doc as jsPDF & { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY || 90
+
+      autoTable(doc, {
+        startY: finalYResumen + 8,
+        head: [['Empleado', 'Registros', 'Pendiente', 'Aplicado', 'Anulado', 'Total']],
+        body: Array.from(resumenEmpleado.values()).map((r) => [
+          r.empleado,
+          String(r.registros),
+          money(r.pendiente),
+          money(r.aplicado),
+          money(r.anulado),
+          money(r.total),
+        ]),
+        styles: { fontSize: 7 },
+        headStyles: { fillColor: [51, 65, 85] },
+      })
+
+      const finalYEmpleados = (doc as jsPDF & { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY || finalYResumen + 20
+
+      autoTable(doc, {
+        startY: finalYEmpleados + 8,
+        head: [['Fecha', 'Empleado', 'Monto', 'Período', 'Estado', 'Observaciones']],
+        body: anticiposFiltrados.map((a) => [
+          formatDate(a.fecha),
+          `${a.empleado_codigo} — ${a.empleado_nombre}`,
+          money(a.monto),
+          a.periodo_texto,
+          a.estado,
+          a.observaciones || '',
+        ]),
+        styles: { fontSize: 7 },
+        headStyles: { fillColor: [30, 41, 59] },
+        columnStyles: {
+          2: { halign: 'right' },
+        },
+      })
+
+      addPdfFooter(doc)
+      const filtroEstado = cleanFilePart(estadoFiltro === 'TODOS' ? 'todos' : estadoFiltro)
+      const rango = `${desde || 'inicio'}_${hasta || 'hoy'}`
+      doc.save(`reporte_anticipos_${filtroEstado}_${rango}_${fileStamp()}.pdf`)
+    } catch (err) {
+      console.error(err)
+      setMensaje(err instanceof Error ? err.message : 'Error generando PDF de anticipos.')
+    } finally {
+      setGenerandoPdf(false)
+    }
+  }
+
   const eliminar = async (anticipo: Anticipo) => {
     if (!confirm(`¿Eliminar el anticipo de ${anticipo.empleado_nombre} por ${money(anticipo.monto)}?`)) return
 
@@ -369,193 +500,6 @@ export default function RrhhAnticiposPage() {
       console.error(err)
       setMensaje(err instanceof Error ? err.message : 'Error eliminando anticipo.')
     }
-  }
-
-
-  const generarPdf = () => {
-    const porEmpleado = anticiposFiltrados.reduce<Map<string, ResumenEmpleadoAnticipo>>((acc, a) => {
-      const key = `${a.empleado_codigo} — ${a.empleado_nombre}`
-      const actual = acc.get(key) || {
-        empleado: key,
-        cantidad: 0,
-        pendiente: 0,
-        aplicado: 0,
-        anulado: 0,
-        total: 0,
-      }
-
-      actual.cantidad += 1
-      actual.total += toNum(a.monto)
-      if (a.estado === 'PENDIENTE') actual.pendiente += toNum(a.monto)
-      if (a.estado === 'APLICADO') actual.aplicado += toNum(a.monto)
-      if (a.estado === 'ANULADO') actual.anulado += toNum(a.monto)
-      acc.set(key, actual)
-      return acc
-    }, new Map<string, ResumenEmpleadoAnticipo>())
-
-    const resumenPorEmpleado: ResumenEmpleadoAnticipo[] = Array.from(porEmpleado.values())
-
-    const empleadoResumenRows = resumenPorEmpleado
-      .sort((a: ResumenEmpleadoAnticipo, b: ResumenEmpleadoAnticipo) => a.empleado.localeCompare(b.empleado))
-      .map(
-        (r) => `
-          <tr>
-            <td>${escapeHtml(r.empleado)}</td>
-            <td class="right">${r.cantidad}</td>
-            <td class="right">${money(r.pendiente)}</td>
-            <td class="right">${money(r.aplicado)}</td>
-            <td class="right">${money(r.anulado)}</td>
-            <td class="right"><strong>${money(r.total)}</strong></td>
-          </tr>
-        `
-      )
-      .join('')
-
-    const detalleRows = anticiposFiltrados
-      .map(
-        (a) => `
-          <tr>
-            <td>#${a.id}</td>
-            <td>${escapeHtml(a.fecha)}</td>
-            <td>${escapeHtml(a.empleado_codigo)}</td>
-            <td>${escapeHtml(a.empleado_nombre)}</td>
-            <td class="right">${money(a.monto)}</td>
-            <td>${escapeHtml(a.periodo_texto)}</td>
-            <td>${escapeHtml(a.estado)}</td>
-            <td>${escapeHtml(a.observaciones || '—')}</td>
-          </tr>
-        `
-      )
-      .join('')
-
-    const filtrosHtml = `
-      <table class="summary">
-        <tr><th>Filtro</th><th>Valor</th></tr>
-        <tr><td>Búsqueda</td><td>${escapeHtml(busqueda.trim() || 'Todos los empleados')}</td></tr>
-        <tr><td>Estado</td><td>${escapeHtml(estadoFiltro === 'TODOS' ? 'Todos' : estadoFiltro)}</td></tr>
-        <tr><td>Fecha</td><td>${escapeHtml(fechaFiltroTexto(desde, hasta))}</td></tr>
-        <tr><td>Registros incluidos</td><td>${anticiposFiltrados.length}</td></tr>
-      </table>
-    `
-
-    const logoUrl = `${window.location.origin}${RRHH_LOGO_URL}`
-    const html = `
-      <!doctype html>
-      <html>
-        <head>
-          <meta charset="utf-8" />
-          <title>Reporte de anticipos</title>
-          <style>
-            @page { size: letter landscape; margin: 12mm; }
-            * { box-sizing: border-box; }
-            body { font-family: Arial, Helvetica, sans-serif; color: #111827; margin: 0; font-size: 11px; }
-            .header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
-            .brand { display: flex; align-items: center; gap: 12px; }
-            .brand img { width: 62px; height: 62px; object-fit: contain; }
-            h1 { margin: 0; font-size: 20px; text-align: center; }
-            h2 { margin: 18px 0 8px; font-size: 14px; }
-            .muted { color: #475569; font-size: 10px; }
-            .cards { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; margin: 10px 0 14px; }
-            .card { border: 1px solid #cbd5e1; padding: 8px; border-radius: 4px; }
-            .card .label { color: #475569; font-size: 10px; }
-            .card .value { font-size: 14px; font-weight: 700; margin-top: 2px; }
-            table { width: 100%; border-collapse: collapse; page-break-inside: auto; }
-            th, td { border: 1px solid #cbd5e1; padding: 5px 6px; vertical-align: top; }
-            th { background: #e5e7eb; text-align: left; font-weight: 700; }
-            tr { page-break-inside: avoid; page-break-after: auto; }
-            .summary { margin-bottom: 12px; }
-            .summary th { width: 28%; }
-            .right { text-align: right; }
-            .footer { margin-top: 16px; display: flex; justify-content: space-between; color: #475569; font-size: 10px; }
-            @media print { .no-print { display: none; } }
-          </style>
-        </head>
-        <body>
-          <div class="header">
-            <div class="brand">
-              <img src="${logoUrl}" alt="Logo" />
-              <div>
-                <div class="muted">Recursos Humanos</div>
-                <h1>Reporte de anticipos de empleados</h1>
-              </div>
-            </div>
-            <div class="muted right">
-              Generado: ${escapeHtml(dateTimeLocal())}<br />
-              Sistema de planilla
-            </div>
-          </div>
-
-          ${filtrosHtml}
-
-          <div class="cards">
-            <div class="card"><div class="label">Anticipos</div><div class="value">${anticiposFiltrados.length}</div></div>
-            <div class="card"><div class="label">Pendiente</div><div class="value">${money(resumen.pendiente)}</div></div>
-            <div class="card"><div class="label">Aplicado</div><div class="value">${money(resumen.aplicado)}</div></div>
-            <div class="card"><div class="label">Anulado</div><div class="value">${money(resumen.anulado)}</div></div>
-            <div class="card"><div class="label">Total del filtro</div><div class="value">${money(resumen.total)}</div></div>
-          </div>
-
-          <h2>Resumen por empleado</h2>
-          <table>
-            <thead>
-              <tr>
-                <th>Empleado</th>
-                <th class="right">Cant.</th>
-                <th class="right">Pendiente</th>
-                <th class="right">Aplicado</th>
-                <th class="right">Anulado</th>
-                <th class="right">Total</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${empleadoResumenRows || '<tr><td colspan="6">No hay datos con los filtros aplicados.</td></tr>'}
-            </tbody>
-          </table>
-
-          <h2>Detalle de anticipos</h2>
-          <table>
-            <thead>
-              <tr>
-                <th>ID</th>
-                <th>Fecha</th>
-                <th>Código</th>
-                <th>Empleado</th>
-                <th class="right">Monto</th>
-                <th>Período a descontar</th>
-                <th>Estado</th>
-                <th>Observaciones</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${detalleRows || '<tr><td colspan="8">No hay anticipos con los filtros aplicados.</td></tr>'}
-            </tbody>
-          </table>
-
-          <div class="footer">
-            <span>Tech Nine</span>
-            <span>Reporte de anticipos de empleados</span>
-          </div>
-
-          <script>
-            window.onload = function () {
-              setTimeout(function () {
-                window.print();
-              }, 300);
-            };
-          </script>
-        </body>
-      </html>
-    `
-
-    const win = window.open('', '_blank')
-    if (!win) {
-      alert('El navegador bloqueó la ventana del PDF. Permite ventanas emergentes para este sitio.')
-      return
-    }
-
-    win.document.open()
-    win.document.write(html)
-    win.document.close()
   }
 
   return (
@@ -695,11 +639,11 @@ export default function RrhhAnticiposPage() {
           <div className="flex justify-end mb-4">
             <button
               type="button"
-              onClick={generarPdf}
-              disabled={anticiposFiltrados.length === 0}
-              className="bg-emerald-700 hover:bg-emerald-800 disabled:bg-slate-400 text-white px-4 py-2 rounded"
+              onClick={generarPDF}
+              disabled={generandoPdf || anticiposFiltrados.length === 0}
+              className="bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-400 text-white px-4 py-2 rounded"
             >
-              Reporte PDF
+              {generandoPdf ? 'Generando PDF...' : 'Reporte PDF'}
             </button>
           </div>
 
