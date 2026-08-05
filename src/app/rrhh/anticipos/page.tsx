@@ -47,6 +47,15 @@ type FormState = {
   observaciones: string
 }
 
+type ResumenEmpleadoAnticipo = {
+  empleado: string
+  cantidad: number
+  pendiente: number
+  aplicado: number
+  anulado: number
+  total: number
+}
+
 const emptyForm = (): FormState => ({
   id: null,
   empleado_id: '',
@@ -72,6 +81,33 @@ function todayISO() {
 }
 
 const periodoLabel = (p: Periodo) => `${p.anio}-${String(p.mes).padStart(2, '0')} Q${p.quincena} (${p.fecha_inicio} a ${p.fecha_fin})`
+
+
+const escapeHtml = (value: string | number | null | undefined) =>
+  String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;')
+
+const dateTimeLocal = () => {
+  const d = new Date()
+  return d.toLocaleString('es-GT', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
+const fechaFiltroTexto = (desde: string, hasta: string) => {
+  if (desde && hasta) return `${desde} a ${hasta}`
+  if (desde) return `Desde ${desde}`
+  if (hasta) return `Hasta ${hasta}`
+  return 'Todas las fechas'
+}
 
 export default function RrhhAnticiposPage() {
   const [empleados, setEmpleados] = useState<Empleado[]>([])
@@ -335,6 +371,193 @@ export default function RrhhAnticiposPage() {
     }
   }
 
+
+  const generarPdf = () => {
+    const porEmpleado = anticiposFiltrados.reduce<Map<string, ResumenEmpleadoAnticipo>>((acc, a) => {
+      const key = `${a.empleado_codigo} — ${a.empleado_nombre}`
+      const actual = acc.get(key) || {
+        empleado: key,
+        cantidad: 0,
+        pendiente: 0,
+        aplicado: 0,
+        anulado: 0,
+        total: 0,
+      }
+
+      actual.cantidad += 1
+      actual.total += toNum(a.monto)
+      if (a.estado === 'PENDIENTE') actual.pendiente += toNum(a.monto)
+      if (a.estado === 'APLICADO') actual.aplicado += toNum(a.monto)
+      if (a.estado === 'ANULADO') actual.anulado += toNum(a.monto)
+      acc.set(key, actual)
+      return acc
+    }, new Map<string, ResumenEmpleadoAnticipo>())
+
+    const resumenPorEmpleado: ResumenEmpleadoAnticipo[] = Array.from(porEmpleado.values())
+
+    const empleadoResumenRows = resumenPorEmpleado
+      .sort((a: ResumenEmpleadoAnticipo, b: ResumenEmpleadoAnticipo) => a.empleado.localeCompare(b.empleado))
+      .map(
+        (r) => `
+          <tr>
+            <td>${escapeHtml(r.empleado)}</td>
+            <td class="right">${r.cantidad}</td>
+            <td class="right">${money(r.pendiente)}</td>
+            <td class="right">${money(r.aplicado)}</td>
+            <td class="right">${money(r.anulado)}</td>
+            <td class="right"><strong>${money(r.total)}</strong></td>
+          </tr>
+        `
+      )
+      .join('')
+
+    const detalleRows = anticiposFiltrados
+      .map(
+        (a) => `
+          <tr>
+            <td>#${a.id}</td>
+            <td>${escapeHtml(a.fecha)}</td>
+            <td>${escapeHtml(a.empleado_codigo)}</td>
+            <td>${escapeHtml(a.empleado_nombre)}</td>
+            <td class="right">${money(a.monto)}</td>
+            <td>${escapeHtml(a.periodo_texto)}</td>
+            <td>${escapeHtml(a.estado)}</td>
+            <td>${escapeHtml(a.observaciones || '—')}</td>
+          </tr>
+        `
+      )
+      .join('')
+
+    const filtrosHtml = `
+      <table class="summary">
+        <tr><th>Filtro</th><th>Valor</th></tr>
+        <tr><td>Búsqueda</td><td>${escapeHtml(busqueda.trim() || 'Todos los empleados')}</td></tr>
+        <tr><td>Estado</td><td>${escapeHtml(estadoFiltro === 'TODOS' ? 'Todos' : estadoFiltro)}</td></tr>
+        <tr><td>Fecha</td><td>${escapeHtml(fechaFiltroTexto(desde, hasta))}</td></tr>
+        <tr><td>Registros incluidos</td><td>${anticiposFiltrados.length}</td></tr>
+      </table>
+    `
+
+    const logoUrl = `${window.location.origin}${RRHH_LOGO_URL}`
+    const html = `
+      <!doctype html>
+      <html>
+        <head>
+          <meta charset="utf-8" />
+          <title>Reporte de anticipos</title>
+          <style>
+            @page { size: letter landscape; margin: 12mm; }
+            * { box-sizing: border-box; }
+            body { font-family: Arial, Helvetica, sans-serif; color: #111827; margin: 0; font-size: 11px; }
+            .header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
+            .brand { display: flex; align-items: center; gap: 12px; }
+            .brand img { width: 62px; height: 62px; object-fit: contain; }
+            h1 { margin: 0; font-size: 20px; text-align: center; }
+            h2 { margin: 18px 0 8px; font-size: 14px; }
+            .muted { color: #475569; font-size: 10px; }
+            .cards { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; margin: 10px 0 14px; }
+            .card { border: 1px solid #cbd5e1; padding: 8px; border-radius: 4px; }
+            .card .label { color: #475569; font-size: 10px; }
+            .card .value { font-size: 14px; font-weight: 700; margin-top: 2px; }
+            table { width: 100%; border-collapse: collapse; page-break-inside: auto; }
+            th, td { border: 1px solid #cbd5e1; padding: 5px 6px; vertical-align: top; }
+            th { background: #e5e7eb; text-align: left; font-weight: 700; }
+            tr { page-break-inside: avoid; page-break-after: auto; }
+            .summary { margin-bottom: 12px; }
+            .summary th { width: 28%; }
+            .right { text-align: right; }
+            .footer { margin-top: 16px; display: flex; justify-content: space-between; color: #475569; font-size: 10px; }
+            @media print { .no-print { display: none; } }
+          </style>
+        </head>
+        <body>
+          <div class="header">
+            <div class="brand">
+              <img src="${logoUrl}" alt="Logo" />
+              <div>
+                <div class="muted">Recursos Humanos</div>
+                <h1>Reporte de anticipos de empleados</h1>
+              </div>
+            </div>
+            <div class="muted right">
+              Generado: ${escapeHtml(dateTimeLocal())}<br />
+              Sistema de planilla
+            </div>
+          </div>
+
+          ${filtrosHtml}
+
+          <div class="cards">
+            <div class="card"><div class="label">Anticipos</div><div class="value">${anticiposFiltrados.length}</div></div>
+            <div class="card"><div class="label">Pendiente</div><div class="value">${money(resumen.pendiente)}</div></div>
+            <div class="card"><div class="label">Aplicado</div><div class="value">${money(resumen.aplicado)}</div></div>
+            <div class="card"><div class="label">Anulado</div><div class="value">${money(resumen.anulado)}</div></div>
+            <div class="card"><div class="label">Total del filtro</div><div class="value">${money(resumen.total)}</div></div>
+          </div>
+
+          <h2>Resumen por empleado</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>Empleado</th>
+                <th class="right">Cant.</th>
+                <th class="right">Pendiente</th>
+                <th class="right">Aplicado</th>
+                <th class="right">Anulado</th>
+                <th class="right">Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${empleadoResumenRows || '<tr><td colspan="6">No hay datos con los filtros aplicados.</td></tr>'}
+            </tbody>
+          </table>
+
+          <h2>Detalle de anticipos</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Fecha</th>
+                <th>Código</th>
+                <th>Empleado</th>
+                <th class="right">Monto</th>
+                <th>Período a descontar</th>
+                <th>Estado</th>
+                <th>Observaciones</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${detalleRows || '<tr><td colspan="8">No hay anticipos con los filtros aplicados.</td></tr>'}
+            </tbody>
+          </table>
+
+          <div class="footer">
+            <span>Tech Nine</span>
+            <span>Reporte de anticipos de empleados</span>
+          </div>
+
+          <script>
+            window.onload = function () {
+              setTimeout(function () {
+                window.print();
+              }, 300);
+            };
+          </script>
+        </body>
+      </html>
+    `
+
+    const win = window.open('', '_blank')
+    if (!win) {
+      alert('El navegador bloqueó la ventana del PDF. Permite ventanas emergentes para este sitio.')
+      return
+    }
+
+    win.document.open()
+    win.document.write(html)
+    win.document.close()
+  }
+
   return (
     <div className="p-6 max-w-6xl mx-auto">
       <div className="flex items-start justify-between gap-4 mb-6">
@@ -467,6 +690,17 @@ export default function RrhhAnticiposPage() {
             <div className="border rounded p-3"><div className="text-xs">Pendiente</div><div className="font-bold text-red-600">{money(resumen.pendiente)}</div></div>
             <div className="border rounded p-3"><div className="text-xs">Aplicado</div><div className="font-bold text-emerald-700">{money(resumen.aplicado)}</div></div>
             <div className="border rounded p-3"><div className="text-xs">Total filtro</div><div className="font-bold">{money(resumen.total)}</div></div>
+          </div>
+
+          <div className="flex justify-end mb-4">
+            <button
+              type="button"
+              onClick={generarPdf}
+              disabled={anticiposFiltrados.length === 0}
+              className="bg-emerald-700 hover:bg-emerald-800 disabled:bg-slate-400 text-white px-4 py-2 rounded"
+            >
+              Reporte PDF
+            </button>
           </div>
 
           <div className="overflow-auto border rounded max-h-[620px]">
