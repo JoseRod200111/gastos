@@ -2,6 +2,8 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
+import jsPDF from 'jspdf'
+import autoTable from 'jspdf-autotable'
 import { supabase } from '@/lib/supabaseClient'
 
 
@@ -113,6 +115,58 @@ const siguienteQuincena = (anio: number, mes: number, quincena: number) => {
 
 const periodoLabel = (p: Periodo) => `${p.anio}-${String(p.mes).padStart(2, '0')} Q${p.quincena} (${p.fecha_inicio} a ${p.fecha_fin})`
 
+function formatDate(fecha: string) {
+  if (!fecha) return 'N/A'
+  const parts = fecha.split('-')
+  if (parts.length !== 3) return fecha
+  return `${parts[2]}/${parts[1]}/${parts[0]}`
+}
+
+function fileStamp() {
+  const d = new Date()
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`
+}
+
+function cleanFilePart(value: string) {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9áéíóúñ]+/gi, '_')
+    .replace(/^_+|_+$/g, '') || 'reporte'
+}
+
+async function getImageDataUrl(src: string) {
+  try {
+    const res = await fetch(src)
+    const blob = await res.blob()
+
+    return await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onloadend = () => resolve(String(reader.result || ''))
+      reader.onerror = reject
+      reader.readAsDataURL(blob)
+    })
+  } catch (error) {
+    console.error('No se pudo cargar el logo para el PDF', error)
+    return ''
+  }
+}
+
+function addPdfFooter(doc: jsPDF) {
+  const pageCount = doc.getNumberOfPages()
+  const pageWidth = doc.internal.pageSize.getWidth()
+  const pageHeight = doc.internal.pageSize.getHeight()
+
+  for (let i = 1; i <= pageCount; i += 1) {
+    doc.setPage(i)
+    doc.setFont('helvetica', 'normal')
+    doc.setFontSize(8)
+    doc.text('Tech Nine', 14, pageHeight - 10)
+    doc.text(`Página ${i} de ${pageCount}`, pageWidth - 14, pageHeight - 10, { align: 'right' })
+  }
+}
+
 export default function RrhhPrestamosPage() {
   const [empleados, setEmpleados] = useState<Empleado[]>([])
   const [periodos, setPeriodos] = useState<Periodo[]>([])
@@ -126,6 +180,7 @@ export default function RrhhPrestamosPage() {
   const [mensaje, setMensaje] = useState('')
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [generandoPdf, setGenerandoPdf] = useState<string | null>(null)
 
   const empleadoMap = useMemo(() => {
     const map = new Map<number, Empleado>()
@@ -519,6 +574,281 @@ export default function RrhhPrestamosPage() {
     }))
   }
 
+  const resumenDePrestamo = (prestamoId: number) => {
+    const cuotasPrestamo = cuotasPorPrestamo.get(prestamoId) || []
+    return cuotasPrestamo.reduce(
+      (acc, cuota) => {
+        const monto = toNum(cuota.monto)
+        if (cuota.estado === 'APLICADA') acc.aplicado = round2(acc.aplicado + monto)
+        if (cuota.estado === 'PENDIENTE') acc.pendiente = round2(acc.pendiente + monto)
+        if (cuota.estado === 'ANULADA') acc.anulado = round2(acc.anulado + monto)
+        acc.totalCuotas = round2(acc.totalCuotas + monto)
+        return acc
+      },
+      { aplicado: 0, pendiente: 0, anulado: 0, totalCuotas: 0 }
+    )
+  }
+
+  const crearDocumentoPrestamos = async (titulo: string) => {
+    const doc = new jsPDF('p', 'mm', 'letter')
+    const pageWidth = doc.internal.pageSize.getWidth()
+    const logo = await getImageDataUrl(RRHH_LOGO_URL)
+
+    if (logo) {
+      doc.addImage(logo, 'PNG', 14, 8, 22, 22)
+    }
+
+    doc.setFont('helvetica', 'bold')
+    doc.setFontSize(15)
+    doc.text(titulo, pageWidth / 2, 17, { align: 'center' })
+
+    doc.setFont('helvetica', 'normal')
+    doc.setFontSize(8)
+    doc.text(`Generado: ${new Date().toLocaleString()}`, pageWidth - 14, 10, { align: 'right' })
+
+    doc.setDrawColor(30, 41, 59)
+    doc.setLineWidth(0.2)
+    doc.line(14, 32, pageWidth - 14, 32)
+
+    return doc
+  }
+
+  const generarPDFGeneralDeuda = async () => {
+    setGenerandoPdf('general')
+    setMensaje('')
+
+    try {
+      const doc = await crearDocumentoPrestamos('REPORTE GENERAL DE DEUDA POR PRÉSTAMOS')
+      const prestamosBase = prestamosFiltrados
+      const empleadosResumen = new Map<number, {
+        codigo: string
+        nombre: string
+        prestamos: number
+        total: number
+        abonado: number
+        pendiente: number
+        anulado: number
+      }>()
+
+      prestamosBase.forEach((p) => {
+        const resumenPrestamo = resumenDePrestamo(p.id)
+        const actual = empleadosResumen.get(p.empleado_id) || {
+          codigo: p.empleado_codigo,
+          nombre: p.empleado_nombre,
+          prestamos: 0,
+          total: 0,
+          abonado: 0,
+          pendiente: 0,
+          anulado: 0,
+        }
+
+        actual.prestamos += 1
+        actual.total = round2(actual.total + toNum(p.monto_total))
+        actual.abonado = round2(actual.abonado + resumenPrestamo.aplicado)
+        actual.pendiente = round2(actual.pendiente + resumenPrestamo.pendiente)
+        actual.anulado = round2(actual.anulado + resumenPrestamo.anulado)
+        empleadosResumen.set(p.empleado_id, actual)
+      })
+
+      const totalPrestado = Array.from(empleadosResumen.values()).reduce((sum, e) => round2(sum + e.total), 0)
+      const totalAbonado = Array.from(empleadosResumen.values()).reduce((sum, e) => round2(sum + e.abonado), 0)
+      const totalPendiente = Array.from(empleadosResumen.values()).reduce((sum, e) => round2(sum + e.pendiente), 0)
+      const totalAnulado = Array.from(empleadosResumen.values()).reduce((sum, e) => round2(sum + e.anulado), 0)
+
+      doc.setFontSize(9)
+      doc.setFont('helvetica', 'bold')
+      doc.text('Filtros aplicados', 14, 40)
+      doc.setFont('helvetica', 'normal')
+      doc.text(`Búsqueda: ${busqueda.trim() || 'Todas'}`, 14, 46)
+      doc.text(`Estado: ${estadoFiltro === 'TODOS' ? 'Todos' : estadoFiltro}`, 14, 52)
+
+      autoTable(doc, {
+        startY: 60,
+        head: [['Resumen', 'Valor']],
+        body: [
+          ['Empleados con préstamo', String(empleadosResumen.size)],
+          ['Préstamos mostrados', String(prestamosBase.length)],
+          ['Total prestado', money(totalPrestado)],
+          ['Total abonado / aplicado', money(totalAbonado)],
+          ['Saldo pendiente', money(totalPendiente)],
+          ['Cuotas anuladas', money(totalAnulado)],
+        ],
+        styles: { fontSize: 8 },
+        headStyles: { fillColor: [30, 41, 59] },
+      })
+
+      const finalYResumen = (doc as jsPDF & { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY || 90
+
+      autoTable(doc, {
+        startY: finalYResumen + 8,
+        head: [['Empleado', 'Préstamos', 'Total prestado', 'Abonado', 'Pendiente', 'Anulado']],
+        body: Array.from(empleadosResumen.values()).map((e) => [
+          `${e.codigo} — ${e.nombre}`,
+          String(e.prestamos),
+          money(e.total),
+          money(e.abonado),
+          money(e.pendiente),
+          money(e.anulado),
+        ]),
+        styles: { fontSize: 7 },
+        headStyles: { fillColor: [51, 65, 85] },
+        columnStyles: {
+          2: { halign: 'right' },
+          3: { halign: 'right' },
+          4: { halign: 'right' },
+          5: { halign: 'right' },
+        },
+      })
+
+      const finalYEmpleado = (doc as jsPDF & { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY || finalYResumen + 20
+
+      autoTable(doc, {
+        startY: finalYEmpleado + 8,
+        head: [['Préstamo', 'Fecha', 'Empleado', 'Monto', 'Abonado', 'Pendiente', 'Estado', 'Observaciones']],
+        body: prestamosBase.map((p) => {
+          const r = resumenDePrestamo(p.id)
+          return [
+            `#${p.id}`,
+            formatDate(p.fecha),
+            `${p.empleado_codigo} — ${p.empleado_nombre}`,
+            money(p.monto_total),
+            money(r.aplicado),
+            money(r.pendiente),
+            p.estado,
+            p.observaciones || '',
+          ]
+        }),
+        styles: { fontSize: 6.5 },
+        headStyles: { fillColor: [30, 41, 59] },
+        columnStyles: {
+          3: { halign: 'right' },
+          4: { halign: 'right' },
+          5: { halign: 'right' },
+        },
+      })
+
+      addPdfFooter(doc)
+      doc.save(`reporte_deuda_prestamos_${cleanFilePart(estadoFiltro)}_${fileStamp()}.pdf`)
+    } catch (err) {
+      console.error(err)
+      setMensaje(err instanceof Error ? err.message : 'Error generando reporte general de deuda.')
+    } finally {
+      setGenerandoPdf(null)
+    }
+  }
+
+  const generarPDFEmpleado = async (empleadoId: number) => {
+    setGenerandoPdf(`empleado-${empleadoId}`)
+    setMensaje('')
+
+    try {
+      const emp = empleadoMap.get(empleadoId)
+      const prestamosEmpleado = prestamos
+        .filter((p) => p.empleado_id === empleadoId)
+        .sort((a, b) => a.fecha.localeCompare(b.fecha) || a.id - b.id)
+
+      if (prestamosEmpleado.length === 0) {
+        alert('Este empleado no tiene préstamos registrados.')
+        return
+      }
+
+      const doc = await crearDocumentoPrestamos('REPORTE INDIVIDUAL DE PRÉSTAMOS')
+      const empleadoNombre = emp ? `${emp.codigo} — ${emp.nombre_completo}` : `${prestamosEmpleado[0].empleado_codigo} — ${prestamosEmpleado[0].empleado_nombre}`
+      const cuotasEmpleado = prestamosEmpleado.flatMap((p) => (cuotasPorPrestamo.get(p.id) || []).map((c) => ({ ...c, prestamo: p })))
+      const cuotasAplicadas = cuotasEmpleado.filter((c) => c.estado === 'APLICADA')
+      const cuotasPendientes = cuotasEmpleado.filter((c) => c.estado === 'PENDIENTE')
+      const cuotasAnuladas = cuotasEmpleado.filter((c) => c.estado === 'ANULADA')
+
+      const totalPrestado = prestamosEmpleado.reduce((sum, p) => round2(sum + toNum(p.monto_total)), 0)
+      const totalAplicado = cuotasAplicadas.reduce((sum, c) => round2(sum + toNum(c.monto)), 0)
+      const totalPendiente = cuotasPendientes.reduce((sum, c) => round2(sum + toNum(c.monto)), 0)
+      const totalAnulado = cuotasAnuladas.reduce((sum, c) => round2(sum + toNum(c.monto)), 0)
+
+      doc.setFontSize(9)
+      doc.setFont('helvetica', 'bold')
+      doc.text('Empleado', 14, 40)
+      doc.setFont('helvetica', 'normal')
+      doc.text(empleadoNombre, 14, 46)
+      doc.text(`Estado actual: ${emp?.estado || 'N/A'}`, 14, 52)
+
+      autoTable(doc, {
+        startY: 60,
+        head: [['Resumen', 'Valor']],
+        body: [
+          ['Préstamos registrados', String(prestamosEmpleado.length)],
+          ['Total prestado', money(totalPrestado)],
+          ['Abonos/cuotas aplicadas', money(totalAplicado)],
+          ['Saldo pendiente proyectado', money(totalPendiente)],
+          ['Cuotas anuladas', money(totalAnulado)],
+        ],
+        styles: { fontSize: 8 },
+        headStyles: { fillColor: [30, 41, 59] },
+      })
+
+      const finalYResumen = (doc as jsPDF & { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY || 90
+
+      autoTable(doc, {
+        startY: finalYResumen + 8,
+        head: [['Préstamo', 'Fecha', 'Monto', 'Cuotas', 'Abonado', 'Pendiente', 'Estado', 'Observaciones']],
+        body: prestamosEmpleado.map((p) => {
+          const r = resumenDePrestamo(p.id)
+          return [
+            `#${p.id}`,
+            formatDate(p.fecha),
+            money(p.monto_total),
+            String((cuotasPorPrestamo.get(p.id) || []).length),
+            money(r.aplicado),
+            money(r.pendiente),
+            p.estado,
+            p.observaciones || '',
+          ]
+        }),
+        styles: { fontSize: 7 },
+        headStyles: { fillColor: [51, 65, 85] },
+        columnStyles: {
+          2: { halign: 'right' },
+          4: { halign: 'right' },
+          5: { halign: 'right' },
+        },
+      })
+
+      const finalYPrestamos = (doc as jsPDF & { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY || finalYResumen + 20
+
+      autoTable(doc, {
+        startY: finalYPrestamos + 8,
+        head: [['Abonos aplicados', 'Préstamo', 'Cuota', 'Período / fecha de descuento', 'Monto']],
+        body: cuotasAplicadas.length > 0
+          ? cuotasAplicadas.map((c) => ['Aplicado', `#${c.prestamo.id}`, String(c.numero_cuota), c.periodo_texto, money(c.monto)])
+          : [['Sin abonos aplicados', '', '', '', '']],
+        styles: { fontSize: 7 },
+        headStyles: { fillColor: [5, 150, 105] },
+        columnStyles: { 4: { halign: 'right' } },
+      })
+
+      const finalYAplicadas = (doc as jsPDF & { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY || finalYPrestamos + 20
+
+      autoTable(doc, {
+        startY: finalYAplicadas + 8,
+        head: [['Próximos pagos', 'Préstamo', 'Cuota', 'Período proyectado', 'Monto']],
+        body: cuotasPendientes.length > 0
+          ? cuotasPendientes.map((c) => ['Pendiente', `#${c.prestamo.id}`, String(c.numero_cuota), c.periodo_texto, money(c.monto)])
+          : [['Sin cuotas pendientes', '', '', '', '']],
+        styles: { fontSize: 7 },
+        headStyles: { fillColor: [185, 28, 28] },
+        columnStyles: { 4: { halign: 'right' } },
+      })
+
+      addPdfFooter(doc)
+      const codigo = emp?.codigo || prestamosEmpleado[0].empleado_codigo || String(empleadoId)
+      doc.save(`reporte_prestamos_${cleanFilePart(codigo)}_${fileStamp()}.pdf`)
+    } catch (err) {
+      console.error(err)
+      setMensaje(err instanceof Error ? err.message : 'Error generando reporte individual.')
+    } finally {
+      setGenerandoPdf(null)
+    }
+  }
+
   return (
     <div className="p-6 max-w-7xl mx-auto">
       <div className="flex items-start justify-between gap-4 mb-6">
@@ -610,7 +940,17 @@ export default function RrhhPrestamosPage() {
             <option value="PAGADO">Pagados</option>
             <option value="ANULADO">Anulados</option>
           </select>
-          <button type="button" onClick={cargarPrestamos} className="bg-blue-600 text-white px-4 py-2 rounded">Actualizar</button>
+          <div className="flex flex-wrap gap-2">
+            <button type="button" onClick={cargarPrestamos} className="bg-blue-600 text-white px-4 py-2 rounded">Actualizar</button>
+            <button
+              type="button"
+              onClick={generarPDFGeneralDeuda}
+              disabled={generandoPdf === 'general' || prestamosFiltrados.length === 0}
+              className="bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-400 text-white px-4 py-2 rounded"
+            >
+              {generandoPdf === 'general' ? 'Generando...' : 'Reporte deuda PDF'}
+            </button>
+          </div>
         </div>
 
         <div className="grid md:grid-cols-4 gap-3 mb-4">
@@ -655,6 +995,7 @@ export default function RrhhPrestamosPage() {
                     <td className="border p-2">
                       <div className="flex flex-wrap gap-1">
                         <button type="button" onClick={() => setPrestamoSeleccionado(prestamoSeleccionado === p.id ? null : p.id)} className="bg-slate-700 text-white px-2 py-1 rounded text-xs">Cuotas</button>
+                        <button type="button" onClick={() => generarPDFEmpleado(p.empleado_id)} disabled={generandoPdf === `empleado-${p.empleado_id}`} className="bg-blue-600 disabled:bg-slate-400 text-white px-2 py-1 rounded text-xs">PDF empleado</button>
                         {p.estado !== 'PAGADO' && <button type="button" onClick={() => cambiarEstadoPrestamo(p, 'PAGADO')} className="bg-emerald-600 text-white px-2 py-1 rounded text-xs">Pagar</button>}
                         {p.estado !== 'ANULADO' && <button type="button" onClick={() => cambiarEstadoPrestamo(p, 'ANULADO')} className="bg-orange-600 text-white px-2 py-1 rounded text-xs">Anular</button>}
                         <button type="button" onClick={() => eliminarPrestamo(p)} className="bg-red-600 text-white px-2 py-1 rounded text-xs">Eliminar</button>
