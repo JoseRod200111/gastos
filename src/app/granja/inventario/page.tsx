@@ -25,6 +25,15 @@ type StockRow = {
   fecha?: string
 }
 
+type InventarioDiarioRow = {
+  ubicacion_id: number
+  conteo_manual: number | null
+  teorico_al_momento: number | null
+  diferencia: number | null
+  hembras_manual: number | null
+  machos_manual: number | null
+}
+
 type CerdaRow = {
   id: number
   arete: string | null
@@ -137,20 +146,21 @@ const calcularDesglose = (
   stockTeorico: StockMap,
   cerdasPorUbicacion: CerdasMap
 ): DesgloseUbicacion => {
-  const total = toNum(stockTeorico[ubicacion.id] ?? 0)
-  const cerdasRegistradas = toNum(cerdasPorUbicacion[ubicacion.id] ?? 0)
+  // En este módulo el total del inventario representa el conteo editable
+  // de lechones o cerdos normales. Las cerdas registradas se muestran
+  // aparte por arete y NO se suman al total general. Esto evita que
+  // Maternidad/Gestación inflen el reporte al sumar la cerda + sus lechones.
+  const total = Math.max(toNum(stockTeorico[ubicacion.id] ?? 0), 0)
+  const cerdasRegistradas = Math.max(toNum(cerdasPorUbicacion[ubicacion.id] ?? 0), 0)
   const esZonaProtegida = esMaternidadOGestacion(ubicacion)
 
   if (esZonaProtegida) {
-    const cerdasProtegidas = Math.max(cerdasRegistradas, 0)
-    const lechonesEditables = Math.max(total - cerdasProtegidas, 0)
-
     return {
       total,
-      cerdasProtegidas,
-      lechonesEditables,
+      cerdasProtegidas: cerdasRegistradas,
+      lechonesEditables: total,
       cerdosEditables: 0,
-      editableActual: lechonesEditables,
+      editableActual: total,
       tipoEditable: 'LECHONES',
       esZonaProtegida,
     }
@@ -178,11 +188,8 @@ const calcularTotalVisual = (
 
   if (!Number.isFinite(editable)) return desglose.total
 
-  if (desglose.esZonaProtegida) {
-    return desglose.cerdasProtegidas + editable
-  }
-
-  return editable
+  // Igual que en el PDF: el total visual no suma las cerdas registradas.
+  return Math.max(Math.floor(editable), 0)
 }
 
 async function fetchLogoDataUrl(): Promise<string | null> {
@@ -204,6 +211,7 @@ async function fetchLogoDataUrl(): Promise<string | null> {
 
 function generarPdfInventarioPorCuadros(params: {
   fechaCorte: string
+  logoDataUrl?: string | null
   grupos: Record<string, Ubicacion[]>
   stockTeorico: StockMap
   cerdasPorUbicacion: CerdasMap
@@ -217,15 +225,24 @@ function generarPdfInventarioPorCuadros(params: {
     cerdasPorUbicacion,
     cerdasAretesPorUbicacion,
     valoresEditados,
+    logoDataUrl,
   } = params
 
   const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
 
+  if (logoDataUrl) {
+    try {
+      doc.addImage(logoDataUrl, 'PNG', 14, 8, 22, 14)
+    } catch {
+      // Si el logo no se puede insertar, el PDF igual debe generarse.
+    }
+  }
+
   doc.setFontSize(14)
-  doc.text('REPORTE DE INVENTARIO DE GRANJA', 14, 16)
+  doc.text('REPORTE DE INVENTARIO DE GRANJA', logoDataUrl ? 42 : 14, 16)
 
   doc.setFontSize(10)
-  doc.text(`Fecha: ${fechaCorte}`, 14, 23)
+  doc.text(`Fecha: ${fechaCorte}`, logoDataUrl ? 42 : 14, 23)
 
   let totalGeneral = 0
   let totalCerdas = 0
@@ -508,21 +525,56 @@ export default function GranjaInventarioPage() {
         return
       }
 
-      const mapa: StockMap = {}
+      const mapaMovimientos: StockMap = {}
 
       ;((movData ?? []) as StockRow[]).forEach((row) => {
         const id = Number(row.ubicacion_id)
 
-        if (mapa[id] === undefined) {
-          mapa[id] = 0
+        if (mapaMovimientos[id] === undefined) {
+          mapaMovimientos[id] = 0
         }
 
         if (row.tipo === 'AJUSTE') {
-          mapa[id] += toNum(row.cantidad)
+          mapaMovimientos[id] += toNum(row.cantidad)
         } else if (row.tipo === 'SALIDA_VENTA' || row.tipo === 'SALIDA_MUERTE') {
-          mapa[id] -= absNum(row.cantidad)
+          mapaMovimientos[id] -= absNum(row.cantidad)
         } else {
-          mapa[id] += absNum(row.cantidad)
+          mapaMovimientos[id] += absNum(row.cantidad)
+        }
+      })
+
+      // Si ya existe inventario diario guardado para la fecha, el reporte debe
+      // usar ese corte guardado. Esto es lo que corrige el PDF: antes se volvía
+      // a calcular solo desde movimientos y por eso salían totales antiguos o
+      // negativos aunque granja_inventario_diario ya estuviera cuadrado.
+      const { data: invDiarioData, error: invDiarioError } = await supabase
+        .from('granja_inventario_diario')
+        .select(
+          'ubicacion_id, conteo_manual, teorico_al_momento, diferencia, hembras_manual, machos_manual'
+        )
+        .eq('fecha', fechaCorte)
+
+      if (invDiarioError) {
+        console.error('Error cargando inventario diario guardado', invDiarioError)
+      }
+
+      const inventarioGuardado = ((invDiarioData ?? []) as InventarioDiarioRow[])
+      const inventarioGuardadoMap = new Map<number, InventarioDiarioRow>()
+
+      inventarioGuardado.forEach((row) => {
+        inventarioGuardadoMap.set(Number(row.ubicacion_id), row)
+      })
+
+      const usarInventarioGuardado = inventarioGuardadoMap.size > 0
+      const mapa: StockMap = {}
+
+      ubicList.forEach((ubicacion) => {
+        const rowGuardado = inventarioGuardadoMap.get(ubicacion.id)
+
+        if (usarInventarioGuardado && rowGuardado) {
+          mapa[ubicacion.id] = Math.max(toNum(rowGuardado.conteo_manual), 0)
+        } else {
+          mapa[ubicacion.id] = mapaMovimientos[ubicacion.id] ?? 0
         }
       })
 
@@ -617,10 +669,10 @@ export default function GranjaInventarioPage() {
 
     try {
       const logo = await fetchLogoDataUrl()
-      void logo
 
       generarPdfInventarioPorCuadros({
         fechaCorte,
+        logoDataUrl: logo,
         grupos,
         stockTeorico,
         cerdasPorUbicacion,
