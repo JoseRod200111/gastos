@@ -54,6 +54,8 @@ type DesgloseUbicacion = {
   editableActual: number
   tipoEditable: 'LECHONES' | 'CERDOS'
   esZonaProtegida: boolean
+  esGestacion: boolean
+  esMaternidad: boolean
 }
 
 const toNum = (v: unknown) => {
@@ -65,21 +67,37 @@ const absNum = (v: unknown) => Math.abs(toNum(v))
 
 const finDeDiaUTC = (yyyyMMdd: string) => `${yyyyMMdd}T23:59:59.999Z`
 
-const esMaternidadOGestacion = (u: Ubicacion) => {
+const fechaLocalHoy = () => {
+  const today = new Date()
+  const pad = (n: number) => (n < 10 ? `0${n}` : `${n}`)
+
+  return `${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(today.getDate())}`
+}
+
+const esGestacion = (u: Ubicacion) => {
   const codigo = String(u.codigo || '').toUpperCase()
   const nombre = String(u.nombre || '').toUpperCase()
 
   return (
-    nombre.includes('MATERNIDAD') ||
     nombre.includes('GESTACIÓN') ||
     nombre.includes('GESTACION') ||
-    codigo.startsWith('M1') ||
-    codigo.startsWith('M2') ||
     codigo.startsWith('G1') ||
     codigo.startsWith('G2') ||
     codigo.startsWith('G3')
   )
 }
+
+const esMaternidad = (u: Ubicacion) => {
+  const codigo = String(u.codigo || '').toUpperCase()
+  const nombre = String(u.nombre || '').toUpperCase()
+
+  return (
+    nombre.includes('MATERNIDAD') ||
+    codigo.startsWith('M1') ||
+    codigo.startsWith('M2')
+  )
+}
+
 
 const groupNameFor = (u: Ubicacion): string => {
   if (u.nombre && u.nombre.includes(' - ')) {
@@ -146,34 +164,57 @@ const calcularDesglose = (
   stockTeorico: StockMap,
   cerdasPorUbicacion: CerdasMap
 ): DesgloseUbicacion => {
-  // En este módulo el total del inventario representa el conteo editable
-  // de lechones o cerdos normales. Las cerdas registradas se muestran
-  // aparte por arete y NO se suman al total general. Esto evita que
-  // Maternidad/Gestación inflen el reporte al sumar la cerda + sus lechones.
-  const total = Math.max(toNum(stockTeorico[ubicacion.id] ?? 0), 0)
+  // Regla del inventario/PDF:
+  // - El TOTAL GENERAL debe representar únicamente cerdos/lechones contables del inventario diario.
+  // - Las cerdas activas se muestran aparte por arete, pero NO se suman al total general.
+  // - En MATERNIDAD, el editable/conteo manual representa lechones.
+  // - En GESTACIÓN, las jaulas solo muestran cerdas/aretes; no deben arrastrar conteos manuales viejos
+  //   como lechones, porque eso infla el PDF.
+  // - En galeras y lechoneras, el editable/conteo manual representa cerdos normales.
+  const editableGuardado = Math.max(toNum(stockTeorico[ubicacion.id] ?? 0), 0)
   const cerdasRegistradas = Math.max(toNum(cerdasPorUbicacion[ubicacion.id] ?? 0), 0)
-  const esZonaProtegida = esMaternidadOGestacion(ubicacion)
+  const gestacion = esGestacion(ubicacion)
+  const maternidad = esMaternidad(ubicacion)
+  const esZonaProtegida = gestacion || maternidad
 
-  if (esZonaProtegida) {
+  if (gestacion) {
     return {
-      total,
+      total: 0,
       cerdasProtegidas: cerdasRegistradas,
-      lechonesEditables: total,
+      lechonesEditables: 0,
       cerdosEditables: 0,
-      editableActual: total,
+      editableActual: 0,
       tipoEditable: 'LECHONES',
       esZonaProtegida,
+      esGestacion: true,
+      esMaternidad: false,
+    }
+  }
+
+  if (maternidad) {
+    return {
+      total: editableGuardado,
+      cerdasProtegidas: cerdasRegistradas,
+      lechonesEditables: editableGuardado,
+      cerdosEditables: 0,
+      editableActual: editableGuardado,
+      tipoEditable: 'LECHONES',
+      esZonaProtegida,
+      esGestacion: false,
+      esMaternidad: true,
     }
   }
 
   return {
-    total,
+    total: editableGuardado,
     cerdasProtegidas: 0,
     lechonesEditables: 0,
-    cerdosEditables: total,
-    editableActual: total,
+    cerdosEditables: editableGuardado,
+    editableActual: editableGuardado,
     tipoEditable: 'CERDOS',
     esZonaProtegida,
+    esGestacion: false,
+    esMaternidad: false,
   }
 }
 
@@ -184,6 +225,8 @@ const calcularTotalVisual = (
   cerdasPorUbicacion: CerdasMap
 ) => {
   const desglose = calcularDesglose(ubicacion, stockTeorico, cerdasPorUbicacion)
+  if (desglose.esGestacion) return 0
+
   const editable = valorEditable.trim() === '' ? 0 : Number(valorEditable)
 
   if (!Number.isFinite(editable)) return desglose.total
@@ -394,12 +437,7 @@ export default function GranjaInventarioPage() {
   const [fechaCorte, setFechaCorte] = useState<string>('')
 
   useEffect(() => {
-    const today = new Date()
-    const pad = (n: number) => (n < 10 ? `0${n}` : `${n}`)
-    const f = `${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(
-      today.getDate()
-    )}`
-    setFechaCorte(f)
+    setFechaCorte(fechaLocalHoy())
   }, [])
 
   const grupos = useMemo(() => {
@@ -565,7 +603,14 @@ export default function GranjaInventarioPage() {
         inventarioGuardadoMap.set(Number(row.ubicacion_id), row)
       })
 
-      const usarInventarioGuardado = inventarioGuardadoMap.size > 0
+      const hoy = fechaLocalHoy()
+      const fechaEsPasada = fechaCorte < hoy
+
+      // Regla nueva:
+      // - Si la fecha es HOY, se muestra inventario vivo desde granja_movimientos.
+      //   Así los ajustes del 06/08 y los ajustes manuales recientes se ven en la fecha actual.
+      // - Si la fecha es pasada y ya existe inventario diario, se usa la foto histórica guardada.
+      const usarInventarioGuardado = fechaEsPasada && inventarioGuardadoMap.size > 0
       const mapa: StockMap = {}
 
       ubicList.forEach((ubicacion) => {
@@ -736,11 +781,15 @@ export default function GranjaInventarioPage() {
           return
         }
 
+        if (desglose.esGestacion) {
+          continue
+        }
+
         const nuevoEntero = Math.floor(nuevoEditable)
         const diff = nuevoEntero - desglose.editableActual
 
         if (diff !== 0) {
-          const tipoProteccion = desglose.esZonaProtegida
+          const tipoProteccion = desglose.esMaternidad
             ? 'Solo se ajustaron lechones. Las cerdas registradas no se modificaron.'
             : 'Se ajustaron cerdos normales.'
 
@@ -755,10 +804,9 @@ export default function GranjaInventarioPage() {
             fecha: fechaMovimiento,
           })
 
-          // La pantalla y el PDF cargan primero granja_inventario_diario
-          // cuando existe un corte guardado para la fecha. Por eso el ajuste
-          // manual debe guardarse también aquí; si solo se insertaba en
-          // granja_movimientos, al recargar el valor volvía al corte anterior.
+          // El ajuste se guarda en movimientos para que sea nueva base.
+          // También se actualiza la foto diaria de esa fecha para que, si se consulta
+          // como día histórico, no vuelva a mostrar el valor anterior.
           inventarioDiarioCambios.push({
             ubicacion_id: ubicacion.id,
             conteo_manual: nuevoEntero,
@@ -777,7 +825,7 @@ export default function GranjaInventarioPage() {
       }
 
       const confirmar = confirm(
-        'Se guardarán los ajustes de inventario. Las cerdas registradas no serán eliminadas ni modificadas desde esta pantalla. ¿Continuar?'
+        'Se guardarán los ajustes de inventario. La fecha actual se recargará en vivo desde movimientos. Las cerdas registradas no serán eliminadas ni modificadas desde esta pantalla. ¿Continuar?'
       )
 
       if (!confirmar) return
@@ -1083,9 +1131,12 @@ export default function GranjaInventarioPage() {
                           onChange={(e) => actualizarValor(ubicacion.id, e.target.value)}
                           title={
                             desglose.esZonaProtegida
-                              ? 'Este campo solo ajusta lechones.'
+                              ? desglose.esGestacion
+                                ? 'Gestación solo muestra cerdas/aretes. No ajusta conteo manual.'
+                                : 'Este campo solo ajusta lechones.'
                               : 'Este campo ajusta cerdos normales.'
                           }
+                          disabled={desglose.esGestacion}
                         />
                       </div>
 
