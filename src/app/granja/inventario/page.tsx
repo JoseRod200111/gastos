@@ -709,6 +709,16 @@ export default function GranjaInventarioPage() {
         fecha: string
       }[] = []
 
+      const inventarioDiarioCambios: {
+        ubicacion_id: number
+        conteo_manual: number
+        teorico_al_momento: number
+        diferencia: number
+        hembras_manual: number
+        machos_manual: number
+        user_id: string | null
+      }[] = []
+
       const fechaMovimiento = finDeDiaUTC(fechaCorte)
 
       for (const ubicacion of ubicaciones) {
@@ -726,7 +736,8 @@ export default function GranjaInventarioPage() {
           return
         }
 
-        const diff = nuevoEditable - desglose.editableActual
+        const nuevoEntero = Math.floor(nuevoEditable)
+        const diff = nuevoEntero - desglose.editableActual
 
         if (diff !== 0) {
           const tipoProteccion = desglose.esZonaProtegida
@@ -742,6 +753,20 @@ export default function GranjaInventarioPage() {
             observaciones: `Ajuste manual desde inventario (corte ${fechaCorte}). ${tipoProteccion}`,
             user_id: userId,
             fecha: fechaMovimiento,
+          })
+
+          // La pantalla y el PDF cargan primero granja_inventario_diario
+          // cuando existe un corte guardado para la fecha. Por eso el ajuste
+          // manual debe guardarse también aquí; si solo se insertaba en
+          // granja_movimientos, al recargar el valor volvía al corte anterior.
+          inventarioDiarioCambios.push({
+            ubicacion_id: ubicacion.id,
+            conteo_manual: nuevoEntero,
+            teorico_al_momento: nuevoEntero,
+            diferencia: 0,
+            hembras_manual: 0,
+            machos_manual: 0,
+            user_id: userId,
           })
         }
       }
@@ -763,6 +788,93 @@ export default function GranjaInventarioPage() {
         console.error('Error registrando ajustes', insertError)
         alert(`Ocurrió un error al guardar los ajustes de inventario: ${insertError.message}`)
         return
+      }
+
+      const ubicacionesCambiadas = inventarioDiarioCambios.map((row) => row.ubicacion_id)
+
+      const { data: diarioExistenteData, error: diarioExistenteError } = await supabase
+        .from('granja_inventario_diario')
+        .select('id, ubicacion_id')
+        .eq('fecha', fechaCorte)
+        .in('ubicacion_id', ubicacionesCambiadas)
+
+      if (diarioExistenteError) {
+        console.error('Error revisando inventario diario existente', diarioExistenteError)
+        alert(
+          `Los movimientos se guardaron, pero no se pudo actualizar el inventario diario: ${diarioExistenteError.message}`
+        )
+        return
+      }
+
+      const diarioExistente = (diarioExistenteData ?? []) as {
+        id: number
+        ubicacion_id: number
+      }[]
+
+      const idsPorUbicacion = new Map<number, number[]>()
+
+      diarioExistente.forEach((row) => {
+        const ubicacionId = Number(row.ubicacion_id)
+        const ids = idsPorUbicacion.get(ubicacionId) ?? []
+
+        ids.push(Number(row.id))
+        idsPorUbicacion.set(ubicacionId, ids)
+      })
+
+      const filasNuevas: {
+        fecha: string
+        ubicacion_id: number
+        conteo_manual: number
+        teorico_al_momento: number
+        diferencia: number
+        hembras_manual: number
+        machos_manual: number
+        user_id: string | null
+      }[] = []
+
+      for (const row of inventarioDiarioCambios) {
+        const idsExistentes = idsPorUbicacion.get(row.ubicacion_id) ?? []
+
+        if (idsExistentes.length > 0) {
+          const { error: updateDiarioError } = await supabase
+            .from('granja_inventario_diario')
+            .update({
+              conteo_manual: row.conteo_manual,
+              teorico_al_momento: row.teorico_al_momento,
+              diferencia: row.diferencia,
+              hembras_manual: row.hembras_manual,
+              machos_manual: row.machos_manual,
+              user_id: row.user_id,
+            })
+            .in('id', idsExistentes)
+
+          if (updateDiarioError) {
+            console.error('Error actualizando inventario diario', updateDiarioError)
+            alert(
+              `Los movimientos se guardaron, pero no se pudo actualizar el inventario diario: ${updateDiarioError.message}`
+            )
+            return
+          }
+        } else {
+          filasNuevas.push({
+            fecha: fechaCorte,
+            ...row,
+          })
+        }
+      }
+
+      if (filasNuevas.length > 0) {
+        const { error: insertDiarioError } = await supabase
+          .from('granja_inventario_diario')
+          .insert(filasNuevas)
+
+        if (insertDiarioError) {
+          console.error('Error insertando inventario diario', insertDiarioError)
+          alert(
+            `Los movimientos se guardaron, pero no se pudo insertar el inventario diario: ${insertDiarioError.message}`
+          )
+          return
+        }
       }
 
       alert('Inventario guardado correctamente.')
