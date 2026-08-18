@@ -33,6 +33,13 @@ export default function RrhhMenuPage() {
             >
               Registro y control de empleados
             </Link>
+
+            <Link
+              href="/rrhh/empleados/ficha"
+              className="block bg-teal-700 hover:bg-teal-800 text-white text-center py-3 rounded"
+            >
+              Ver ficha de empleados
+            </Link>
           </div>
         </section>
 
