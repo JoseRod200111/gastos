@@ -31,6 +31,75 @@ const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100
 
 const fmtQ = (n: number) => `Q${round2(toNum(n)).toFixed(2)}`
 
+const PAGE_SIZE = 1000
+
+function chunkArray<T>(arr: T[], size: number) {
+  const out: T[][] = []
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size))
+  return out
+}
+
+async function fetchAllDetalleVentaSaldos(selectedClienteId: string) {
+  const all: any[] = []
+  let from = 0
+
+  while (true) {
+    let q = supabase
+      .from('detalle_venta')
+      .select(
+        `
+        id,
+        venta_id,
+        importe,
+        forma_pago_id,
+        documento,
+        forma_pago ( metodo ),
+        ventas!inner ( id, cliente_id, fecha )
+      `
+      )
+      .order('id', { ascending: true })
+      .range(from, from + PAGE_SIZE - 1)
+
+    if (selectedClienteId) q = q.eq('ventas.cliente_id', Number(selectedClienteId))
+
+    const { data, error } = await q
+    if (error) return { data: all, error }
+
+    all.push(...((data || []) as any[]))
+    if (!data || data.length < PAGE_SIZE) break
+    from += PAGE_SIZE
+  }
+
+  return { data: all, error: null }
+}
+
+async function fetchAllPagosVenta(ventaIds: number[]) {
+  const all: any[] = []
+  const ids = Array.from(new Set(ventaIds.filter((id) => Number.isFinite(id) && id > 0)))
+
+  for (const chunk of chunkArray(ids, 300)) {
+    let from = 0
+
+    while (true) {
+      const { data, error } = await supabase
+        .from('pagos_venta')
+        .select('venta_id, monto')
+        .in('venta_id', chunk)
+        .order('id', { ascending: true })
+        .range(from, from + PAGE_SIZE - 1)
+
+      if (error) return { data: all, error }
+
+      all.push(...((data || []) as any[]))
+      if (!data || data.length < PAGE_SIZE) break
+      from += PAGE_SIZE
+    }
+  }
+
+  return { data: all, error: null }
+}
+
+
 async function fetchLogoDataUrl(): Promise<string | null> {
   try {
     const res = await fetch('/logo.png')
@@ -109,15 +178,7 @@ export default function SaldosPorClientePage() {
         ((metodosPendientes || []) as { id: number }[]).map((m) => Number(m.id))
       )
 
-      let q = supabase
-        .from('detalle_venta')
-        .select('venta_id, importe, forma_pago_id, documento, ventas!inner(id, cliente_id, fecha)')
-
-      if (selectedClienteId) {
-        q = q.eq('ventas.cliente_id', Number(selectedClienteId))
-      }
-
-      const { data: detallesRows, error: detErr } = await q
+      const { data: detallesRows, error: detErr } = await fetchAllDetalleVentaSaldos(selectedClienteId)
 
       if (detErr) {
         console.error('Error cargando detalle de saldos:', detErr)
@@ -128,7 +189,6 @@ export default function SaldosPorClientePage() {
       type VentaAgg = {
         venta_id: number
         cliente_id: number
-        fecha: string
         credito: number
         abonado: number
         tienePendiente: boolean
@@ -143,9 +203,13 @@ export default function SaldosPorClientePage() {
         const clienteId = Number(ventaRel?.cliente_id)
         const formaPagoId = raw.forma_pago_id == null ? null : Number(raw.forma_pago_id)
         const documento = String(raw.documento || '').toLowerCase()
+        const formaPagoRel = Array.isArray(raw.forma_pago) ? raw.forma_pago[0] : raw.forma_pago
+        const metodo = String(formaPagoRel?.metodo || '').toLowerCase()
 
         const esPendiente =
-          (formaPagoId != null && idsPendientes.has(formaPagoId)) || documento.includes('pend')
+          (formaPagoId != null && idsPendientes.has(formaPagoId)) ||
+          metodo.includes('pendiente') ||
+          documento.includes('pend')
 
         if (!ventaId || !clienteId) continue
 
@@ -153,7 +217,6 @@ export default function SaldosPorClientePage() {
           porVenta[ventaId] = {
             venta_id: ventaId,
             cliente_id: clienteId,
-            fecha: String(ventaRel?.fecha || ''),
             credito: 0,
             abonado: 0,
             tienePendiente: false,
@@ -167,61 +230,25 @@ export default function SaldosPorClientePage() {
         porVenta[ventaId].tienePendiente = porVenta[ventaId].tienePendiente || esPendiente
       }
 
-      const clienteIds = Array.from(new Set(Object.values(porVenta).map((v) => v.cliente_id)))
-      const pagosGeneralesPorCliente: Record<number, number> = {}
+      const ventasIds = Object.keys(porVenta).map(Number)
 
-      if (clienteIds.length > 0) {
-        const { data: pagosRows, error: pagosErr } = await supabase
-          .from('pagos_venta')
-          .select('cliente_id, venta_id, monto')
-          .in('cliente_id', clienteIds)
+      if (ventasIds.length > 0) {
+        const { data: pagosRows, error: pagosErr } = await fetchAllPagosVenta(ventasIds)
 
         if (pagosErr) {
           console.error('Error cargando abonos:', pagosErr)
         } else {
           for (const pago of (pagosRows || []) as any[]) {
-            const clienteId = Number(pago.cliente_id)
-            const ventaId = pago.venta_id == null ? null : Number(pago.venta_id)
-            const monto = toNum(pago.monto)
-
-            if (ventaId && porVenta[ventaId]) {
-              porVenta[ventaId].abonado += monto
+            const ventaId = Number(pago.venta_id)
+            if (porVenta[ventaId]) {
+              porVenta[ventaId].abonado += toNum(pago.monto)
               porVenta[ventaId].tienePago = true
-            } else if (!ventaId && clienteId) {
-              pagosGeneralesPorCliente[clienteId] = round2(
-                (pagosGeneralesPorCliente[clienteId] || 0) + monto
-              )
             }
           }
         }
       }
 
-      for (const [clienteIdTxt, montoGeneral] of Object.entries(pagosGeneralesPorCliente)) {
-        let restante = round2(montoGeneral)
-        const clienteId = Number(clienteIdTxt)
-        const ventasCliente = Object.values(porVenta)
-          .filter((v) => v.cliente_id === clienteId && v.tienePendiente)
-          .sort((a, b) => {
-            const fa = new Date(a.fecha).getTime()
-            const fb = new Date(b.fecha).getTime()
-            if (fa !== fb) return fa - fb
-            return a.venta_id - b.venta_id
-          })
-
-        for (const venta of ventasCliente) {
-          if (restante <= 0) break
-
-          const saldoAntes = Math.max(0, venta.credito - venta.abonado)
-          const aplicar = Math.min(saldoAntes, restante)
-
-          if (aplicar <= 0) continue
-
-          venta.abonado = round2(venta.abonado + aplicar)
-          venta.tienePago = true
-          restante = round2(restante - aplicar)
-        }
-      }
-
+      const clienteIds = Array.from(new Set(Object.values(porVenta).map((v) => v.cliente_id)))
       const clientesMap = new Map<number, Cliente>()
 
       if (clienteIds.length > 0) {
@@ -434,17 +461,6 @@ export default function SaldosPorClientePage() {
         </button>
 
         {selectedClienteId && (
-          <Link
-            href={`/ventas/saldos/abonos?cliente_id=${selectedClienteId}&nombre=${encodeURIComponent(
-              clientes.find((c) => c.id === Number(selectedClienteId))?.nombre || ''
-            )}`}
-            className="bg-slate-700 hover:bg-slate-800 text-white px-4 py-2 rounded text-sm"
-          >
-            Ver abonos
-          </Link>
-        )}
-
-        {selectedClienteId && (
           <button
             onClick={() => setSelectedClienteId('')}
             className="bg-slate-600 hover:bg-slate-700 text-white px-4 py-2 rounded text-sm"
@@ -518,7 +534,7 @@ export default function SaldosPorClientePage() {
                         href={`/ventas/saldos/abonos?cliente_id=${r.cliente_id}&nombre=${encodeURIComponent(
                           r.nombre
                         )}`}
-                        className="inline-block bg-slate-700 hover:bg-slate-800 text-white px-3 py-1 rounded text-xs"
+                        className="inline-block bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1 rounded text-xs"
                       >
                         Ver abonos
                       </Link>
