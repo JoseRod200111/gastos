@@ -78,6 +78,17 @@ function round2(n: number) {
   return Math.round((Number(n || 0) + Number.EPSILON) * 100) / 100
 }
 
+function esPendienteDetalle(d: Detalle) {
+  const metodo = d.forma_pago?.metodo?.toLowerCase() || ''
+  const documento = (d.documento || '').toLowerCase()
+  return metodo.includes('pendiente') || documento.includes('pend')
+}
+
+function textoPagoDetalle(d: Detalle, saldoVenta: number) {
+  if (saldoVenta <= 0.000001 && esPendienteDetalle(d)) return 'Saldado con abono'
+  return d.forma_pago?.metodo || '—'
+}
+
 async function fetchLogoDataUrl(): Promise<string | null> {
   try {
     const res = await fetch('/logo.png')
@@ -242,51 +253,136 @@ export default function ReportesVentas() {
       })
     }
 
-    const { data: pagosRows, error: pagosErr } = await supabase
-      .from('pagos_venta')
-      .select('venta_id, monto')
-      .in('venta_id', ids)
-
-    if (pagosErr) {
-      console.error('Error cargando pagos:', pagosErr)
+    type BaseVenta = {
+      venta_id: number
+      cliente_id: number | null
+      fecha: string
+      totalVenta: number
+      creditoOriginal: number
+      tienePendiente: boolean
     }
 
-    const pagosPorVenta: Record<number, number> = {}
-
-    for (const p of pagosRows || []) {
-      const row = p as Record<string, unknown>
-      const ventaId = Number(row.venta_id)
-
-      pagosPorVenta[ventaId] = round2(
-        (pagosPorVenta[ventaId] || 0) + Number(row.monto || 0)
-      )
-    }
-
-    const saldosCalc: Record<number, SaldoVenta> = {}
-
-    for (const v of norm) {
+    const baseVentas: BaseVenta[] = norm.map((v) => {
       const totalVenta = Number(v.cantidad || 0)
       const det = grouped[v.id] || []
 
+      let tienePendiente = false
+
       const creditoOriginal = det.reduce((sum, d) => {
         const metodo = d.forma_pago?.metodo?.toLowerCase() || ''
+        const documento = (d.documento || '').toLowerCase()
         const esPendientePorId =
           metodoPendienteId !== null && d.forma_pago_id === metodoPendienteId
-        const esPendientePorTexto = metodo.includes('pendiente de pago')
+        const esPendientePorTexto = metodo.includes('pendiente') || documento.includes('pend')
+
+        if (esPendientePorId || esPendientePorTexto) tienePendiente = true
 
         return esPendientePorId || esPendientePorTexto
           ? sum + Number(d.importe || 0)
           : sum
       }, 0)
 
-      const abonado = pagosPorVenta[v.id] || 0
-      const saldoPendiente = Math.max(0, creditoOriginal - abonado)
+      return {
+        venta_id: v.id,
+        cliente_id: v.cliente_id,
+        fecha: v.fecha,
+        totalVenta,
+        creditoOriginal,
+        tienePendiente,
+      }
+    })
 
-      const pagadoInicial = Math.max(0, totalVenta - creditoOriginal)
-      const pagadoTotal = Math.min(totalVenta, pagadoInicial + abonado)
+    const clienteIds = Array.from(
+      new Set(
+        baseVentas
+          .map((v) => v.cliente_id)
+          .filter((id): id is number => Number.isFinite(Number(id)) && id != null)
+      )
+    )
 
-      saldosCalc[v.id] = {
-        credito: round2(creditoOriginal),
+    const pagosPorVenta: Record<number, number> = {}
+    const pagosGeneralesPorCliente: Record<number, number> = {}
+
+    const { data: pagosRows, error: pagosErr } = await supabase
+      .from('pagos_venta')
+      .select('cliente_id, venta_id, monto')
+      .in('venta_id', ids)
+
+    if (pagosErr) {
+      console.error('Error cargando pagos por venta:', pagosErr)
+    }
+
+    for (const p of pagosRows || []) {
+      const row = p as Record<string, unknown>
+      const ventaId = Number(row.venta_id)
+
+      if (!Number.isFinite(ventaId) || ventaId <= 0) continue
+
+      pagosPorVenta[ventaId] = round2(
+        (pagosPorVenta[ventaId] || 0) + Number(row.monto || 0)
+      )
+    }
+
+    if (clienteIds.length > 0) {
+      const { data: pagosGenerales, error: pagosGenErr } = await supabase
+        .from('pagos_venta')
+        .select('cliente_id, venta_id, monto')
+        .in('cliente_id', clienteIds)
+        .is('venta_id', null)
+
+      if (pagosGenErr) {
+        console.error('Error cargando abonos generales por cliente:', pagosGenErr)
+      } else {
+        for (const p of pagosGenerales || []) {
+          const row = p as Record<string, unknown>
+          const clienteId = Number(row.cliente_id)
+
+          if (!Number.isFinite(clienteId) || clienteId <= 0) continue
+
+          pagosGeneralesPorCliente[clienteId] = round2(
+            (pagosGeneralesPorCliente[clienteId] || 0) + Number(row.monto || 0)
+          )
+        }
+      }
+    }
+
+    for (const [clienteIdTxt, montoGeneral] of Object.entries(pagosGeneralesPorCliente)) {
+      let restante = round2(montoGeneral)
+      const clienteId = Number(clienteIdTxt)
+
+      const ventasCliente = baseVentas
+        .filter((v) => v.cliente_id === clienteId && v.tienePendiente)
+        .sort((a, b) => {
+          const fa = new Date(a.fecha).getTime()
+          const fb = new Date(b.fecha).getTime()
+          if (fa !== fb) return fa - fb
+          return a.venta_id - b.venta_id
+        })
+
+      for (const v of ventasCliente) {
+        if (restante <= 0) break
+
+        const saldoAntes = Math.max(0, v.creditoOriginal - (pagosPorVenta[v.venta_id] || 0))
+        const aplicar = Math.min(saldoAntes, restante)
+
+        if (aplicar <= 0) continue
+
+        pagosPorVenta[v.venta_id] = round2((pagosPorVenta[v.venta_id] || 0) + aplicar)
+        restante = round2(restante - aplicar)
+      }
+    }
+
+    const saldosCalc: Record<number, SaldoVenta> = {}
+
+    for (const base of baseVentas) {
+      const abonado = pagosPorVenta[base.venta_id] || 0
+      const saldoPendiente = Math.max(0, base.creditoOriginal - abonado)
+
+      const pagadoInicial = Math.max(0, base.totalVenta - base.creditoOriginal)
+      const pagadoTotal = Math.min(base.totalVenta, pagadoInicial + abonado)
+
+      saldosCalc[base.venta_id] = {
+        credito: round2(base.creditoOriginal),
         abonado: round2(abonado),
         pagado: round2(pagadoTotal),
         saldo: round2(saldoPendiente),
@@ -695,7 +791,7 @@ export default function ReportesVentas() {
                 String(d.cantidad),
                 q(d.precio_unitario),
                 q(d.importe),
-                d.forma_pago?.metodo || '—',
+                textoPagoDetalle(d, s.saldo),
                 d.documento || '—',
               ])
             : [['Sin detalle', '', '', '', '', '']],
@@ -1001,7 +1097,7 @@ export default function ReportesVentas() {
                         <td className="p-2 text-right">{d.cantidad}</td>
                         <td className="p-2 text-right">{q(d.precio_unitario)}</td>
                         <td className="p-2 text-right">{q(d.importe)}</td>
-                        <td className="p-2">{d.forma_pago?.metodo || '—'}</td>
+                        <td className="p-2">{textoPagoDetalle(d, s.saldo)}</td>
                         <td className="p-2">{d.documento || '—'}</td>
                       </tr>
                     ))}
