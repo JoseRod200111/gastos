@@ -128,6 +128,7 @@ export default function SaldosPorClientePage() {
       type VentaAgg = {
         venta_id: number
         cliente_id: number
+        fecha: string
         credito: number
         abonado: number
         tienePendiente: boolean
@@ -152,6 +153,7 @@ export default function SaldosPorClientePage() {
           porVenta[ventaId] = {
             venta_id: ventaId,
             cliente_id: clienteId,
+            fecha: String(ventaRel?.fecha || ''),
             credito: 0,
             abonado: 0,
             tienePendiente: false,
@@ -165,28 +167,61 @@ export default function SaldosPorClientePage() {
         porVenta[ventaId].tienePendiente = porVenta[ventaId].tienePendiente || esPendiente
       }
 
-      const ventasIds = Object.keys(porVenta).map(Number)
+      const clienteIds = Array.from(new Set(Object.values(porVenta).map((v) => v.cliente_id)))
+      const pagosGeneralesPorCliente: Record<number, number> = {}
 
-      if (ventasIds.length > 0) {
+      if (clienteIds.length > 0) {
         const { data: pagosRows, error: pagosErr } = await supabase
           .from('pagos_venta')
-          .select('venta_id, monto')
-          .in('venta_id', ventasIds)
+          .select('cliente_id, venta_id, monto')
+          .in('cliente_id', clienteIds)
 
         if (pagosErr) {
           console.error('Error cargando abonos:', pagosErr)
         } else {
           for (const pago of (pagosRows || []) as any[]) {
-            const ventaId = Number(pago.venta_id)
-            if (porVenta[ventaId]) {
-              porVenta[ventaId].abonado += toNum(pago.monto)
+            const clienteId = Number(pago.cliente_id)
+            const ventaId = pago.venta_id == null ? null : Number(pago.venta_id)
+            const monto = toNum(pago.monto)
+
+            if (ventaId && porVenta[ventaId]) {
+              porVenta[ventaId].abonado += monto
               porVenta[ventaId].tienePago = true
+            } else if (!ventaId && clienteId) {
+              pagosGeneralesPorCliente[clienteId] = round2(
+                (pagosGeneralesPorCliente[clienteId] || 0) + monto
+              )
             }
           }
         }
       }
 
-      const clienteIds = Array.from(new Set(Object.values(porVenta).map((v) => v.cliente_id)))
+      for (const [clienteIdTxt, montoGeneral] of Object.entries(pagosGeneralesPorCliente)) {
+        let restante = round2(montoGeneral)
+        const clienteId = Number(clienteIdTxt)
+        const ventasCliente = Object.values(porVenta)
+          .filter((v) => v.cliente_id === clienteId && v.tienePendiente)
+          .sort((a, b) => {
+            const fa = new Date(a.fecha).getTime()
+            const fb = new Date(b.fecha).getTime()
+            if (fa !== fb) return fa - fb
+            return a.venta_id - b.venta_id
+          })
+
+        for (const venta of ventasCliente) {
+          if (restante <= 0) break
+
+          const saldoAntes = Math.max(0, venta.credito - venta.abonado)
+          const aplicar = Math.min(saldoAntes, restante)
+
+          if (aplicar <= 0) continue
+
+          venta.abonado = round2(venta.abonado + aplicar)
+          venta.tienePago = true
+          restante = round2(restante - aplicar)
+        }
+      }
+
       const clientesMap = new Map<number, Cliente>()
 
       if (clienteIds.length > 0) {
@@ -399,6 +434,17 @@ export default function SaldosPorClientePage() {
         </button>
 
         {selectedClienteId && (
+          <Link
+            href={`/ventas/saldos/abonos?cliente_id=${selectedClienteId}&nombre=${encodeURIComponent(
+              clientes.find((c) => c.id === Number(selectedClienteId))?.nombre || ''
+            )}`}
+            className="bg-slate-700 hover:bg-slate-800 text-white px-4 py-2 rounded text-sm"
+          >
+            Ver abonos
+          </Link>
+        )}
+
+        {selectedClienteId && (
           <button
             onClick={() => setSelectedClienteId('')}
             className="bg-slate-600 hover:bg-slate-700 text-white px-4 py-2 rounded text-sm"
@@ -458,14 +504,25 @@ export default function SaldosPorClientePage() {
                   <td className="p-2 text-right">{fmtQ(r.abonado)}</td>
                   <td className="p-2 text-right font-semibold">{fmtQ(r.saldo)}</td>
                   <td className="p-2">
-                    <Link
-                      href={`/ventas/saldos/vista?cliente_id=${r.cliente_id}&nombre=${encodeURIComponent(
-                        r.nombre
-                      )}`}
-                      className="inline-block bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-1 rounded text-xs"
-                    >
-                      Detalle / Registrar pago
-                    </Link>
+                    <div className="flex flex-wrap gap-2">
+                      <Link
+                        href={`/ventas/saldos/vista?cliente_id=${r.cliente_id}&nombre=${encodeURIComponent(
+                          r.nombre
+                        )}`}
+                        className="inline-block bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-1 rounded text-xs"
+                      >
+                        Detalle / Registrar pago
+                      </Link>
+
+                      <Link
+                        href={`/ventas/saldos/abonos?cliente_id=${r.cliente_id}&nombre=${encodeURIComponent(
+                          r.nombre
+                        )}`}
+                        className="inline-block bg-slate-700 hover:bg-slate-800 text-white px-3 py-1 rounded text-xs"
+                      >
+                        Ver abonos
+                      </Link>
+                    </div>
                   </td>
                 </tr>
               ))
