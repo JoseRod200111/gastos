@@ -226,24 +226,50 @@ function VistaDeudasClienteInner() {
         agg[vId].tienePendiente = agg[vId].tienePendiente || esPendiente
       }
 
-      const vIds = Object.keys(agg).map(Number)
+      const { data: pagosRows, error: pErr } = await supabase
+        .from('pagos_venta')
+        .select('venta_id, monto')
+        .eq('cliente_id', id)
 
-      if (vIds.length > 0) {
-        const { data: pagosRows, error: pErr } = await supabase
-          .from('pagos_venta')
-          .select('venta_id, monto')
-          .in('venta_id', vIds)
+      let pagoGeneral = 0
 
-        if (!pErr) {
-          for (const pr of pagosRows || []) {
-            const ventaId = Number((pr as any).venta_id)
-            const m = toNum((pr as any).monto)
+      if (!pErr) {
+        for (const pr of pagosRows || []) {
+          const ventaId = (pr as any).venta_id == null ? null : Number((pr as any).venta_id)
+          const m = toNum((pr as any).monto)
 
-            if (agg[ventaId]) {
-              agg[ventaId].abonado += m
-              agg[ventaId].tienePago = true
-            }
+          if (ventaId && agg[ventaId]) {
+            agg[ventaId].abonado += m
+            agg[ventaId].tienePago = true
+          } else if (!ventaId) {
+            pagoGeneral = round2(pagoGeneral + m)
           }
+        }
+      }
+
+      if (pagoGeneral > 0) {
+        let restante = pagoGeneral
+        const ventasOrdenadas = Object.entries(agg)
+          .map(([venta_id, v]) => ({ venta_id: Number(venta_id), ...v }))
+          .filter((v) => v.tienePendiente)
+          .sort((a, b) => {
+            const fa = new Date(a.fecha).getTime()
+            const fb = new Date(b.fecha).getTime()
+            if (fa !== fb) return fa - fb
+            return a.venta_id - b.venta_id
+          })
+
+        for (const venta of ventasOrdenadas) {
+          if (restante <= 0) break
+
+          const saldoAntes = Math.max(0, venta.credito - venta.abonado)
+          const aplicar = Math.min(saldoAntes, restante)
+
+          if (aplicar <= 0) continue
+
+          agg[venta.venta_id].abonado = round2(agg[venta.venta_id].abonado + aplicar)
+          agg[venta.venta_id].tienePago = true
+          restante = round2(restante - aplicar)
         }
       }
 
