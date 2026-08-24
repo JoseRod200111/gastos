@@ -54,6 +54,46 @@ const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100
 
 const formatoQ = (n: number | null | undefined) => `Q${round2(toNum(n)).toFixed(2)}`
 
+const PAGE_SIZE = 1000
+
+async function fetchAllPagosCliente(clienteId: number) {
+  const all: any[] = []
+  let from = 0
+
+  while (true) {
+    const { data, error } = await supabase
+      .from('pagos_venta')
+      .select(
+        `
+        id,
+        cliente_id,
+        venta_id,
+        fecha,
+        monto,
+        metodo_pago_id,
+        documento,
+        observaciones,
+        user_id,
+        created_at,
+        forma_pago ( metodo ),
+        ventas ( id, fecha, cantidad )
+      `
+      )
+      .eq('cliente_id', clienteId)
+      .order('created_at', { ascending: false })
+      .range(from, from + PAGE_SIZE - 1)
+
+    if (error) return { data: all, error }
+
+    all.push(...((data || []) as any[]))
+    if (!data || data.length < PAGE_SIZE) break
+    from += PAGE_SIZE
+  }
+
+  return { data: all, error: null }
+}
+
+
 function asObj<T>(rel: unknown): T | null {
   if (rel == null) return null
   if (Array.isArray(rel)) return (rel[0] ?? null) as T | null
@@ -132,8 +172,14 @@ function AbonosClienteInner() {
       if (filtros.desde && p.fecha < filtros.desde) return false
       if (filtros.hasta && p.fecha > filtros.hasta) return false
       if (filtros.venta_id.trim()) {
-        const ventaTxt = p.venta_id == null ? 'general' : String(p.venta_id)
-        return ventaTxt.includes(filtros.venta_id.trim())
+        const filtroVenta = filtros.venta_id.trim().toLowerCase()
+
+        // Si el pago está amarrado a una venta específica, filtra por esa venta.
+        if (p.venta_id != null) return String(p.venta_id).includes(filtroVenta)
+
+        // Los abonos generales no tienen venta_id. Se muestran también cuando se filtra por venta,
+        // porque pueden ser pagos del cliente que todavía no fueron vinculados a una venta específica.
+        return 'general'.includes(filtroVenta) || filtroVenta !== ''
       }
 
       return true
@@ -164,27 +210,7 @@ function AbonosClienteInner() {
     setLoading(true)
 
     try {
-      const { data, error } = await supabase
-        .from('pagos_venta')
-        .select(
-          `
-          id,
-          cliente_id,
-          venta_id,
-          fecha,
-          monto,
-          metodo_pago_id,
-          documento,
-          observaciones,
-          user_id,
-          created_at,
-          forma_pago ( metodo ),
-          ventas ( id, fecha, cantidad )
-        `
-        )
-        .eq('cliente_id', id)
-        .order('fecha', { ascending: false })
-        .order('created_at', { ascending: false })
+      const { data, error } = await fetchAllPagosCliente(id)
 
       if (error) {
         console.error('Error cargando abonos:', error)
@@ -404,7 +430,7 @@ function AbonosClienteInner() {
               className="border p-2 w-full"
               value={filtros.venta_id}
               onChange={(e) => setFiltros((p) => ({ ...p, venta_id: e.target.value }))}
-              placeholder="Ej. 2441 o general"
+              placeholder="ID"
             />
           </div>
 
@@ -431,10 +457,17 @@ function AbonosClienteInner() {
         </div>
 
         <div className="border rounded p-3 bg-white">
-          <div className="text-xs text-gray-500">Cliente ID</div>
-          <div className="text-lg font-semibold">{clienteId || '—'}</div>
+          <div className="text-xs text-gray-500">Cliente</div>
+          <div className="text-lg font-semibold">{cliente.nombre || '—'}</div>
         </div>
       </div>
+
+      {filtros.venta_id.trim() && pagosFiltrados.some((p) => p.venta_id == null) && (
+        <div className="border rounded p-3 bg-yellow-50 text-yellow-900 text-sm mb-4">
+          También se muestran abonos generales del cliente porque no tienen venta específica asignada.
+          Si uno de esos abonos corresponde a la venta filtrada, debe vincularse a esa venta para que el reporte individual lo tome como pagado.
+        </div>
+      )}
 
       <div className="border rounded bg-white overflow-auto">
         <table className="w-full text-sm">
