@@ -83,11 +83,26 @@ export default function RrhhMenuPage() {
           <h2 className="font-semibold mb-3">Reportes, descuentos y finiquitos</h2>
           <div className="grid gap-2 md:grid-cols-2">
             <Link
+              href="/rrhh/reportes/anticipos-abonos"
+              className="block bg-amber-600 hover:bg-amber-700 text-white text-center py-3 rounded"
+            >
+              Abonos de anticipos
+            </Link>
+
+            <Link
+              href="/rrhh/reportes/prestamos-abonos"
+              className="block bg-fuchsia-600 hover:bg-fuchsia-700 text-white text-center py-3 rounded"
+            >
+              Abonos de préstamos
+            </Link>
+
+            <Link
               href="/rrhh/descuentos-ventas"
               className="block bg-red-600 hover:bg-red-700 text-white text-center py-3 rounded"
             >
               Descuentos por ventas
             </Link>
+
             <Link
               href="/rrhh/finiquitos"
               className="block bg-slate-700 hover:bg-slate-800 text-white text-center py-3 rounded"
