@@ -14,7 +14,7 @@ export default function DashboardPage() {
       if (data?.user) {
         setUserEmail(data.user.email ?? null)
       } else {
-        router.push('/login') // si no hay sesión, redirige al login
+        router.push('/login')
       }
     }
     getUser()
@@ -27,7 +27,6 @@ export default function DashboardPage() {
 
   return (
     <div className="p-6 max-w-xl mx-auto text-center">
-      {/* LOGO */}
       <img src="/logo.png" alt="Logo" className="mx-auto mb-4 w-32 h-auto" />
 
       <h1 className="text-2xl font-bold mb-4">Menú Principal</h1>
@@ -49,6 +48,13 @@ export default function DashboardPage() {
         </button>
 
         <button
+          onClick={() => router.push('/erogacion/saldos')}
+          className="w-full p-3 bg-amber-600 text-white rounded"
+        >
+          💳 Saldos y abonos a proveedores
+        </button>
+
+        <button
           onClick={() => router.push('/reportes')}
           className="w-full p-3 bg-purple-600 text-white rounded"
         >
@@ -62,7 +68,6 @@ export default function DashboardPage() {
           🏢 Agregar/Eliminar Empresa, Categoría, División
         </button>
 
-        {/* ⬅ Volver al Menú Principal */}
         <button
           onClick={() => router.push('/menu')}
           className="w-full p-3 bg-slate-700 text-white rounded"
