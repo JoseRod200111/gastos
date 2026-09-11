@@ -309,7 +309,7 @@ export default function VerVentas() {
     setVentas(filtradas)
 
     if (esBusquedaPorId && cabList.length > 0 && (grouped[cabList[0].id] ?? []).length === 0) {
-      setMensaje('La venta existe, pero actualmente no tiene líneas en detalle_venta. Por eso antes se escondía al no marcar “Mostrar ventas sin detalle”.')
+      setMensaje('La venta existe, pero actualmente no tiene líneas en detalle_venta.')
     } else if (!hayFiltroFuerte) {
       setMensaje('Mostrando las últimas 100 ventas. Usa filtros para buscar en todo el histórico.')
     }
