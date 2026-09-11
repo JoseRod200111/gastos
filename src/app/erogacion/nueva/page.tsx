@@ -467,31 +467,7 @@ export default function NuevaErogacion() {
         return alert('No hay sesión activa. Inicia sesión para registrar erogaciones.')
       }
 
-      const { data: erog, error: errCab } = await supabase
-        .from('erogaciones')
-        .insert([
-          {
-            empresa_id: form.empresa_id ? Number(form.empresa_id) : null,
-            division_id: form.division_id ? Number(form.division_id) : null,
-            categoria_id: form.categoria_id ? Number(form.categoria_id) : null,
-            proveedor_id: form.proveedor_id ? Number(form.proveedor_id) : null,
-            fecha: form.fecha,
-            observaciones: form.observaciones || null,
-            cantidad: Number(total || 0),
-            user_id: userId,
-            editado_por: null,
-            editado_en: null,
-          },
-        ])
-        .select('id')
-        .single()
-
-      if (errCab) throw new Error(`cabecera: ${errCab.message}`)
-
-      const erogacionId = (erog as { id: number }).id
-
       const payload = detalles.map((d) => ({
-        erogacion_id: erogacionId,
         producto_id: d.producto_id ? Number(d.producto_id) : null,
         concepto: d.concepto.trim(),
         cantidad: Number(d.cantidad || 0),
@@ -500,8 +476,33 @@ export default function NuevaErogacion() {
         documento: d.documento || null,
       }))
 
-      const { error: errDet } = await supabase.from('detalle_compra').insert(payload)
-      if (errDet) throw new Error(`detalle: ${errDet.message}`)
+      const { data: erogacionCreada, error: rpcErr } = await supabase
+        .rpc('crear_erogacion_con_detalles', {
+          p_empresa_id: form.empresa_id ? Number(form.empresa_id) : null,
+          p_division_id: form.division_id ? Number(form.division_id) : null,
+          p_categoria_id: form.categoria_id ? Number(form.categoria_id) : null,
+          p_proveedor_id: form.proveedor_id ? Number(form.proveedor_id) : null,
+          p_fecha: form.fecha,
+          p_observaciones: form.observaciones || null,
+          p_total: Number(total || 0),
+          p_user_id: userId,
+          p_detalles: payload,
+        })
+        .single()
+
+      if (rpcErr) {
+        throw new Error(`No se guardó la erogación. No se creó cabecera vacía. Detalle: ${rpcErr.message}`)
+      }
+
+      const resultado = erogacionCreada as { erogacion_id: number; detalles_insertados: number }
+      const erogacionId = Number(resultado.erogacion_id)
+      const detallesInsertados = Number(resultado.detalles_insertados)
+
+      if (!erogacionId || detallesInsertados !== payload.length) {
+        throw new Error(
+          `La erogación no fue confirmada correctamente. Detalles esperados: ${payload.length}, detalles guardados: ${detallesInsertados}.`
+        )
+      }
 
       const pdfData = construirPdfData(erogacionId)
 
