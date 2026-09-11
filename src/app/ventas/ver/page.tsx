@@ -127,6 +127,8 @@ export default function VerVentas() {
   const [mostrarIncompletas, setMostrarIncompletas] = useState(false)
   const [ventasConPendientes, setVentasConPendientes] = useState<Record<number, boolean>>({})
   const [guardandoDetalleId, setGuardandoDetalleId] = useState<number | null>(null)
+  const [cargando, setCargando] = useState(false)
+  const [mensaje, setMensaje] = useState('')
 
   const marcarPendiente = (ventaId: number, val: boolean) => {
     setVentasConPendientes((prev) => ({ ...prev, [ventaId]: val }))
@@ -159,132 +161,203 @@ export default function VerVentas() {
 
     const filtrosAplicados = {
       ...filtros,
-      id: filtros.id || idUrl || '',
+      id: (filtros.id || idUrl || '').trim(),
+      cliente_nombre: filtros.cliente_nombre.trim(),
+      cliente_nit: filtros.cliente_nit.trim(),
     }
 
     if (idUrl && !filtros.id) {
       setFiltros((prev) => ({ ...prev, id: idUrl }))
     }
 
-    const usaFiltroCliente =
-      Boolean(filtrosAplicados.cliente_nombre?.trim()) ||
-      Boolean(filtrosAplicados.cliente_nit?.trim())
+    setCargando(true)
+    setMensaje('')
 
-    const selectCamposBasicos = `
-      id, fecha, cantidad, observaciones,
-      empresa_id, division_id, cliente_id,
-      empresas ( nombre ),
-      divisiones ( nombre )
-    `.trim()
+    try {
+      const usaFiltroCliente =
+        Boolean(filtrosAplicados.cliente_nombre) || Boolean(filtrosAplicados.cliente_nit)
 
-    const selectClientes = usaFiltroCliente
-      ? `, clientes!inner ( nombre, nit )`
-      : `, clientes ( nombre, nit )`
+      const selectCamposBasicos = `
+        id, fecha, cantidad, observaciones,
+        empresa_id, division_id, cliente_id,
+        empresas ( nombre ),
+        divisiones ( nombre )
+      `.trim()
 
-    const selectString = `${selectCamposBasicos}${selectClientes}`
+      const selectClientes = usaFiltroCliente
+        ? `, clientes!inner ( nombre, nit )`
+        : `, clientes ( nombre, nit )`
 
-    let query = supabase
-      .from('ventas')
-      .select(selectString)
-      .order('fecha', { ascending: false })
-      .order('id', { ascending: false })
+      const selectString = `${selectCamposBasicos}${selectClientes}`
+      const idTexto = filtrosAplicados.id
+      const idNumero = idTexto ? Number(idTexto) : 0
 
-    if (filtrosAplicados.id) query = query.eq('id', filtrosAplicados.id)
-    if (filtrosAplicados.empresa_id) query = query.eq('empresa_id', filtrosAplicados.empresa_id)
-    if (filtrosAplicados.division_id) query = query.eq('division_id', filtrosAplicados.division_id)
-    if (filtrosAplicados.desde) query = query.gte('fecha', filtrosAplicados.desde)
-    if (filtrosAplicados.hasta) query = query.lte('fecha', filtrosAplicados.hasta)
+      if (idTexto && (!Number.isInteger(idNumero) || idNumero <= 0)) {
+        setVentas([])
+        setDetalles({})
+        setDetallesOriginal({})
+        setVentasConPendientes({})
+        setMensaje('El ID de venta debe ser un número entero válido.')
+        return
+      }
 
-    if (filtrosAplicados.cliente_nombre?.trim()) {
-      query = query.ilike('clientes.nombre', `%${filtrosAplicados.cliente_nombre.trim()}%`)
-    }
+      const construirQueryVentas = () => {
+        let query: any = supabase
+          .from('ventas')
+          .select(selectString)
+          .order('fecha', { ascending: false })
+          .order('id', { ascending: false })
 
-    if (filtrosAplicados.cliente_nit?.trim()) {
-      query = query.ilike('clientes.nit', `%${filtrosAplicados.cliente_nit.trim()}%`)
-    }
+        if (idTexto) query = query.eq('id', idNumero)
+        if (filtrosAplicados.empresa_id) query = query.eq('empresa_id', filtrosAplicados.empresa_id)
+        if (filtrosAplicados.division_id) query = query.eq('division_id', filtrosAplicados.division_id)
+        if (filtrosAplicados.desde) query = query.gte('fecha', filtrosAplicados.desde)
+        if (filtrosAplicados.hasta) query = query.lte('fecha', filtrosAplicados.hasta)
 
-    const { data, error } = await query
+        if (filtrosAplicados.cliente_nombre) {
+          query = query.ilike('clientes.nombre', `%${filtrosAplicados.cliente_nombre}%`)
+        }
 
-    if (error) {
-      console.error('Error cargando ventas', error)
-      setVentas([])
-      setDetalles({})
-      setDetallesOriginal({})
+        if (filtrosAplicados.cliente_nit) {
+          query = query.ilike('clientes.nit', `%${filtrosAplicados.cliente_nit}%`)
+        }
+
+        return query
+      }
+
+      const ventasRows: any[] = []
+      const pageSize = 1000
+
+      for (let from = 0; from < 20000; from += pageSize) {
+        const { data, error } = await construirQueryVentas().range(from, from + pageSize - 1)
+
+        if (error) {
+          throw new Error(`Error cargando ventas: ${error.message}`)
+        }
+
+        const pageRows = (data || []) as any[]
+        ventasRows.push(...pageRows)
+
+        if (pageRows.length < pageSize || idTexto) break
+      }
+
+      const cabList: VentaCab[] = ventasRows.map((r: any) => ({
+        id: r.id,
+        fecha: r.fecha,
+        cantidad: r.cantidad,
+        observaciones: r.observaciones,
+        empresa_id: r.empresa_id,
+        division_id: r.division_id,
+        cliente_id: r.cliente_id,
+        empresas: r.empresas ?? null,
+        divisiones: r.divisiones ?? null,
+        clientes: r.clientes ?? null,
+      }))
+
+      const ids = cabList.map((v) => v.id)
+
+      if (ids.length === 0) {
+        setVentas([])
+        setDetalles({})
+        setDetallesOriginal({})
+        setVentasConPendientes({})
+
+        if (idTexto) {
+          const { data: detExiste, error: detExisteErr } = await supabase
+            .from(DETALLE_VENTA_TABLE)
+            .select('id, venta_id')
+            .eq('venta_id', idNumero)
+            .limit(1)
+
+          if (detExisteErr) {
+            setMensaje(`No se encontró la venta #${idTexto}. Además no se pudo revisar detalle_venta: ${detExisteErr.message}`)
+          } else if ((detExiste || []).length > 0) {
+            setMensaje(`Hay detalles con venta_id #${idTexto}, pero no existe cabecera en ventas. Revisa si la cabecera fue eliminada o si hay un problema de integridad.`)
+          } else {
+            setMensaje(`No se encontró la venta #${idTexto} en la tabla ventas.`)
+          }
+        }
+
+        return
+      }
+
+      const detAll: any[] = []
+      const chunkSize = 200
+
+      for (let i = 0; i < ids.length; i += chunkSize) {
+        const chunk = ids.slice(i, i + chunkSize)
+
+        for (let from = 0; from < 20000; from += pageSize) {
+          const { data, error } = await supabase
+            .from(DETALLE_VENTA_TABLE)
+            .select(
+              `
+              id, venta_id, producto_id, concepto, cantidad,
+              precio_unitario, importe, forma_pago_id, documento,
+              productos ( id, nombre, sku, unidad, control_inventario )
+            `
+            )
+            .in('venta_id', chunk)
+            .order('id', { ascending: true })
+            .range(from, from + pageSize - 1)
+
+          if (error) {
+            throw new Error(`La venta se encontró, pero no se pudieron cargar sus detalles: ${error.message}`)
+          }
+
+          const pageRows = (data || []) as any[]
+          detAll.push(...pageRows)
+
+          if (pageRows.length < pageSize) break
+        }
+      }
+
+      const grouped: Record<number, Detalle[]> = {}
+
+      for (const row of detAll) {
+        const d = row as unknown as Detalle
+        const imp = d.importe ?? calcImporte(d.cantidad, d.precio_unitario)
+
+        ;(grouped[d.venta_id] ||= []).push({
+          ...d,
+          importe: imp,
+          productos: d.productos ?? null,
+        })
+      }
+
+      setDetalles(grouped)
+      setDetallesOriginal(cloneDetalles(grouped))
       setVentasConPendientes({})
-      return
-    }
 
-    const cabList: VentaCab[] = ((data ?? []) as any[]).map((r: any) => ({
-      id: r.id,
-      fecha: r.fecha,
-      cantidad: r.cantidad,
-      observaciones: r.observaciones,
-      empresa_id: r.empresa_id,
-      division_id: r.division_id,
-      cliente_id: r.cliente_id,
-      empresas: r.empresas ?? null,
-      divisiones: r.divisiones ?? null,
-      clientes: r.clientes ?? null,
-    }))
-
-    const ids = cabList.map((v) => v.id)
-
-    if (ids.length === 0) {
-      setVentas([])
-      setDetalles({})
-      setDetallesOriginal({})
-      setVentasConPendientes({})
-      return
-    }
-
-    const { data: detAll, error: detErr } = await supabase
-      .from(DETALLE_VENTA_TABLE)
-      .select(
-        `
-        id, venta_id, producto_id, concepto, cantidad,
-        precio_unitario, importe, forma_pago_id, documento,
-        productos ( id, nombre, sku, unidad, control_inventario )
-      `
+      const filtradas = cabList.filter((v) =>
+        idTexto ? true : mostrarIncompletas ? true : (grouped[v.id] ?? []).length > 0
       )
-      .in('venta_id', ids)
-      .order('id', { ascending: true })
 
-    if (detErr) {
-      console.error('Error cargando detalles', detErr)
+      setVentas(filtradas)
+
+      if (idTexto && cabList.length > 0 && (grouped[cabList[0].id] ?? []).length === 0) {
+        setMensaje(`La venta #${idTexto} sí existe, pero no tiene detalles cargados. Se muestra de todos modos para poder revisarla.`)
+      } else if (!idTexto && cabList.length !== filtradas.length) {
+        setMensaje(
+          `Se ocultaron ${cabList.length - filtradas.length} ventas sin detalle. Activa “Mostrar ventas sin detalle” si querés revisarlas.`
+        )
+      }
+    } catch (error) {
+      console.error(error)
+      setVentas([])
       setDetalles({})
       setDetallesOriginal({})
-      setVentas(cabList)
       setVentasConPendientes({})
-      return
+      setMensaje(error instanceof Error ? error.message : 'Error cargando ventas.')
+    } finally {
+      setCargando(false)
     }
-
-    const grouped: Record<number, Detalle[]> = {}
-
-    for (const row of (detAll ?? []) as any[]) {
-      const d = row as unknown as Detalle
-      const imp = d.importe ?? calcImporte(d.cantidad, d.precio_unitario)
-
-      ;(grouped[d.venta_id] ||= []).push({
-        ...d,
-        importe: imp,
-        productos: d.productos ?? null,
-      })
-    }
-
-    setDetalles(grouped)
-    setDetallesOriginal(cloneDetalles(grouped))
-    setVentasConPendientes({})
-
-    const filtradas = cabList.filter((v) =>
-      mostrarIncompletas ? true : (grouped[v.id] ?? []).length > 0
-    )
-
-    setVentas(filtradas)
   }, [filtros, mostrarIncompletas])
 
   useEffect(() => {
     cargarDatos()
-  }, [cargarDatos])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   /* utils */
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
@@ -673,6 +746,12 @@ export default function VerVentas() {
 
       <h1 className="text-2xl font-bold mb-4">🧾 Ventas Registradas</h1>
 
+      {mensaje ? (
+        <div className="mb-4 border rounded p-3 text-sm bg-yellow-50 text-yellow-900">
+          {mensaje}
+        </div>
+      ) : null}
+
       <div className="grid grid-cols-1 md:grid-cols-8 gap-4 mb-4">
         <select
           name="empresa_id"
@@ -747,8 +826,12 @@ export default function VerVentas() {
       </div>
 
       <div className="mb-6 flex items-center gap-4">
-        <button onClick={cargarDatos} className="bg-blue-600 text-white px-4 py-2 rounded">
-          🔍 Aplicar Filtros
+        <button
+          onClick={cargarDatos}
+          disabled={cargando}
+          className="bg-blue-600 disabled:bg-blue-400 text-white px-4 py-2 rounded"
+        >
+          {cargando ? 'Cargando...' : '🔍 Aplicar Filtros'}
         </button>
 
         <label className="inline-flex items-center gap-2 text-sm">
