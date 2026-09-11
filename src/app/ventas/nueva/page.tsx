@@ -18,7 +18,6 @@ type Producto = {
   control_inventario: boolean
 }
 
-const DETALLE_VENTA_TABLE = 'detalle_venta'
 
 type Linea = {
   producto_id?: string
@@ -434,26 +433,6 @@ export default function NuevaVenta() {
         }
       }
 
-      const cabecera = {
-        empresa_id: form.empresa_id ? Number(form.empresa_id) : null,
-        division_id: form.division_id ? Number(form.division_id) : null,
-        cliente_id: Number(form.cliente_id),
-        fecha: form.fecha,
-        observaciones: form.observaciones || null,
-        cantidad: totalVenta,
-        user_id,
-      }
-
-      const { data: venta, error: vErr } = await supabase
-        .from('ventas')
-        .insert([cabecera])
-        .select('id')
-        .single()
-
-      if (vErr) throw new Error(`cabecera: ${vErr.message}`)
-
-      const ventaId = Number((venta as { id: number }).id)
-
       const formaPagoDetalle =
         saldo > 0
           ? Number(metodoPendiente?.id)
@@ -463,7 +442,6 @@ export default function NuevaVenta() {
         const importe = round2(d.cantidad * d.precio_unitario)
 
         return {
-          venta_id: ventaId,
           producto_id: d.producto_id ? Number(d.producto_id) : null,
           concepto: d.concepto.trim(),
           cantidad: d.cantidad,
@@ -474,28 +452,41 @@ export default function NuevaVenta() {
         }
       })
 
-      const { error: detErr } = await supabase.from(DETALLE_VENTA_TABLE).insert(payload)
-      if (detErr) throw new Error(`detalle: ${detErr.message || detErr.code || 'error'}`)
-
-      if (pagoInicial > 0) {
-        const { error: pagoErr } = await supabase.from('pagos_venta').insert({
-          cliente_id: Number(form.cliente_id),
-          venta_id: ventaId,
-          fecha: form.fecha,
-          monto: pagoInicial,
-          metodo_pago_id: Number(metodoPagoInicialId),
-          documento: documentoPagoInicial || null,
-          observaciones:
-            observacionesPagoInicial ||
-            `Pago inicial registrado al crear la venta #${ventaId}`,
-          user_id,
+      const { data: ventaCreada, error: rpcErr } = await supabase
+        .rpc('crear_venta_con_detalles', {
+          p_empresa_id: form.empresa_id ? Number(form.empresa_id) : null,
+          p_division_id: form.division_id ? Number(form.division_id) : null,
+          p_cliente_id: Number(form.cliente_id),
+          p_fecha: form.fecha,
+          p_observaciones: form.observaciones || null,
+          p_total: totalVenta,
+          p_user_id: user_id,
+          p_detalles: payload,
+          p_pago_inicial: pagoInicial,
+          p_metodo_pago_inicial_id: pagoInicial > 0 ? Number(metodoPagoInicialId) : null,
+          p_documento_pago_inicial: documentoPagoInicial || null,
+          p_observaciones_pago_inicial:
+            observacionesPagoInicial || null,
         })
+        .single()
 
-        if (pagoErr) {
-          throw new Error(
-            `La venta fue creada, pero falló el pago inicial: ${pagoErr.message}`
-          )
-        }
+      if (rpcErr) {
+        throw new Error(`No se guardó la venta. No se creó cabecera vacía. Detalle: ${rpcErr.message}`)
+      }
+
+      const ventaResultado = ventaCreada as {
+        venta_id: number
+        detalles_insertados: number
+        pago_id: number | null
+      }
+
+      const ventaId = Number(ventaResultado.venta_id)
+      const detallesInsertados = Number(ventaResultado.detalles_insertados)
+
+      if (!ventaId || detallesInsertados !== payload.length) {
+        throw new Error(
+          `La venta no fue confirmada correctamente. Detalles esperados: ${payload.length}, detalles guardados: ${detallesInsertados}.`
+        )
       }
 
       const empresaNombre = empresas.find((x) => String(x.id) === form.empresa_id)?.nombre || 'N/A'
