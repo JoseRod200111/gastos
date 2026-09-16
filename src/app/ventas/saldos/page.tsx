@@ -132,6 +132,13 @@ export default function SaldosPorClientePage() {
   const [loading, setLoading] = useState(false)
   const [generando, setGenerando] = useState(false)
 
+  const selectedCliente = useMemo(
+    () => clientes.find((c) => Number(c.id) === Number(selectedClienteId)) || null,
+    [clientes, selectedClienteId]
+  )
+
+  const selectedClienteNombre = selectedCliente?.nombre || 'Cliente seleccionado'
+
   const totals = useMemo(() => {
     const tCredito = rows.reduce((s, r) => s + toNum(r.credito), 0)
     const tAbonado = rows.reduce((s, r) => s + toNum(r.abonado), 0)
@@ -461,12 +468,23 @@ export default function SaldosPorClientePage() {
         </button>
 
         {selectedClienteId && (
-          <button
-            onClick={() => setSelectedClienteId('')}
-            className="bg-slate-600 hover:bg-slate-700 text-white px-4 py-2 rounded text-sm"
-          >
-            Limpiar
-          </button>
+          <>
+            <Link
+              href={`/ventas/saldos/abonos?cliente_id=${selectedClienteId}&nombre=${encodeURIComponent(
+                selectedClienteNombre
+              )}`}
+              className="inline-block bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded text-sm"
+            >
+              Ver abonos
+            </Link>
+
+            <button
+              onClick={() => setSelectedClienteId('')}
+              className="bg-slate-600 hover:bg-slate-700 text-white px-4 py-2 rounded text-sm"
+            >
+              Limpiar
+            </button>
+          </>
         )}
 
         <Link
@@ -483,6 +501,12 @@ export default function SaldosPorClientePage() {
         <div>
           <b>Saldo pendiente: {fmtQ(totals.tSaldo)}</b>
         </div>
+
+        {selectedClienteId && totals.tSaldo <= 0 && (
+          <div className="mt-3 border-t pt-3 text-gray-700">
+            El cliente seleccionado está al día o no tiene deuda pendiente en esta pantalla. El historial de abonos se consulta por separado con el botón <b>Ver abonos</b>.
+          </div>
+        )}
       </div>
 
       <div className="border rounded bg-white overflow-auto">
@@ -508,7 +532,9 @@ export default function SaldosPorClientePage() {
             ) : rows.length === 0 ? (
               <tr>
                 <td className="p-4 text-gray-500" colSpan={6}>
-                  No hay clientes con saldo pendiente.
+                  {selectedClienteId
+                    ? 'Este cliente no tiene saldo pendiente. Puedes usar el botón Ver abonos para revisar su historial de pagos.'
+                    : 'No hay clientes con saldo pendiente.'}
                 </td>
               </tr>
             ) : (
