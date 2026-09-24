@@ -52,6 +52,13 @@ export default function RrhhMenuPage() {
             >
               Planilla quincenal
             </Link>
+
+            <Link
+              href="/rrhh/planilla/fichas"
+              className="block bg-indigo-700 hover:bg-indigo-800 text-white text-center py-3 rounded"
+            >
+              Buscar fichas de planilla
+            </Link>
           </div>
         </section>
 
