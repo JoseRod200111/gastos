@@ -142,6 +142,23 @@ const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100
 
 const money = (value: string | number | null | undefined) => `Q${toNum(value).toFixed(2)}`
 
+const safeFilePart = (value: string | number | null | undefined) => {
+  const cleaned = String(value ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-zA-Z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+
+  return cleaned || 'sin_nombre'
+}
+
+const fichaPlanillaFileName = (row: PlanillaRow, planillaId: number | null, anio: string, mes: string, quincena: string) => {
+  const idParte = planillaId ? `ID${planillaId}` : 'ID_sin_guardar'
+  const periodoParte = `${anio}_${String(mes).padStart(2, '0')}_Q${quincena}`
+
+  return `ficha_planilla_${idParte}_${safeFilePart(row.nombre)}_${safeFilePart(row.codigo)}_${periodoParte}.pdf`
+}
+
 const todayISO = () => {
   const d = new Date()
   const month = String(d.getMonth() + 1).padStart(2, '0')
@@ -292,6 +309,7 @@ export default function RrhhPlanillaPage() {
 
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [savingFichaEmpleadoId, setSavingFichaEmpleadoId] = useState<number | null>(null)
   const [mensaje, setMensaje] = useState('')
   const [busquedaEmpleado, setBusquedaEmpleado] = useState('')
   const [estadoFiltro, setEstadoFiltro] = useState<'TODOS' | 'PENDIENTE' | 'PAGADO' | 'ANULADO'>('TODOS')
@@ -799,6 +817,103 @@ export default function RrhhPlanillaPage() {
     return detalles.filter((d) => toNum(d.monto) !== 0)
   }
 
+  const payloadPlanillaFila = (
+    row: PlanillaRow,
+    p: Periodo,
+    userId: string | null,
+    userEmail: string | null
+  ) => ({
+    periodo_id: p.id,
+    empleado_id: row.empleado_id,
+    salario_base: round2(toNum(row.salario_base)),
+    salario_diario: round2(row.salario_diario),
+    hora_normal: round2(row.hora_normal),
+    dias_trabajados: round2(toNum(row.dias_trabajados)),
+    horas_extra: round2(toNum(row.horas_extra)),
+    valor_hora_extra: round2(row.valor_hora_extra),
+    salario_ordinario: round2(row.salario_ordinario),
+    monto_horas_extra: round2(row.monto_horas_extra),
+    bono_produccion_diario: round2(toNum(row.bono_produccion_diario)),
+    bono_produccion_total: round2(row.bono_produccion_total),
+    bonificacion_ley: round2(toNum(row.bonificacion_ley)),
+    otros_bonos: round2(toNum(row.otros_bonos)),
+    igss: round2(toNum(row.igss)),
+    irtra: round2(toNum(row.irtra)),
+    anticipos: round2(toNum(row.anticipos)),
+    prestamos: round2(toNum(row.prestamos)),
+    descuentos_ventas: round2(toNum(row.descuentos_ventas)),
+    descuentos_manual: round2(toNum(row.descuentos_manual)),
+    total_devengado: round2(row.total_devengado),
+    total_descuentos: round2(row.total_descuentos),
+    liquido_pagar: round2(row.liquido_pagar),
+    estado: row.estado,
+    fecha_pago: row.estado === 'PAGADO' ? row.fecha_pago || todayISO() : null,
+    observaciones: row.observaciones || null,
+    user_id: userId,
+    updated_at: new Date().toISOString(),
+    editado_por: userEmail,
+    editado_en: new Date().toISOString(),
+  })
+
+  const guardarDetallePlanillaFila = async (row: PlanillaRow, planillaId: number) => {
+    await supabase.from('rrhh_planilla_detalle').delete().eq('planilla_empleado_id', planillaId)
+    await supabase.from('rrhh_planilla_area_costo').delete().eq('planilla_empleado_id', planillaId)
+
+    const detalles = detalleParaFila(row).map((d) => ({
+      planilla_empleado_id: planillaId,
+      tipo: d.tipo,
+      concepto: d.concepto,
+      monto: round2(toNum(d.monto)),
+    }))
+
+    if (detalles.length > 0) {
+      const { error: detErr } = await supabase.from('rrhh_planilla_detalle').insert(detalles)
+      if (detErr) throw new Error(`Error guardando detalle: ${detErr.message}`)
+    }
+
+    const dist = distribucionesPorEmpleado.get(row.empleado_id) || []
+    const costos = dist
+      .filter((d) => toNum(d.porcentaje) > 0)
+      .map((d) => ({
+        planilla_empleado_id: planillaId,
+        area_id: d.area_id,
+        porcentaje: round2(toNum(d.porcentaje)),
+        monto: round2(row.liquido_pagar * (toNum(d.porcentaje) / 100)),
+      }))
+
+    if (costos.length > 0) {
+      const { error: costErr } = await supabase.from('rrhh_planilla_area_costo').insert(costos)
+      if (costErr) throw new Error(`Error guardando distribución: ${costErr.message}`)
+    }
+  }
+
+  const guardarFilaParaFicha = async (row: PlanillaRow) => {
+    const p = periodo || (await obtenerOCrearPeriodo())
+    const { data: userData } = await supabase.auth.getUser()
+    const userId = userData?.user?.id || null
+    const userEmail = userData?.user?.email || null
+    const filaCalculada = calcularFila(row, parametros)
+
+    const { data: saved, error } = await supabase
+      .from('rrhh_planilla_empleado')
+      .upsert([payloadPlanillaFila(filaCalculada, p, userId, userEmail)], { onConflict: 'periodo_id,empleado_id' })
+      .select('id,empleado_id')
+      .single()
+
+    if (error) throw new Error(`No se pudo guardar la ficha antes de descargar: ${error.message}`)
+
+    const planillaId = Number((saved as { id: number }).id)
+    if (!planillaId) throw new Error('No se pudo obtener el ID de ficha de planilla guardada.')
+
+    await guardarDetallePlanillaFila(filaCalculada, planillaId)
+
+    const filaGuardada = { ...filaCalculada, id: planillaId }
+
+    setFilas((prev) => prev.map((item) => (item.empleado_id === row.empleado_id ? filaGuardada : item)))
+    setMensaje(`Ficha ID ${planillaId} guardada antes de descargar PDF: ${row.codigo} - ${row.nombre}.`)
+
+    return filaGuardada
+  }
 
   const crearDescuentosVentasDirectos = async (p: Periodo, userId: string | null) => {
     const filasPagadasConVentas = filas.filter(
@@ -919,6 +1034,249 @@ export default function RrhhPlanillaPage() {
       }
     }
   }
+
+  const crearDescuentosVentasDirectosFila = async (
+    p: Periodo,
+    row: PlanillaRow,
+    userId: string | null
+  ) => {
+    if (row.estado !== 'PAGADO') return
+
+    const montoEnPlanilla = round2(toNum(row.descuentos_ventas))
+    if (montoEnPlanilla <= 0) return
+
+    if (!row.cliente_id) {
+      throw new Error(`El empleado ${row.codigo} - ${row.nombre} tiene descuento de ventas pero no tiene cliente vinculado.`)
+    }
+
+    const { data: cuotasExistentes, error: cuotasError } = await supabase
+      .from('rrhh_descuentos_ventas_cuotas')
+      .select('monto,estado,rrhh_descuentos_ventas!inner(empleado_id,estado,modulo)')
+      .eq('periodo_id', p.id)
+      .eq('rrhh_descuentos_ventas.empleado_id', row.empleado_id)
+
+    if (cuotasError) throw new Error(`Error revisando descuentos de ventas existentes: ${cuotasError.message}`)
+
+    let montoYaProgramado = 0
+
+    ;((cuotasExistentes || []) as unknown[]).forEach((item) => {
+      const cuota = item as {
+        monto?: number
+        estado?: string
+        rrhh_descuentos_ventas?: { empleado_id?: number; estado?: string } | { empleado_id?: number; estado?: string }[]
+      }
+      const descuento = Array.isArray(cuota.rrhh_descuentos_ventas)
+        ? cuota.rrhh_descuentos_ventas[0]
+        : cuota.rrhh_descuentos_ventas
+
+      if (!descuento || descuento.estado === 'ANULADO' || cuota.estado === 'ANULADA') return
+      montoYaProgramado = round2(montoYaProgramado + toNum(cuota.monto))
+    })
+
+    const faltantePorProgramar = round2(montoEnPlanilla - montoYaProgramado)
+    if (faltantePorProgramar <= 0) return
+
+    const crearDescuento = async (
+      modulo: 'VENTAS' | 'GRANJA_CERDOS',
+      monto: number
+    ) => {
+      if (monto <= 0) return
+
+      const { data: descData, error: descError } = await supabase
+        .from('rrhh_descuentos_ventas')
+        .insert({
+          empleado_id: row.empleado_id,
+          cliente_id: row.cliente_id,
+          periodo_id: p.id,
+          modulo,
+          fecha: p.fecha_fin,
+          monto_total: round2(monto),
+          numero_cuotas: 1,
+          monto_cuota: round2(monto),
+          estado: 'PENDIENTE',
+          observaciones: `DESCUENTO DIRECTO DESDE FICHA DE PLANILLA ${p.fecha_inicio} a ${p.fecha_fin}.`,
+          user_id: userId,
+        })
+        .select('id')
+        .single()
+
+      if (descError) throw new Error(`Error creando descuento directo de ventas: ${descError.message}`)
+
+      const descuentoId = Number(descData?.id || 0)
+      if (!descuentoId) throw new Error('No se pudo obtener el ID del descuento directo.')
+
+      const { error: cuotaError } = await supabase
+        .from('rrhh_descuentos_ventas_cuotas')
+        .insert({
+          descuento_id: descuentoId,
+          numero_cuota: 1,
+          periodo_id: p.id,
+          monto: round2(monto),
+          estado: 'PENDIENTE',
+        })
+
+      if (cuotaError) throw new Error(`Error creando cuota directa de ventas: ${cuotaError.message}`)
+    }
+
+    let restante = faltantePorProgramar
+    const montoVentasRegulares = round2(Math.min(restante, Math.max(row.saldo_ventas, 0)))
+    restante = round2(restante - montoVentasRegulares)
+    const montoVentasGranja = round2(Math.min(restante, Math.max(row.saldo_granja, 0)))
+    restante = round2(restante - montoVentasGranja)
+
+    if (montoVentasRegulares > 0) await crearDescuento('VENTAS', montoVentasRegulares)
+    if (montoVentasGranja > 0) await crearDescuento('GRANJA_CERDOS', montoVentasGranja)
+
+    if (restante > 0) {
+      throw new Error(
+        `El descuento de ventas de ${row.codigo} - ${row.nombre} excede la deuda actual por ${money(restante)}. `
+        + `Deuda actual: ventas ${money(row.saldo_ventas)}, granja ${money(row.saldo_granja)}.`
+      )
+    }
+  }
+
+  const actualizarEstadoPeriodoDesdeFilas = async (p: Periodo, rowActualizada?: PlanillaRow) => {
+    const filasEstado = rowActualizada
+      ? filas.map((item) => (item.empleado_id === rowActualizada.empleado_id ? rowActualizada : item))
+      : filas
+
+    const hayPendientes = filasEstado.some((item) => item.estado === 'PENDIENTE')
+    const hayPagadas = filasEstado.some((item) => item.estado === 'PAGADO')
+    const nuevoEstadoPeriodo = hayPendientes ? 'ABIERTO' : hayPagadas ? 'PAGADO' : 'ANULADO'
+
+    const { error: periodoError } = await supabase
+      .from('rrhh_periodos_planilla')
+      .update({
+        estado: nuevoEstadoPeriodo,
+        pagado_en: nuevoEstadoPeriodo === 'PAGADO' ? new Date().toISOString() : null,
+      })
+      .eq('id', p.id)
+
+    if (periodoError) throw new Error(`Error actualizando período: ${periodoError.message}`)
+  }
+
+  const aplicarMovimientosPagadosFila = async (p: Periodo, row: PlanillaRow) => {
+    if (row.estado !== 'PAGADO') {
+      await actualizarEstadoPeriodoDesdeFilas(p, row)
+      return
+    }
+
+    if (toNum(row.anticipos) > 0) {
+      const { error } = await supabase
+        .from('rrhh_anticipos')
+        .update({ estado: 'APLICADO', periodo_id: p.id })
+        .eq('empleado_id', row.empleado_id)
+        .eq('estado', 'PENDIENTE')
+        .lte('fecha', p.fecha_fin)
+
+      if (error) throw new Error(`Error aplicando anticipos: ${error.message}`)
+    }
+
+    if (toNum(row.prestamos) > 0) {
+      const { data: cuotasData, error: cuotasError } = await supabase
+        .from('rrhh_prestamo_cuotas')
+        .select('id,prestamo_id,rrhh_prestamos!inner(empleado_id)')
+        .eq('estado', 'PENDIENTE')
+        .eq('periodo_id', p.id)
+        .eq('rrhh_prestamos.empleado_id', row.empleado_id)
+
+      if (cuotasError) throw new Error(`Error buscando cuotas de préstamo: ${cuotasError.message}`)
+
+      const cuotaIds: number[] = []
+      const prestamoIds = new Set<number>()
+
+      ;((cuotasData || []) as unknown[]).forEach((item) => {
+        const cuota = item as { id?: number; prestamo_id?: number }
+        const cuotaId = Number(cuota.id || 0)
+        const prestamoId = Number(cuota.prestamo_id || 0)
+
+        if (cuotaId > 0) cuotaIds.push(cuotaId)
+        if (prestamoId > 0) prestamoIds.add(prestamoId)
+      })
+
+      if (cuotaIds.length > 0) {
+        const { error } = await supabase
+          .from('rrhh_prestamo_cuotas')
+          .update({ estado: 'APLICADA' })
+          .in('id', cuotaIds)
+
+        if (error) throw new Error(`Error aplicando cuotas de préstamo: ${error.message}`)
+      }
+
+      for (const prestamoId of Array.from(prestamoIds)) {
+        const { count, error: countError } = await supabase
+          .from('rrhh_prestamo_cuotas')
+          .select('id', { count: 'exact', head: true })
+          .eq('prestamo_id', prestamoId)
+          .eq('estado', 'PENDIENTE')
+
+        if (countError) throw new Error(`Error revisando préstamo: ${countError.message}`)
+
+        if ((count || 0) === 0) {
+          const { error } = await supabase
+            .from('rrhh_prestamos')
+            .update({ estado: 'PAGADO' })
+            .eq('id', prestamoId)
+
+          if (error) throw new Error(`Error cerrando préstamo: ${error.message}`)
+        }
+      }
+    }
+
+    if (toNum(row.descuentos_ventas) > 0) {
+      const { data: cuotasData, error: cuotasError } = await supabase
+        .from('rrhh_descuentos_ventas_cuotas')
+        .select('id,descuento_id,rrhh_descuentos_ventas!inner(empleado_id)')
+        .eq('estado', 'PENDIENTE')
+        .eq('periodo_id', p.id)
+        .eq('rrhh_descuentos_ventas.empleado_id', row.empleado_id)
+
+      if (cuotasError) throw new Error(`Error buscando cuotas de ventas: ${cuotasError.message}`)
+
+      const cuotaIds: number[] = []
+      const descuentoIds = new Set<number>()
+
+      ;((cuotasData || []) as unknown[]).forEach((item) => {
+        const cuota = item as { id?: number; descuento_id?: number }
+        const cuotaId = Number(cuota.id || 0)
+        const descuentoId = Number(cuota.descuento_id || 0)
+
+        if (cuotaId > 0) cuotaIds.push(cuotaId)
+        if (descuentoId > 0) descuentoIds.add(descuentoId)
+      })
+
+      if (cuotaIds.length > 0) {
+        const { error } = await supabase
+          .from('rrhh_descuentos_ventas_cuotas')
+          .update({ estado: 'APLICADA' })
+          .in('id', cuotaIds)
+
+        if (error) throw new Error(`Error aplicando cuotas de ventas: ${error.message}`)
+      }
+
+      for (const descuentoId of Array.from(descuentoIds)) {
+        const { count, error: countError } = await supabase
+          .from('rrhh_descuentos_ventas_cuotas')
+          .select('id', { count: 'exact', head: true })
+          .eq('descuento_id', descuentoId)
+          .eq('estado', 'PENDIENTE')
+
+        if (countError) throw new Error(`Error revisando descuento de ventas: ${countError.message}`)
+
+        if ((count || 0) === 0) {
+          const { error } = await supabase
+            .from('rrhh_descuentos_ventas')
+            .update({ estado: 'APLICADO' })
+            .eq('id', descuentoId)
+
+          if (error) throw new Error(`Error cerrando descuento de ventas: ${error.message}`)
+        }
+      }
+    }
+
+    await actualizarEstadoPeriodoDesdeFilas(p, row)
+  }
+
 
   const aplicarMovimientosPagados = async (p: Periodo) => {
     const filasPagadas = filas.filter((row) => row.estado === 'PAGADO')
@@ -1079,38 +1437,7 @@ export default function RrhhPlanillaPage() {
       const userId = userData?.user?.id || null
       const userEmail = userData?.user?.email || null
 
-      const payload = filas.map((row) => ({
-        periodo_id: p.id,
-        empleado_id: row.empleado_id,
-        salario_base: round2(toNum(row.salario_base)),
-        salario_diario: round2(row.salario_diario),
-        hora_normal: round2(row.hora_normal),
-        dias_trabajados: round2(toNum(row.dias_trabajados)),
-        horas_extra: round2(toNum(row.horas_extra)),
-        valor_hora_extra: round2(row.valor_hora_extra),
-        salario_ordinario: round2(row.salario_ordinario),
-        monto_horas_extra: round2(row.monto_horas_extra),
-        bono_produccion_diario: round2(toNum(row.bono_produccion_diario)),
-        bono_produccion_total: round2(row.bono_produccion_total),
-        bonificacion_ley: round2(toNum(row.bonificacion_ley)),
-        otros_bonos: round2(toNum(row.otros_bonos)),
-        igss: round2(toNum(row.igss)),
-        irtra: round2(toNum(row.irtra)),
-        anticipos: round2(toNum(row.anticipos)),
-        prestamos: round2(toNum(row.prestamos)),
-        descuentos_ventas: round2(toNum(row.descuentos_ventas)),
-        descuentos_manual: round2(toNum(row.descuentos_manual)),
-        total_devengado: round2(row.total_devengado),
-        total_descuentos: round2(row.total_descuentos),
-        liquido_pagar: round2(row.liquido_pagar),
-        estado: row.estado,
-        fecha_pago: row.estado === 'PAGADO' ? row.fecha_pago || todayISO() : null,
-        observaciones: row.observaciones || null,
-        user_id: userId,
-        updated_at: new Date().toISOString(),
-        editado_por: userEmail,
-        editado_en: new Date().toISOString(),
-      }))
+      const payload = filas.map((row) => payloadPlanillaFila(row, p, userId, userEmail))
 
       const { data: saved, error } = await supabase
         .from('rrhh_planilla_empleado')
@@ -1126,35 +1453,7 @@ export default function RrhhPlanillaPage() {
         const planillaId = idByEmpleado.get(row.empleado_id) || row.id
         if (!planillaId) continue
 
-        await supabase.from('rrhh_planilla_detalle').delete().eq('planilla_empleado_id', planillaId)
-        await supabase.from('rrhh_planilla_area_costo').delete().eq('planilla_empleado_id', planillaId)
-
-        const detalles = detalleParaFila(row).map((d) => ({
-          planilla_empleado_id: planillaId,
-          tipo: d.tipo,
-          concepto: d.concepto,
-          monto: round2(toNum(d.monto)),
-        }))
-
-        if (detalles.length > 0) {
-          const { error: detErr } = await supabase.from('rrhh_planilla_detalle').insert(detalles)
-          if (detErr) throw new Error(`Error guardando detalle: ${detErr.message}`)
-        }
-
-        const dist = distribucionesPorEmpleado.get(row.empleado_id) || []
-        const costos = dist
-          .filter((d) => toNum(d.porcentaje) > 0)
-          .map((d) => ({
-            planilla_empleado_id: planillaId,
-            area_id: d.area_id,
-            porcentaje: round2(toNum(d.porcentaje)),
-            monto: round2(row.liquido_pagar * (toNum(d.porcentaje) / 100)),
-          }))
-
-        if (costos.length > 0) {
-          const { error: costErr } = await supabase.from('rrhh_planilla_area_costo').insert(costos)
-          if (costErr) throw new Error(`Error guardando distribución: ${costErr.message}`)
-        }
+        await guardarDetallePlanillaFila(row, planillaId)
       }
 
       await crearDescuentosVentasDirectos(p, userId)
@@ -1174,28 +1473,56 @@ export default function RrhhPlanillaPage() {
   }
 
   const imprimirFicha = async (row: PlanillaRow) => {
-    const doc = new jsPDF('p', 'mm', 'letter') as AutoTableDoc
-    await addHeader(doc, 'FICHA DE PAGO QUINCENAL')
+    if (savingFichaEmpleadoId !== null || saving) return
 
-    doc.setFontSize(10)
-    doc.setFont('helvetica', 'bold')
-    doc.text(`${row.codigo} - ${row.nombre}`, 14, 38)
-    doc.setFont('helvetica', 'normal')
-    doc.text(`Período: ${fechas.etiqueta}`, 14, 45)
-    doc.text(`Estado: ${row.estado}`, 105, 45)
-    doc.text(`Fecha de pago: ${row.fecha_pago || 'Pendiente'}`, 150, 45)
+    setSavingFichaEmpleadoId(row.empleado_id)
+
+    try {
+      const rowGuardada = await guardarFilaParaFicha(row)
+      const fichaId = rowGuardada.id
+      const p = periodo || (await obtenerOCrearPeriodo())
+      const { data: userData } = await supabase.auth.getUser()
+      const userId = userData?.user?.id || null
+
+      if (rowGuardada.estado === 'PAGADO') {
+        await crearDescuentosVentasDirectosFila(p, rowGuardada, userId)
+        await aplicarMovimientosPagadosFila(p, rowGuardada)
+        setMensaje(`Ficha ID ${fichaId} guardada, deudas aplicadas y PDF descargado: ${rowGuardada.codigo} - ${rowGuardada.nombre}.`)
+      } else {
+        await aplicarMovimientosPagadosFila(p, rowGuardada)
+        setMensaje(`Ficha ID ${fichaId} guardada y PDF descargado. No se aplicaron deudas porque el estado es ${rowGuardada.estado}.`)
+      }
+
+      const doc = new jsPDF('p', 'mm', 'letter') as AutoTableDoc
+      await addHeader(doc, 'FICHA DE PAGO QUINCENAL')
+
+      doc.setFontSize(10)
+      doc.setFont('helvetica', 'bold')
+      doc.text(`${rowGuardada.codigo} - ${rowGuardada.nombre}`, 14, 38)
+      doc.setFont('helvetica', 'normal')
+      doc.text(`Ficha planilla ID: ${fichaId || 'N/A'}`, 14, 45)
+      doc.text(`Período: ${fechas.etiqueta}`, 14, 52)
+      doc.text(`Estado: ${rowGuardada.estado}`, 105, 52)
+      doc.text(`Fecha de pago: ${rowGuardada.fecha_pago || 'Pendiente'}`, 150, 52)
+      doc.text(
+        rowGuardada.estado === 'PAGADO'
+          ? 'Acción: ficha guardada y deudas aplicadas'
+          : 'Acción: ficha guardada sin aplicar deudas',
+        14,
+        58
+      )
 
     autoTable(doc, {
-      startY: 54,
+      startY: 66,
       head: [['Concepto', 'Cantidad / base', 'Monto']],
       body: [
-        ['Salario base mensual', '', money(row.salario_base)],
-        ['Salario diario', 'Salario / 30', money(row.salario_diario)],
-        ['Días trabajados', row.dias_trabajados, money(row.salario_ordinario)],
-        ['Horas extra', `${row.horas_extra} h x ${money(row.valor_hora_extra)}`, money(row.monto_horas_extra)],
-        ['Bono producción', `${money(row.bono_produccion_diario)} x ${row.dias_trabajados} días`, money(row.bono_produccion_total)],
-        ['Bonificación de ley', '', money(row.bonificacion_ley)],
-        ['Otros bonos', '', money(row.otros_bonos)],
+        ['Salario base mensual', '', money(rowGuardada.salario_base)],
+        ['Salario diario', 'Salario / 30', money(rowGuardada.salario_diario)],
+        ['Días trabajados', rowGuardada.dias_trabajados, money(rowGuardada.salario_ordinario)],
+        ['Horas extra', `${rowGuardada.horas_extra} h x ${money(rowGuardada.valor_hora_extra)}`, money(rowGuardada.monto_horas_extra)],
+        ['Bono producción', `${money(rowGuardada.bono_produccion_diario)} x ${rowGuardada.dias_trabajados} días`, money(rowGuardada.bono_produccion_total)],
+        ['Bonificación de ley', '', money(rowGuardada.bonificacion_ley)],
+        ['Otros bonos', '', money(rowGuardada.otros_bonos)],
       ],
       styles: { fontSize: 8, cellPadding: 2 },
       headStyles: { fillColor: [30, 41, 59] },
@@ -1207,12 +1534,12 @@ export default function RrhhPlanillaPage() {
       startY: afterDev,
       head: [['Descuento', 'Monto']],
       body: [
-        ['IGSS', money(row.igss)],
-        ['IRTRA', money(row.irtra)],
-        ['Anticipos', money(row.anticipos)],
-        ['Préstamos', money(row.prestamos)],
-        ['Ventas descontadas', money(row.descuentos_ventas)],
-        ['Otros descuentos', money(row.descuentos_manual)],
+        ['IGSS', money(rowGuardada.igss)],
+        ['IRTRA', money(rowGuardada.irtra)],
+        ['Anticipos', money(rowGuardada.anticipos)],
+        ['Préstamos', money(rowGuardada.prestamos)],
+        ['Ventas descontadas', money(rowGuardada.descuentos_ventas)],
+        ['Otros descuentos', money(rowGuardada.descuentos_manual)],
       ].filter((r) => toNum(r[1].replace('Q', '')) !== 0),
       styles: { fontSize: 8, cellPadding: 2 },
       headStyles: { fillColor: [80, 80, 80] },
@@ -1223,9 +1550,9 @@ export default function RrhhPlanillaPage() {
     autoTable(doc, {
       startY: afterDisc,
       body: [
-        ['Total devengado', money(row.total_devengado)],
-        ['Total descuentos', money(row.total_descuentos)],
-        ['Líquido a recibir', money(row.liquido_pagar)],
+        ['Total devengado', money(rowGuardada.total_devengado)],
+        ['Total descuentos', money(rowGuardada.total_descuentos)],
+        ['Líquido a recibir', money(rowGuardada.liquido_pagar)],
       ],
       styles: { fontSize: 10, cellPadding: 2 },
       columnStyles: { 0: { fontStyle: 'bold' }, 1: { halign: 'right', fontStyle: 'bold' } },
@@ -1240,12 +1567,18 @@ export default function RrhhPlanillaPage() {
     doc.line(120, yFirma + 18, 190, yFirma + 18)
     doc.text('Firma / autorización', 139, yFirma + 24)
 
-    if (row.observaciones) {
+    if (rowGuardada.observaciones) {
       doc.setFontSize(8)
-      doc.text(`Observaciones: ${row.observaciones}`, 14, yFirma + 36, { maxWidth: 180 })
+      doc.text(`Observaciones: ${rowGuardada.observaciones}`, 14, yFirma + 36, { maxWidth: 180 })
     }
 
-    doc.save(`ficha_planilla_${row.codigo}_${anio}_${String(mes).padStart(2, '0')}_Q${quincena}.pdf`)
+    doc.save(fichaPlanillaFileName(rowGuardada, fichaId, anio, mes, quincena))
+    } catch (err) {
+      console.error(err)
+      alert(err instanceof Error ? err.message : 'No se pudo guardar y descargar la ficha.')
+    } finally {
+      setSavingFichaEmpleadoId(null)
+    }
   }
 
   const imprimirReporteGeneral = async () => {
@@ -1479,6 +1812,12 @@ export default function RrhhPlanillaPage() {
         >
           PDF general
         </button>
+        <Link
+          href="/rrhh/planilla/fichas"
+          className="bg-indigo-700 hover:bg-indigo-800 text-white px-4 py-2 rounded text-sm"
+        >
+          Buscar fichas pasadas
+        </Link>
       </div>
 
       <section className="border rounded-lg bg-white overflow-auto">
@@ -1671,10 +2010,15 @@ export default function RrhhPlanillaPage() {
                   <button
                     type="button"
                     onClick={() => imprimirFicha(row)}
-                    className="bg-slate-700 hover:bg-slate-800 text-white rounded px-2 py-1 text-xs mb-1 w-full"
+                    disabled={saving || savingFichaEmpleadoId === row.empleado_id}
+                    className="bg-slate-700 hover:bg-slate-800 disabled:opacity-60 text-white rounded px-2 py-1 text-xs mb-1 w-full"
+                    title="Guarda esta ficha, aplica deudas si está PAGADO y luego descarga el PDF."
                   >
-                    Ficha PDF
+                    {savingFichaEmpleadoId === row.empleado_id ? 'Guardando...' : 'Guardar, aplicar y PDF'}
                   </button>
+                  <div className="text-[10px] text-slate-500 mb-1">
+                    {row.id ? `Ficha ID ${row.id}` : 'Se guardará antes de descargar'}
+                  </div>
                   <textarea
                     className="border rounded px-1 py-1 w-full text-[11px]"
                     placeholder="Observaciones"
