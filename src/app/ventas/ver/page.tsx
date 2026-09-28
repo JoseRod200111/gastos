@@ -396,6 +396,18 @@ export default function VerVentas() {
     }
   }
 
+  const sincronizarPagoDesdeDetalle = async (detalleId: number) => {
+    if (!Number.isFinite(detalleId) || detalleId <= 0) return
+
+    const { error } = await supabase.rpc('ventas_sincronizar_pago_desde_detalle', {
+      p_detalle_id: detalleId,
+    })
+
+    if (error) {
+      console.warn('No se pudo sincronizar pago desde detalle de venta:', error)
+    }
+  }
+
   /* edición CABECERA */
   const handleInputChangeCab = (id: number, field: keyof VentaCab, val: any) => {
     setVentas((prev) =>
@@ -594,6 +606,7 @@ export default function VerVentas() {
       }
 
       await sincronizarMovimientoInventario(detalleGuardado)
+      await sincronizarPagoDesdeDetalle(detalleGuardado.id)
 
       setDetalles((prev) => {
         const copy = { ...prev }
@@ -692,6 +705,7 @@ export default function VerVentas() {
         return
       }
 
+      await sincronizarPagoDesdeDetalle(detId)
       await recalcularTotal(ventaId)
       await cargarDatos()
     } catch (e) {
