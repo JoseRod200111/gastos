@@ -263,31 +263,31 @@ export default function ReportesVentas() {
     }
 
     const baseVentas: BaseVenta[] = norm.map((v) => {
-      const totalVenta = Number(v.cantidad || 0)
       const det = grouped[v.id] || []
+      const totalDetalle = round2(
+        det.reduce((sum, d) => sum + Number(d.importe || 0), 0)
+      )
+      const totalVenta = round2(totalDetalle || Number(v.cantidad || 0))
 
-      let tienePendiente = false
-
-      const creditoOriginal = det.reduce((sum, d) => {
+      const tienePendiente = det.some((d) => {
         const metodo = d.forma_pago?.metodo?.toLowerCase() || ''
         const documento = (d.documento || '').toLowerCase()
         const esPendientePorId =
           metodoPendienteId !== null && d.forma_pago_id === metodoPendienteId
         const esPendientePorTexto = metodo.includes('pendiente') || documento.includes('pend')
 
-        if (esPendientePorId || esPendientePorTexto) tienePendiente = true
-
         return esPendientePorId || esPendientePorTexto
-          ? sum + Number(d.importe || 0)
-          : sum
-      }, 0)
+      })
 
       return {
         venta_id: v.id,
         cliente_id: v.cliente_id,
         fecha: v.fecha,
         totalVenta,
-        creditoOriginal,
+        // Si una venta tiene al menos una línea pendiente, la deuda se calcula
+        // contra el total de la venta, igual que en Saldos por Cliente.
+        // Esto evita duplicar pagos en ventas mixtas: líneas pagadas + línea pendiente.
+        creditoOriginal: tienePendiente ? totalVenta : 0,
         tienePendiente,
       }
     })
@@ -375,17 +375,24 @@ export default function ReportesVentas() {
     const saldosCalc: Record<number, SaldoVenta> = {}
 
     for (const base of baseVentas) {
-      const abonado = pagosPorVenta[base.venta_id] || 0
-      const saldoPendiente = Math.max(0, base.creditoOriginal - abonado)
+      const abonado = round2(pagosPorVenta[base.venta_id] || 0)
 
-      const pagadoInicial = Math.max(0, base.totalVenta - base.creditoOriginal)
-      const pagadoTotal = Math.min(base.totalVenta, pagadoInicial + abonado)
+      if (base.tienePendiente) {
+        const saldoPendiente = Math.max(0, base.creditoOriginal - abonado)
 
-      saldosCalc[base.venta_id] = {
-        credito: round2(base.creditoOriginal),
-        abonado: round2(abonado),
-        pagado: round2(pagadoTotal),
-        saldo: round2(saldoPendiente),
+        saldosCalc[base.venta_id] = {
+          credito: round2(base.creditoOriginal),
+          abonado,
+          pagado: round2(Math.min(base.totalVenta, abonado)),
+          saldo: round2(saldoPendiente),
+        }
+      } else {
+        saldosCalc[base.venta_id] = {
+          credito: 0,
+          abonado,
+          pagado: round2(base.totalVenta),
+          saldo: 0,
+        }
       }
     }
 
