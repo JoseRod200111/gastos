@@ -1162,14 +1162,11 @@ export default function RrhhPlanillaPage() {
     }
 
     if (toNum(row.anticipos) > 0) {
-      const { error } = await supabase
-        .from('rrhh_anticipos')
-        .update({ estado: 'APLICADO', periodo_id: p.id })
-        .eq('empleado_id', row.empleado_id)
-        .eq('estado', 'PENDIENTE')
-        .lte('fecha', p.fecha_fin)
-
-      if (error) throw new Error(`Error aplicando anticipos: ${error.message}`)
+      if (!row.id) throw new Error(`La ficha de ${row.codigo} no tiene ID; no se pueden aplicar anticipos.`)
+      const { error } = await supabase.rpc('rrhh_aplicar_anticipos_ficha', {
+        p_ficha_id: row.id,
+      })
+      if (error) throw new Error(`No se aplicaron anticipos de ${row.codigo}: ${error.message}`)
     }
 
     if (toNum(row.prestamos) > 0) {
@@ -1278,7 +1275,7 @@ export default function RrhhPlanillaPage() {
   }
 
 
-  const aplicarMovimientosPagados = async (p: Periodo) => {
+  const aplicarMovimientosPagados = async (p: Periodo, idByEmpleado: Map<number, number>) => {
     const filasPagadas = filas.filter((row) => row.estado === 'PAGADO')
     const empleadosConAnticipos = filasPagadas
       .filter((row) => toNum(row.anticipos) > 0)
@@ -1293,14 +1290,14 @@ export default function RrhhPlanillaPage() {
       .map((row) => row.empleado_id)
 
     if (empleadosConAnticipos.length > 0) {
-      const { error } = await supabase
-        .from('rrhh_anticipos')
-        .update({ estado: 'APLICADO', periodo_id: p.id })
-        .in('empleado_id', empleadosConAnticipos)
-        .eq('estado', 'PENDIENTE')
-        .lte('fecha', p.fecha_fin)
-
-      if (error) throw new Error(`Error aplicando anticipos: ${error.message}`)
+      for (const empleadoId of empleadosConAnticipos) {
+        const fichaId = idByEmpleado.get(empleadoId)
+        if (!fichaId) throw new Error(`No existe ficha guardada del empleado ${empleadoId}.`)
+        const { error } = await supabase.rpc('rrhh_aplicar_anticipos_ficha', {
+          p_ficha_id: fichaId,
+        })
+        if (error) throw new Error(`Error aplicando anticipos de empleado ${empleadoId}: ${error.message}`)
+      }
     }
 
     if (empleadosConPrestamos.length > 0) {
@@ -1457,7 +1454,7 @@ export default function RrhhPlanillaPage() {
       }
 
       await crearDescuentosVentasDirectos(p, userId)
-      await aplicarMovimientosPagados(p)
+      await aplicarMovimientosPagados(p, idByEmpleado)
 
       setFilas((prev) =>
         prev.map((row) => ({ ...row, id: idByEmpleado.get(row.empleado_id) || row.id }))
