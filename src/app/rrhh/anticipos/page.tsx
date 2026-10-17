@@ -37,6 +37,10 @@ type Anticipo = {
   empleado_codigo: string
   empleado_nombre: string
   periodo_texto: string
+  erogacion_id: number | null
+  abonado: number
+  saldo: number
+  estado_control: string
 }
 
 type FormState = {
@@ -134,7 +138,7 @@ export default function RrhhAnticiposPage() {
   const [anticipos, setAnticipos] = useState<Anticipo[]>([])
   const [form, setForm] = useState<FormState>(emptyForm())
   const [busqueda, setBusqueda] = useState('')
-  const [estadoFiltro, setEstadoFiltro] = useState('PENDIENTE')
+  const [estadoFiltro, setEstadoFiltro] = useState('TODOS')
   const [desde, setDesde] = useState('')
   const [hasta, setHasta] = useState('')
   const [mensaje, setMensaje] = useState('')
@@ -157,9 +161,9 @@ export default function RrhhAnticiposPage() {
   const anticiposFiltrados = useMemo(() => {
     const q = busqueda.trim().toLowerCase()
     return anticipos.filter((a) => {
-      const texto = `${a.empleado_codigo} ${a.empleado_nombre} ${a.observaciones || ''}`.toLowerCase()
+      const texto = `${a.empleado_codigo} ${a.empleado_nombre} ${a.id} ${a.erogacion_id || ''} ${a.estado_control} ${a.observaciones || ''}`.toLowerCase()
       if (q && !texto.includes(q)) return false
-      if (estadoFiltro !== 'TODOS' && a.estado !== estadoFiltro) return false
+      if (estadoFiltro !== 'TODOS' && a.estado_control !== estadoFiltro) return false
       if (desde && a.fecha < desde) return false
       if (hasta && a.fecha > hasta) return false
       return true
@@ -170,8 +174,8 @@ export default function RrhhAnticiposPage() {
     return anticiposFiltrados.reduce(
       (acc, a) => {
         acc.total += toNum(a.monto)
-        if (a.estado === 'PENDIENTE') acc.pendiente += toNum(a.monto)
-        if (a.estado === 'APLICADO') acc.aplicado += toNum(a.monto)
+        acc.pendiente += toNum(a.saldo)
+        acc.aplicado += toNum(a.abonado)
         if (a.estado === 'ANULADO') acc.anulado += toNum(a.monto)
         return acc
       },
@@ -206,8 +210,8 @@ export default function RrhhAnticiposPage() {
 
     try {
       const { data, error } = await supabase
-        .from('rrhh_anticipos')
-        .select('id,empleado_id,fecha,monto,periodo_id,estado,observaciones,created_at')
+        .from('rrhh_v_anticipos_control')
+        .select('id,empleado_id,erogacion_id,fecha,monto,periodo_id,estado,estado_control,abonado,saldo,observaciones,created_at')
         .order('fecha', { ascending: false })
         .order('id', { ascending: false })
 
@@ -222,6 +226,10 @@ export default function RrhhAnticiposPage() {
         estado: Anticipo['estado']
         observaciones: string | null
         created_at: string
+        erogacion_id: number | null
+        abonado: number
+        saldo: number
+        estado_control: string
       }[]).map((row) => {
         const emp = empleadoMap.get(Number(row.empleado_id))
         const periodo = row.periodo_id ? periodoMap.get(Number(row.periodo_id)) : undefined
@@ -268,6 +276,10 @@ export default function RrhhAnticiposPage() {
   }
 
   const editar = (anticipo: Anticipo) => {
+    if (anticipo.erogacion_id || anticipo.abonado > 0) {
+      alert('Este anticipo está vinculado a una erogación o tiene abonos. No se puede editar manualmente; se requiere corrección auditada.')
+      return
+    }
     setForm({
       id: anticipo.id,
       empleado_id: String(anticipo.empleado_id),
@@ -293,6 +305,10 @@ export default function RrhhAnticiposPage() {
       return
     }
 
+    if (form.estado === 'APLICADO') {
+      alert('No se puede marcar un anticipo como aplicado manualmente. Se aplica al guardar la planilla PAGADA.')
+      return
+    }
     const monto = toNum(form.monto)
     if (monto <= 0) {
       alert('El monto debe ser mayor que 0.')
@@ -350,6 +366,10 @@ export default function RrhhAnticiposPage() {
   }
 
   const cambiarEstado = async (anticipo: Anticipo, estado: Anticipo['estado']) => {
+    if (estado === 'APLICADO' || anticipo.abonado > 0 || anticipo.erogacion_id) {
+      alert('No se permite aplicar/anular manualmente anticipos vinculados o abonados. Usá el registro de planilla o conciliación.')
+      return
+    }
     if (!confirm(`¿Cambiar el anticipo a estado ${estado}?`)) return
 
     try {
@@ -488,19 +508,6 @@ export default function RrhhAnticiposPage() {
     }
   }
 
-  const eliminar = async (anticipo: Anticipo) => {
-    if (!confirm(`¿Eliminar el anticipo de ${anticipo.empleado_nombre} por ${money(anticipo.monto)}?`)) return
-
-    try {
-      const { error } = await supabase.from('rrhh_anticipos').delete().eq('id', anticipo.id)
-      if (error) throw new Error(error.message)
-      await cargarAnticipos()
-      setMensaje('Anticipo eliminado correctamente.')
-    } catch (err) {
-      console.error(err)
-      setMensaje(err instanceof Error ? err.message : 'Error eliminando anticipo.')
-    }
-  }
 
   return (
     <div className="p-6 max-w-6xl mx-auto">
@@ -512,9 +519,13 @@ export default function RrhhAnticiposPage() {
             <p className="text-sm text-slate-600">Registra anticipos que se descontarán en planilla.</p>
           </div>
         </div>
+        <div className="flex flex-wrap gap-2">
+          <Link href="/rrhh/anticipos/conciliar" className="bg-blue-700 text-white px-4 py-2 rounded">Vincular erogación</Link>
+          <Link href="/rrhh/reportes/anticipos-abonos" className="bg-emerald-700 text-white px-4 py-2 rounded">Ver abonos</Link>
         <Link href="/rrhh" className="bg-slate-700 hover:bg-slate-800 text-white px-4 py-2 rounded">
           Volver a RRHH
         </Link>
+        </div>
       </div>
 
       {mensaje && <div className="border rounded p-3 mb-4 text-sm bg-slate-50">{mensaje}</div>}
@@ -587,7 +598,7 @@ export default function RrhhAnticiposPage() {
             className="w-full border p-2 mb-3"
           >
             <option value="PENDIENTE">Pendiente</option>
-            <option value="APLICADO">Aplicado</option>
+            <option value="APLICADO" disabled>Aplicado (solo por planilla)</option>
             <option value="ANULADO">Anulado</option>
           </select>
 
@@ -616,13 +627,15 @@ export default function RrhhAnticiposPage() {
             <input
               value={busqueda}
               onChange={(e) => setBusqueda(e.target.value)}
-              placeholder="Buscar empleado, código u observación"
+              placeholder="Empleado, código, # anticipo, # erogación"
               className="border p-2"
             />
             <select value={estadoFiltro} onChange={(e) => setEstadoFiltro(e.target.value)} className="border p-2">
               <option value="TODOS">Todos</option>
               <option value="PENDIENTE">Pendientes</option>
-              <option value="APLICADO">Aplicados</option>
+              <option value="PAGADO">Pagados con abonos</option>
+              <option value="PARCIAL">Parcialmente pagados</option>
+              <option value="APLICADO_SIN_TRAZA">Aplicados sin historial</option>
               <option value="ANULADO">Anulados</option>
             </select>
             <input type="date" value={desde} onChange={(e) => setDesde(e.target.value)} className="border p-2" />
@@ -651,9 +664,12 @@ export default function RrhhAnticiposPage() {
             <table className="w-full text-sm border-collapse">
               <thead className="bg-slate-200 sticky top-0">
                 <tr>
+                  <th className="border p-2 text-left">ID / origen</th>
                   <th className="border p-2 text-left">Fecha</th>
                   <th className="border p-2 text-left">Empleado</th>
                   <th className="border p-2 text-right">Monto</th>
+                  <th className="border p-2 text-right">Abonado</th>
+                  <th className="border p-2 text-right">Saldo</th>
                   <th className="border p-2 text-left">Período</th>
                   <th className="border p-2 text-left">Estado</th>
                   <th className="border p-2 text-left">Acciones</th>
@@ -662,6 +678,7 @@ export default function RrhhAnticiposPage() {
               <tbody>
                 {anticiposFiltrados.map((a) => (
                   <tr key={a.id}>
+                    <td className="border p-2">#{a.id}<div className="text-xs text-gray-500">{a.erogacion_id ? `Erogación #${a.erogacion_id}` : 'Registro RRHH'}</div></td>
                     <td className="border p-2">{a.fecha}</td>
                     <td className="border p-2">
                       <div className="font-semibold">{a.empleado_codigo}</div>
@@ -669,22 +686,24 @@ export default function RrhhAnticiposPage() {
                       {a.observaciones && <div className="text-xs text-slate-500">{a.observaciones}</div>}
                     </td>
                     <td className="border p-2 text-right font-semibold">{money(a.monto)}</td>
+                    <td className="border p-2 text-right">{money(a.abonado)}</td>
+                    <td className="border p-2 text-right font-semibold">{money(a.saldo)}</td>
                     <td className="border p-2">{a.periodo_texto}</td>
-                    <td className="border p-2">{a.estado}</td>
+                    <td className="border p-2">{a.estado_control}</td>
                     <td className="border p-2">
                       <div className="flex flex-wrap gap-1">
-                        <button type="button" onClick={() => editar(a)} className="bg-slate-700 text-white px-2 py-1 rounded text-xs">Editar</button>
-                        {a.estado !== 'APLICADO' && <button type="button" onClick={() => cambiarEstado(a, 'APLICADO')} className="bg-emerald-600 text-white px-2 py-1 rounded text-xs">Aplicar</button>}
-                        {a.estado !== 'ANULADO' && <button type="button" onClick={() => cambiarEstado(a, 'ANULADO')} className="bg-orange-600 text-white px-2 py-1 rounded text-xs">Anular</button>}
-                        <button type="button" onClick={() => eliminar(a)} className="bg-red-600 text-white px-2 py-1 rounded text-xs">Eliminar</button>
+                        {!a.erogacion_id && a.abonado === 0 && <button type="button" onClick={() => editar(a)} className="bg-slate-700 text-white px-2 py-1 rounded text-xs">Editar</button>}
+                        
+                        {a.estado === 'PENDIENTE' && a.abonado === 0 && !a.erogacion_id && <button type="button" onClick={() => cambiarEstado(a, 'ANULADO')} className="bg-orange-600 text-white px-2 py-1 rounded text-xs">Anular</button>}
+                        
                       </div>
                     </td>
                   </tr>
                 ))}
                 {!loading && anticiposFiltrados.length === 0 && (
-                  <tr><td colSpan={6} className="p-4 text-slate-600">No hay anticipos con los filtros aplicados.</td></tr>
+                  <tr><td colSpan={9} className="p-4 text-slate-600">No hay anticipos con los filtros aplicados.</td></tr>
                 )}
-                {loading && <tr><td colSpan={6} className="p-4">Cargando...</td></tr>}
+                {loading && <tr><td colSpan={9} className="p-4">Cargando...</td></tr>}
               </tbody>
             </table>
           </div>
