@@ -71,6 +71,9 @@ export default function RrhhMenuPage() {
             >
               Registrar anticipos
             </Link>
+            <Link href="/rrhh/anticipos/conciliar" className="block bg-blue-700 hover:bg-blue-800 text-white text-center py-3 rounded">
+              Vincular anticipos de erogaciones
+            </Link>
           </div>
         </section>
 
