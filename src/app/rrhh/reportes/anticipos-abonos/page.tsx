@@ -21,7 +21,7 @@ async function todos(tabla:string, campos:string) {
   for (let i=0;i<10000;i+=1000) {
     const {data,error} = await supabase.from(tabla).select(campos).range(i,i+999)
     if (error) throw new Error(`Error consultando ${tabla}: ${error.message}`)
-    const nuevos = (data || []) as Record<string,unknown>[]
+    const nuevos = (data ?? []) as unknown as Record<string, unknown>[]
     rows.push(...nuevos)
     if(nuevos.length<1000) break
   }
