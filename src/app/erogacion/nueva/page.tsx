@@ -257,6 +257,8 @@ export default function NuevaErogacion() {
   const [metodosPago, setMetodosPago] = useState<MetodoPago[]>([])
   const [proveedores, setProveedores] = useState<Proveedor[]>([])
   const [productos, setProductos] = useState<Producto[]>([])
+  const [empleadosRRHH, setEmpleadosRRHH] = useState<{ id: number; codigo: string; nombre_completo: string }[]>([])
+  const [empleadoAnticipoId, setEmpleadoAnticipoId] = useState('')
 
   const [form, setForm] = useState({
     empresa_id: '',
@@ -304,6 +306,8 @@ export default function NuevaErogacion() {
       setMetodosPago((met.data as MetodoPago[]) || [])
       setProveedores((prov.data as Proveedor[]) || [])
       setProductos((prods.data as Producto[]) || [])
+      const rrhh = await supabase.from('rrhh_empleados').select('id,codigo,nombre_completo').eq('estado','ACTIVO').order('nombre_completo')
+      if (!rrhh.error) setEmpleadosRRHH((rrhh.data || []) as { id: number; codigo: string; nombre_completo: string }[])
     })()
   }, [])
 
@@ -320,6 +324,7 @@ export default function NuevaErogacion() {
     setForm((f) => ({ ...f, cantidad: total }))
   }, [total])
 
+  const esAnticipoEmpleado = detalles.length > 0 && detalles.every((d) => d.concepto.trim().toUpperCase().includes('ANTICIPO'))
   const empresaSeleccionada = empresas.find((x) => String(x.id) === String(form.empresa_id))
   const divisionSeleccionada = divisiones.find((x) => String(x.id) === String(form.division_id))
   const categoriaSeleccionada = categorias.find((x) => String(x.id) === String(form.categoria_id))
@@ -508,6 +513,18 @@ export default function NuevaErogacion() {
 
       setUltimoId(erogacionId)
       setUltimoPdfData(pdfData)
+
+      if (empleadoAnticipoId && esAnticipoEmpleado) {
+        const { error: linkError } = await supabase.rpc('rrhh_vincular_erogacion_anticipo', {
+          p_erogacion_id: erogacionId,
+          p_empleado_id: Number(empleadoAnticipoId),
+          p_ficha_historica_id: null,
+          p_monto_historico: 0,
+          p_observaciones: 'Vinculado al registrar erogación',
+        })
+        if (linkError) throw new Error(`La erogación #${erogacionId} SÍ se guardó, pero falló su vínculo con RRHH: ${linkError.message}. Usá RRHH > Vincular anticipos de erogaciones; no dupliques la erogación.`)
+        setEmpleadoAnticipoId('')
+      }
 
       setDetalles([{ ...DETALLE_INICIAL }])
       setForm((f) => ({
@@ -804,6 +821,15 @@ export default function NuevaErogacion() {
       <div className="mb-4 text-lg font-semibold">
         Total Calculado: Q{(total || 0).toFixed(2)}
       </div>
+
+      {esAnticipoEmpleado && <section className="border rounded p-4 mb-4 bg-blue-50">
+        <label className="font-semibold block mb-2">¿Este anticipo es para un empleado de RRHH?</label>
+        <select className="border p-2 w-full max-w-lg" value={empleadoAnticipoId} onChange={(e) => setEmpleadoAnticipoId(e.target.value)}>
+          <option value="">No vincular por ahora</option>
+          {empleadosRRHH.map((e) => <option key={e.id} value={e.id}>{e.codigo} - {e.nombre_completo}</option>)}
+        </select>
+        <p className="text-sm mt-2">Si seleccionás empleado, se crea su deuda en RRHH vinculada a esta erogación. No se descuenta hasta pagar planilla. Si dejás vacío, se registra solo la erogación; podrás vincularla después.</p>
+      </section>}
 
       <div className="flex justify-between gap-2">
         <button
