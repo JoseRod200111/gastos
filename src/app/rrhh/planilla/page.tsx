@@ -418,30 +418,60 @@ export default function RrhhPlanillaPage() {
     }
   }
 
+  // Si el período ya existe, consultar NO debe reabrirlo ni modificarlo.
   const obtenerOCrearPeriodo = async () => {
     const anioNum = Number(anio)
     const mesNum = Number(mes)
     const quincenaNum = Number(quincena)
 
-    const { data, error } = await supabase
+    const { data: existente, error: consultaError } = await supabase
       .from('rrhh_periodos_planilla')
-      .upsert(
-        {
-          anio: anioNum,
-          mes: mesNum,
-          quincena: quincenaNum,
-          fecha_inicio: fechas.fechaInicio,
-          fecha_fin: fechas.fechaFin,
-          estado: 'ABIERTO',
-        },
-        { onConflict: 'anio,mes,quincena' }
-      )
+      .select('id,anio,mes,quincena,fecha_inicio,fecha_fin,estado')
+      .eq('anio', anioNum)
+      .eq('mes', mesNum)
+      .eq('quincena', quincenaNum)
+      .maybeSingle()
+
+    if (consultaError) throw new Error(`Error consultando período: ${consultaError.message}`)
+    if (existente) {
+      const p = existente as Periodo
+      setPeriodo(p)
+      return p
+    }
+
+    // Solo crea un período si aún no existe (flujo original para una quincena nueva).
+    const { data: creado, error: creacionError } = await supabase
+      .from('rrhh_periodos_planilla')
+      .insert({
+        anio: anioNum,
+        mes: mesNum,
+        quincena: quincenaNum,
+        fecha_inicio: fechas.fechaInicio,
+        fecha_fin: fechas.fechaFin,
+        estado: 'ABIERTO',
+      })
       .select('id,anio,mes,quincena,fecha_inicio,fecha_fin,estado')
       .single()
 
-    if (error) throw new Error(`Error creando período: ${error.message}`)
+    if (creacionError) {
+      // Si otro usuario creó el período simultáneamente, recuperarlo sin alterarlo.
+      const { data: simultaneo, error: nuevoError } = await supabase
+        .from('rrhh_periodos_planilla')
+        .select('id,anio,mes,quincena,fecha_inicio,fecha_fin,estado')
+        .eq('anio', anioNum)
+        .eq('mes', mesNum)
+        .eq('quincena', quincenaNum)
+        .maybeSingle()
 
-    const p = data as Periodo
+      if (nuevoError || !simultaneo) {
+        throw new Error(`Error creando período: ${creacionError.message}`)
+      }
+      const p = simultaneo as Periodo
+      setPeriodo(p)
+      return p
+    }
+
+    const p = creado as Periodo
     setPeriodo(p)
     return p
   }
@@ -682,43 +712,41 @@ export default function RrhhPlanillaPage() {
 
           const saldo = emp.cliente_id ? saldoMap.get(emp.cliente_id) : undefined
 
-          return calcularFila(
-            {
-              id: g.id,
-              empleado_id: g.empleado_id,
-              codigo: emp.codigo,
-              nombre: emp.nombre_completo,
-              cliente_id: emp.cliente_id,
-              saldo_cliente: round2(toNum(saldo?.saldo_total)),
-              saldo_ventas: round2(toNum(saldo?.saldo_ventas)),
-              saldo_granja: round2(toNum(saldo?.saldo_granja)),
-              salario_base: String(toNum(g.salario_base)),
-              salario_diario: toNum(g.salario_diario),
-              hora_normal: toNum(g.hora_normal),
-              dias_trabajados: String(toNum(g.dias_trabajados)),
-              horas_extra: String(toNum(g.horas_extra)),
-              valor_hora_extra: toNum(g.valor_hora_extra),
-              salario_ordinario: toNum(g.salario_ordinario),
-              monto_horas_extra: toNum(g.monto_horas_extra),
-              bono_produccion_diario: String(toNum(g.bono_produccion_diario)),
-              bono_produccion_total: toNum(g.bono_produccion_total),
-              bonificacion_ley: String(toNum(g.bonificacion_ley)),
-              otros_bonos: String(toNum(g.otros_bonos)),
-              igss: String(toNum(g.igss)),
-              irtra: String(toNum(g.irtra)),
-              anticipos: String(toNum(g.anticipos)),
-              prestamos: String(toNum(g.prestamos)),
-              descuentos_ventas: String(toNum(g.descuentos_ventas)),
-              descuentos_manual: String(toNum(g.descuentos_manual)),
-              total_devengado: toNum(g.total_devengado),
-              total_descuentos: toNum(g.total_descuentos),
-              liquido_pagar: toNum(g.liquido_pagar),
-              estado: g.estado,
-              fecha_pago: g.fecha_pago || '',
-              observaciones: g.observaciones || '',
-            },
-            parametros
-          )
+          // Presentar cifras históricas tal como fueron guardadas, sin recalcular.
+          return {
+            id: g.id,
+            empleado_id: g.empleado_id,
+            codigo: emp.codigo,
+            nombre: emp.nombre_completo,
+            cliente_id: emp.cliente_id,
+            saldo_cliente: round2(toNum(saldo?.saldo_total)),
+            saldo_ventas: round2(toNum(saldo?.saldo_ventas)),
+            saldo_granja: round2(toNum(saldo?.saldo_granja)),
+            salario_base: String(toNum(g.salario_base)),
+            salario_diario: toNum(g.salario_diario),
+            hora_normal: toNum(g.hora_normal),
+            dias_trabajados: String(toNum(g.dias_trabajados)),
+            horas_extra: String(toNum(g.horas_extra)),
+            valor_hora_extra: toNum(g.valor_hora_extra),
+            salario_ordinario: toNum(g.salario_ordinario),
+            monto_horas_extra: toNum(g.monto_horas_extra),
+            bono_produccion_diario: String(toNum(g.bono_produccion_diario)),
+            bono_produccion_total: toNum(g.bono_produccion_total),
+            bonificacion_ley: String(toNum(g.bonificacion_ley)),
+            otros_bonos: String(toNum(g.otros_bonos)),
+            igss: String(toNum(g.igss)),
+            irtra: String(toNum(g.irtra)),
+            anticipos: String(toNum(g.anticipos)),
+            prestamos: String(toNum(g.prestamos)),
+            descuentos_ventas: String(toNum(g.descuentos_ventas)),
+            descuentos_manual: String(toNum(g.descuentos_manual)),
+            total_devengado: toNum(g.total_devengado),
+            total_descuentos: toNum(g.total_descuentos),
+            liquido_pagar: toNum(g.liquido_pagar),
+            estado: g.estado,
+            fecha_pago: g.fecha_pago || '',
+            observaciones: g.observaciones || '',
+          }
         })
         .filter((row): row is PlanillaRow => row !== null)
 
@@ -885,34 +913,6 @@ export default function RrhhPlanillaPage() {
       const { error: costErr } = await supabase.from('rrhh_planilla_area_costo').insert(costos)
       if (costErr) throw new Error(`Error guardando distribución: ${costErr.message}`)
     }
-  }
-
-  const guardarFilaParaFicha = async (row: PlanillaRow) => {
-    const p = periodo || (await obtenerOCrearPeriodo())
-    const { data: userData } = await supabase.auth.getUser()
-    const userId = userData?.user?.id || null
-    const userEmail = userData?.user?.email || null
-    const filaCalculada = calcularFila(row, parametros)
-
-    const { data: saved, error } = await supabase
-      .from('rrhh_planilla_empleado')
-      .upsert([payloadPlanillaFila(filaCalculada, p, userId, userEmail)], { onConflict: 'periodo_id,empleado_id' })
-      .select('id,empleado_id')
-      .single()
-
-    if (error) throw new Error(`No se pudo guardar la ficha antes de descargar: ${error.message}`)
-
-    const planillaId = Number((saved as { id: number }).id)
-    if (!planillaId) throw new Error('No se pudo obtener el ID de ficha de planilla guardada.')
-
-    await guardarDetallePlanillaFila(filaCalculada, planillaId)
-
-    const filaGuardada = { ...filaCalculada, id: planillaId }
-
-    setFilas((prev) => prev.map((item) => (item.empleado_id === row.empleado_id ? filaGuardada : item)))
-    setMensaje(`Ficha ID ${planillaId} guardada antes de descargar PDF: ${row.codigo} - ${row.nombre}.`)
-
-    return filaGuardada
   }
 
   const crearDescuentosVentasDirectos = async (p: Periodo, userId: string | null) => {
@@ -1469,29 +1469,73 @@ export default function RrhhPlanillaPage() {
     }
   }
 
+  // DESCARGA DE SOLO LECTURA: no crea períodos, no guarda fichas y no aplica deudas.
+  // Para fichas existentes usa los importes ALMACENADOS en lugar de recalcular
+  // cifras históricas con parámetros actuales o cambios sin guardar del formulario.
   const imprimirFicha = async (row: PlanillaRow) => {
     if (savingFichaEmpleadoId !== null || saving) return
 
     setSavingFichaEmpleadoId(row.empleado_id)
 
     try {
-      const rowGuardada = await guardarFilaParaFicha(row)
-      const fichaId = rowGuardada.id
-      const p = periodo || (await obtenerOCrearPeriodo())
-      const { data: userData } = await supabase.auth.getUser()
-      const userId = userData?.user?.id || null
+      let rowGuardada: PlanillaRow
+      let fichaId: number | null = null
+      let documentoGuardado = false
 
-      if (rowGuardada.estado === 'PAGADO') {
-        await crearDescuentosVentasDirectosFila(p, rowGuardada, userId)
-        await aplicarMovimientosPagadosFila(p, rowGuardada)
-        setMensaje(`Ficha ID ${fichaId} guardada, deudas aplicadas y PDF descargado: ${rowGuardada.codigo} - ${rowGuardada.nombre}.`)
+      if (row.id !== null) {
+        const { data, error } = await supabase
+          .from('rrhh_planilla_empleado')
+          .select('*')
+          .eq('id', row.id)
+          .eq('empleado_id', row.empleado_id)
+          .single()
+
+        if (error || !data) {
+          throw new Error(`No se pudo consultar la ficha guardada: ${error?.message || 'registro no encontrado'}`)
+        }
+
+        const g = data as PlanillaGuardada
+        if (periodo && Number(g.periodo_id) !== Number(periodo.id)) {
+          throw new Error('La ficha pertenece a otro período. Vuelve a cargar la planilla.')
+        }
+
+        fichaId = Number(g.id)
+        documentoGuardado = true
+        rowGuardada = {
+          ...row,
+          id: fichaId,
+          salario_base: String(toNum(g.salario_base)),
+          salario_diario: toNum(g.salario_diario),
+          hora_normal: toNum(g.hora_normal),
+          dias_trabajados: String(toNum(g.dias_trabajados)),
+          horas_extra: String(toNum(g.horas_extra)),
+          valor_hora_extra: toNum(g.valor_hora_extra),
+          salario_ordinario: toNum(g.salario_ordinario),
+          monto_horas_extra: toNum(g.monto_horas_extra),
+          bono_produccion_diario: String(toNum(g.bono_produccion_diario)),
+          bono_produccion_total: toNum(g.bono_produccion_total),
+          bonificacion_ley: String(toNum(g.bonificacion_ley)),
+          otros_bonos: String(toNum(g.otros_bonos)),
+          igss: String(toNum(g.igss)),
+          irtra: String(toNum(g.irtra)),
+          anticipos: String(toNum(g.anticipos)),
+          prestamos: String(toNum(g.prestamos)),
+          descuentos_ventas: String(toNum(g.descuentos_ventas)),
+          descuentos_manual: String(toNum(g.descuentos_manual)),
+          total_devengado: toNum(g.total_devengado),
+          total_descuentos: toNum(g.total_descuentos),
+          liquido_pagar: toNum(g.liquido_pagar),
+          estado: g.estado,
+          fecha_pago: g.fecha_pago || '',
+          observaciones: g.observaciones || '',
+        }
       } else {
-        await aplicarMovimientosPagadosFila(p, rowGuardada)
-        setMensaje(`Ficha ID ${fichaId} guardada y PDF descargado. No se aplicaron deudas porque el estado es ${rowGuardada.estado}.`)
+        // Vista previa todavía no guardada: únicamente cálculos en memoria.
+        rowGuardada = calcularFila(row, parametros)
       }
 
       const doc = new jsPDF('p', 'mm', 'letter') as AutoTableDoc
-      await addHeader(doc, 'FICHA DE PAGO QUINCENAL')
+      await addHeader(doc, documentoGuardado ? 'FICHA QUINCENAL GUARDADA' : 'VISTA PREVIA DE PLANILLA')
 
       doc.setFontSize(10)
       doc.setFont('helvetica', 'bold')
@@ -1499,18 +1543,18 @@ export default function RrhhPlanillaPage() {
       doc.setFont('helvetica', 'normal')
       doc.text(`Ficha planilla ID: ${fichaId || 'N/A'}`, 14, 45)
       doc.text(`Período: ${fechas.etiqueta}`, 14, 52)
-      doc.text(`Estado: ${rowGuardada.estado}`, 105, 52)
-      doc.text(`Fecha de pago: ${rowGuardada.fecha_pago || 'Pendiente'}`, 150, 52)
+      doc.text(`Estado: ${documentoGuardado ? rowGuardada.estado : 'SIN GUARDAR'}`, 105, 52)
+      doc.text(`Fecha de pago en sistema: ${documentoGuardado ? rowGuardada.fecha_pago || 'Sin confirmar' : 'No registrada'}`, 14, 59)
       doc.text(
-        rowGuardada.estado === 'PAGADO'
-          ? 'Acción: ficha guardada y deudas aplicadas'
-          : 'Acción: ficha guardada sin aplicar deudas',
+        documentoGuardado
+          ? 'Consulta histórica: el estado registrado no verifica la entrega del salario.'
+          : 'VISTA PREVIA SIN GUARDAR - NO ES COMPROBANTE DE PAGO.',
         14,
-        58
+        66
       )
 
     autoTable(doc, {
-      startY: 66,
+      startY: 74,
       head: [['Concepto', 'Cantidad / base', 'Monto']],
       body: [
         ['Salario base mensual', '', money(rowGuardada.salario_base)],
@@ -1570,9 +1614,14 @@ export default function RrhhPlanillaPage() {
     }
 
     doc.save(fichaPlanillaFileName(rowGuardada, fichaId, anio, mes, quincena))
+    setMensaje(
+      documentoGuardado
+        ? `PDF de la ficha ID ${fichaId} descargado usando sus valores guardados. No se modificó la base de datos.`
+        : 'Vista previa PDF descargada sin crear ni modificar fichas o pagos.'
+    )
     } catch (err) {
       console.error(err)
-      alert(err instanceof Error ? err.message : 'No se pudo guardar y descargar la ficha.')
+      alert(err instanceof Error ? err.message : 'No se pudo descargar la ficha.')
     } finally {
       setSavingFichaEmpleadoId(null)
     }
@@ -2009,12 +2058,12 @@ export default function RrhhPlanillaPage() {
                     onClick={() => imprimirFicha(row)}
                     disabled={saving || savingFichaEmpleadoId === row.empleado_id}
                     className="bg-slate-700 hover:bg-slate-800 disabled:opacity-60 text-white rounded px-2 py-1 text-xs mb-1 w-full"
-                    title="Guarda esta ficha, aplica deudas si está PAGADO y luego descarga el PDF."
+                    title="Descarga el PDF sin guardar, modificar ni aplicar pagos o descuentos."
                   >
-                    {savingFichaEmpleadoId === row.empleado_id ? 'Guardando...' : 'Guardar, aplicar y PDF'}
+                    {savingFichaEmpleadoId === row.empleado_id ? 'Generando...' : 'Descargar PDF'}
                   </button>
                   <div className="text-[10px] text-slate-500 mb-1">
-                    {row.id ? `Ficha ID ${row.id}` : 'Se guardará antes de descargar'}
+                    {row.id ? `Ficha ID ${row.id} · PDF de última versión guardada` : 'PDF de vista previa (sin guardar)'}
                   </div>
                   <textarea
                     className="border rounded px-1 py-1 w-full text-[11px]"
