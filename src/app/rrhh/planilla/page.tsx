@@ -52,6 +52,7 @@ type PlanillaGuardada = {
   id: number
   periodo_id: number
   empleado_id: number
+  updated_at: string
   salario_base: number
   salario_diario: number
   hora_normal: number
@@ -80,6 +81,7 @@ type PlanillaGuardada = {
 
 type PlanillaRow = {
   id: number | null
+  revision: string | null
   empleado_id: number
   codigo: string
   nombre: string
@@ -157,13 +159,6 @@ const fichaPlanillaFileName = (row: PlanillaRow, planillaId: number | null, anio
   const periodoParte = `${anio}_${String(mes).padStart(2, '0')}_Q${quincena}`
 
   return `ficha_planilla_${idParte}_${safeFilePart(row.nombre)}_${safeFilePart(row.codigo)}_${periodoParte}.pdf`
-}
-
-const todayISO = () => {
-  const d = new Date()
-  const month = String(d.getMonth() + 1).padStart(2, '0')
-  const day = String(d.getDate()).padStart(2, '0')
-  return `${d.getFullYear()}-${month}-${day}`
 }
 
 const monthISO = (anio: number, mes: number, dia: number) => {
@@ -310,6 +305,11 @@ export default function RrhhPlanillaPage() {
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [savingFichaEmpleadoId, setSavingFichaEmpleadoId] = useState<number | null>(null)
+  const [pagandoEmpleadoId, setPagandoEmpleadoId] = useState<number | null>(null)
+  const [dirtyIds, setDirtyIds] = useState<number[]>([])
+  const [periodoCargado, setPeriodoCargado] = useState('')
+  const periodoSeleccionado = `${anio}-${mes}-${quincena}`
+  const mismoPeriodo = periodoCargado === periodoSeleccionado
   const [mensaje, setMensaje] = useState('')
   const [busquedaEmpleado, setBusquedaEmpleado] = useState('')
   const [estadoFiltro, setEstadoFiltro] = useState<'TODOS' | 'PENDIENTE' | 'PAGADO' | 'ANULADO'>('TODOS')
@@ -395,8 +395,9 @@ export default function RrhhPlanillaPage() {
     setAreas((areaRes.data || []) as Area[])
     setDistribuciones((distRes.data || []) as Distribucion[])
 
-    if (!paramsRes.error && paramsRes.data) {
-      const next = { ...defaultParametros }
+    if (paramsRes.error) throw new Error(`Error cargando parámetros: ${paramsRes.error.message}`)
+    const next = { ...defaultParametros }
+    if (paramsRes.data) {
 
       paramsRes.data.forEach((p) => {
         const value = toNum(p.valor)
@@ -414,64 +415,21 @@ export default function RrhhPlanillaPage() {
 
     return {
       empleadosList: (empRes.data || []) as Empleado[],
-      distribucionesList: (distRes.data || []) as Distribucion[],
+      parametrosActuales: next,
     }
   }
 
-  // Si el período ya existe, consultar NO debe reabrirlo ni modificarlo.
-  const obtenerOCrearPeriodo = async () => {
-    const anioNum = Number(anio)
-    const mesNum = Number(mes)
-    const quincenaNum = Number(quincena)
-
-    const { data: existente, error: consultaError } = await supabase
+  // Consultar una planilla NUNCA crea ni reabre un período.
+  const obtenerPeriodoSoloLectura = async (): Promise<Periodo | null> => {
+    const { data, error } = await supabase
       .from('rrhh_periodos_planilla')
       .select('id,anio,mes,quincena,fecha_inicio,fecha_fin,estado')
-      .eq('anio', anioNum)
-      .eq('mes', mesNum)
-      .eq('quincena', quincenaNum)
+      .eq('anio', Number(anio))
+      .eq('mes', Number(mes))
+      .eq('quincena', Number(quincena))
       .maybeSingle()
-
-    if (consultaError) throw new Error(`Error consultando período: ${consultaError.message}`)
-    if (existente) {
-      const p = existente as Periodo
-      setPeriodo(p)
-      return p
-    }
-
-    // Solo crea un período si aún no existe (flujo original para una quincena nueva).
-    const { data: creado, error: creacionError } = await supabase
-      .from('rrhh_periodos_planilla')
-      .insert({
-        anio: anioNum,
-        mes: mesNum,
-        quincena: quincenaNum,
-        fecha_inicio: fechas.fechaInicio,
-        fecha_fin: fechas.fechaFin,
-        estado: 'ABIERTO',
-      })
-      .select('id,anio,mes,quincena,fecha_inicio,fecha_fin,estado')
-      .single()
-
-    if (creacionError) {
-      // Si otro usuario creó el período simultáneamente, recuperarlo sin alterarlo.
-      const { data: simultaneo, error: nuevoError } = await supabase
-        .from('rrhh_periodos_planilla')
-        .select('id,anio,mes,quincena,fecha_inicio,fecha_fin,estado')
-        .eq('anio', anioNum)
-        .eq('mes', mesNum)
-        .eq('quincena', quincenaNum)
-        .maybeSingle()
-
-      if (nuevoError || !simultaneo) {
-        throw new Error(`Error creando período: ${creacionError.message}`)
-      }
-      const p = simultaneo as Periodo
-      setPeriodo(p)
-      return p
-    }
-
-    const p = creado as Periodo
+    if (error) throw new Error(`Error consultando período: ${error.message}`)
+    const p = (data as Periodo | null) || null
     setPeriodo(p)
     return p
   }
@@ -488,10 +446,7 @@ export default function RrhhPlanillaPage() {
       .select('cliente_id,cliente,saldo_ventas,saldo_granja,saldo_total')
       .in('cliente_id', clienteIds)
 
-    if (error) {
-      console.error('Error cargando saldos de clientes', error)
-      return new Map<number, SaldoCliente>()
-    }
+    if (error) throw new Error(`Error cargando saldos de clientes: ${error.message}`)
 
     const map = new Map<number, SaldoCliente>()
     ;((data || []) as SaldoCliente[]).forEach((s) => map.set(Number(s.cliente_id), s))
@@ -504,22 +459,32 @@ export default function RrhhPlanillaPage() {
 
     const { data, error } = await supabase
       .from('rrhh_anticipos')
-      .select('empleado_id,monto')
+      .select('id,empleado_id,monto')
       .in('empleado_id', ids)
       .eq('estado', 'PENDIENTE')
       .lte('fecha', fechas.fechaFin)
+    if (error) throw new Error(`Error cargando anticipos: ${error.message}`)
 
-    if (error) {
-      console.error('Error cargando anticipos', error)
-      return new Map<number, number>()
-    }
+    const anticipos = (data || []) as { id: number; empleado_id: number; monto: number }[]
+    if (!anticipos.length) return new Map<number, number>()
 
-    const map = new Map<number, number>()
-    ;((data || []) as { empleado_id: number; monto: number }[]).forEach((a) => {
-      map.set(Number(a.empleado_id), round2((map.get(Number(a.empleado_id)) || 0) + toNum(a.monto)))
+    const { data: aplicaciones, error: aplicacionesError } = await supabase
+      .from('rrhh_anticipo_aplicaciones')
+      .select('anticipo_id,monto')
+      .in('anticipo_id', anticipos.map((a) => a.id))
+    if (aplicacionesError) throw new Error(`Error consultando abonos de anticipos: ${aplicacionesError.message}`)
+
+    const abonado = new Map<number, number>()
+    ;((aplicaciones || []) as { anticipo_id: number; monto: number }[]).forEach((a) => {
+      abonado.set(a.anticipo_id, round2((abonado.get(a.anticipo_id) || 0) + toNum(a.monto)))
     })
-
-    return map
+    const resultado = new Map<number, number>()
+    anticipos.forEach((a) => {
+      const saldo = round2(toNum(a.monto) - (abonado.get(a.id) || 0))
+      if (saldo < 0) throw new Error(`Anticipo #${a.id} con pagos superiores al importe. Revisar antes de continuar.`)
+      resultado.set(a.empleado_id, round2((resultado.get(a.empleado_id) || 0) + saldo))
+    })
+    return resultado
   }
 
   const cargarCuotasPrestamo = async (empleadosList: Empleado[], periodoId: number) => {
@@ -534,10 +499,7 @@ export default function RrhhPlanillaPage() {
       .eq('rrhh_prestamos.estado', 'ACTIVO')
       .in('rrhh_prestamos.empleado_id', ids)
 
-    if (error) {
-      console.error('Error cargando cuotas de préstamo', error)
-      return new Map<number, number>()
-    }
+    if (error) throw new Error(`Error cargando cuotas de préstamo: ${error.message}`)
 
     const map = new Map<number, number>()
 
@@ -571,10 +533,7 @@ export default function RrhhPlanillaPage() {
       .eq('rrhh_descuentos_ventas.estado', 'PENDIENTE')
       .in('rrhh_descuentos_ventas.empleado_id', ids)
 
-    if (error) {
-      console.error('Error cargando cuotas de ventas', error)
-      return new Map<number, number>()
-    }
+    if (error) throw new Error(`Error cargando cuotas de ventas: ${error.message}`)
 
     const map = new Map<number, number>()
 
@@ -601,19 +560,21 @@ export default function RrhhPlanillaPage() {
     saldoMap: Map<number, SaldoCliente>,
     anticiposMap: Map<number, number>,
     prestamosMap: Map<number, number>,
-    ventasCuotasMap: Map<number, number>
+    ventasCuotasMap: Map<number, number>,
+    params: Parametros
   ) => {
     const salarioDiario = round2(toNum(emp.salario_base) / 30)
-    const horaNormal = round2(salarioDiario / parametros.horasDia)
+    const horaNormal = round2(salarioDiario / params.horasDia)
     const dias = calcularDiasEmpleadoEnPeriodo(emp, fechas.fechaInicio, fechas.fechaFin)
-    const bonoLey = quincena === '2' ? parametros.bonificacionLeyMensual : 0
-    const igss = quincena === '2' ? round2(toNum(emp.salario_base) * (parametros.igssPorcentaje / 100)) : 0
-    const irtra = quincena === '2' ? round2(toNum(emp.salario_base) * (parametros.irtraPorcentaje / 100)) : 0
+    const bonoLey = quincena === '2' ? params.bonificacionLeyMensual : 0
+    const igss = quincena === '2' ? round2(toNum(emp.salario_base) * (params.igssPorcentaje / 100)) : 0
+    const irtra = quincena === '2' ? round2(toNum(emp.salario_base) * (params.irtraPorcentaje / 100)) : 0
     const saldo = emp.cliente_id ? saldoMap.get(emp.cliente_id) : undefined
 
     return calcularFila(
       {
         id: null,
+        revision: null,
         empleado_id: emp.id,
         codigo: emp.codigo,
         nombre: emp.nombre_completo,
@@ -626,7 +587,7 @@ export default function RrhhPlanillaPage() {
         hora_normal: horaNormal,
         dias_trabajados: String(dias),
         horas_extra: '0',
-        valor_hora_extra: round2(horaNormal * parametros.multiplicadorHoraExtra),
+        valor_hora_extra: round2(horaNormal * params.multiplicadorHoraExtra),
         salario_ordinario: 0,
         monto_horas_extra: 0,
         bono_produccion_diario: String(toNum(emp.bono_produccion_diario)),
@@ -646,11 +607,11 @@ export default function RrhhPlanillaPage() {
         fecha_pago: '',
         observaciones: dias < 15 ? `Ingreso/baja parcial en período. Días calculados: ${dias}.` : '',
       },
-      parametros
+      params
     )
   }
 
-  const generarFilasIniciales = async (empleadosList: Empleado[], periodoId: number) => {
+  const generarFilasIniciales = async (empleadosList: Empleado[], periodoId: number, params: Parametros) => {
     const empleadosDelPeriodo = empleadosList.filter(
       (emp) => calcularDiasEmpleadoEnPeriodo(emp, fechas.fechaInicio, fechas.fechaFin) > 0
     )
@@ -661,7 +622,7 @@ export default function RrhhPlanillaPage() {
     const ventasCuotasMap = await cargarCuotasVentas(empleadosDelPeriodo, periodoId)
 
     const rows = empleadosDelPeriodo.map((emp) =>
-      crearFilaInicial(emp, saldoMap, anticiposMap, prestamosMap, ventasCuotasMap)
+      crearFilaInicial(emp, saldoMap, anticiposMap, prestamosMap, ventasCuotasMap, params)
     )
 
     setFilas(rows)
@@ -670,9 +631,12 @@ export default function RrhhPlanillaPage() {
   const cargarPlanilla = async () => {
     setLoading(true)
     setMensaje('')
+    setPeriodoCargado('')
+    setFilas([])
+    setDirtyIds([])
 
     try {
-      const { empleadosList } = await cargarCatalogos()
+      const { empleadosList, parametrosActuales } = await cargarCatalogos()
 
       if (empleadosList.length === 0) {
         setFilas([])
@@ -680,20 +644,17 @@ export default function RrhhPlanillaPage() {
         return
       }
 
-      const p = await obtenerOCrearPeriodo()
-
-      const { data, error } = await supabase
-        .from('rrhh_planilla_empleado')
-        .select('*')
-        .eq('periodo_id', p.id)
-        .order('empleado_id', { ascending: true })
-
+      const p = await obtenerPeriodoSoloLectura()
+      const { data, error } = p
+        ? await supabase.from('rrhh_planilla_empleado').select('*')
+          .eq('periodo_id', p.id).order('empleado_id', { ascending: true })
+        : { data: [] as PlanillaGuardada[], error: null }
       if (error) throw new Error(`Error cargando planilla: ${error.message}`)
-
       const guardadas = (data || []) as PlanillaGuardada[]
 
       if (guardadas.length === 0) {
-        await generarFilasIniciales(empleadosList, p.id)
+        await generarFilasIniciales(empleadosList, p?.id || 0, parametrosActuales)
+        setPeriodoCargado(`${anio}-${mes}-${quincena}`)
         setMensaje('Planilla preparada con empleados aplicables al período. Los ingresos a media quincena se calculan con días proporcionales. Revisa y guarda para fijar los cálculos.')
         return
       }
@@ -712,60 +673,62 @@ export default function RrhhPlanillaPage() {
 
           const saldo = emp.cliente_id ? saldoMap.get(emp.cliente_id) : undefined
 
-          // Presentar cifras históricas tal como fueron guardadas, sin recalcular.
+          // Los valores pagados/guardados son una fotografía histórica: no recalcular.
           return {
-            id: g.id,
-            empleado_id: g.empleado_id,
-            codigo: emp.codigo,
-            nombre: emp.nombre_completo,
-            cliente_id: emp.cliente_id,
-            saldo_cliente: round2(toNum(saldo?.saldo_total)),
-            saldo_ventas: round2(toNum(saldo?.saldo_ventas)),
-            saldo_granja: round2(toNum(saldo?.saldo_granja)),
-            salario_base: String(toNum(g.salario_base)),
-            salario_diario: toNum(g.salario_diario),
-            hora_normal: toNum(g.hora_normal),
-            dias_trabajados: String(toNum(g.dias_trabajados)),
-            horas_extra: String(toNum(g.horas_extra)),
-            valor_hora_extra: toNum(g.valor_hora_extra),
-            salario_ordinario: toNum(g.salario_ordinario),
-            monto_horas_extra: toNum(g.monto_horas_extra),
-            bono_produccion_diario: String(toNum(g.bono_produccion_diario)),
-            bono_produccion_total: toNum(g.bono_produccion_total),
-            bonificacion_ley: String(toNum(g.bonificacion_ley)),
-            otros_bonos: String(toNum(g.otros_bonos)),
-            igss: String(toNum(g.igss)),
-            irtra: String(toNum(g.irtra)),
-            anticipos: String(toNum(g.anticipos)),
-            prestamos: String(toNum(g.prestamos)),
-            descuentos_ventas: String(toNum(g.descuentos_ventas)),
-            descuentos_manual: String(toNum(g.descuentos_manual)),
-            total_devengado: toNum(g.total_devengado),
-            total_descuentos: toNum(g.total_descuentos),
-            liquido_pagar: toNum(g.liquido_pagar),
-            estado: g.estado,
-            fecha_pago: g.fecha_pago || '',
-            observaciones: g.observaciones || '',
-          }
+              id: g.id,
+              revision: g.updated_at,
+              empleado_id: g.empleado_id,
+              codigo: emp.codigo,
+              nombre: emp.nombre_completo,
+              cliente_id: emp.cliente_id,
+              saldo_cliente: round2(toNum(saldo?.saldo_total)),
+              saldo_ventas: round2(toNum(saldo?.saldo_ventas)),
+              saldo_granja: round2(toNum(saldo?.saldo_granja)),
+              salario_base: String(toNum(g.salario_base)),
+              salario_diario: toNum(g.salario_diario),
+              hora_normal: toNum(g.hora_normal),
+              dias_trabajados: String(toNum(g.dias_trabajados)),
+              horas_extra: String(toNum(g.horas_extra)),
+              valor_hora_extra: toNum(g.valor_hora_extra),
+              salario_ordinario: toNum(g.salario_ordinario),
+              monto_horas_extra: toNum(g.monto_horas_extra),
+              bono_produccion_diario: String(toNum(g.bono_produccion_diario)),
+              bono_produccion_total: toNum(g.bono_produccion_total),
+              bonificacion_ley: String(toNum(g.bonificacion_ley)),
+              otros_bonos: String(toNum(g.otros_bonos)),
+              igss: String(toNum(g.igss)),
+              irtra: String(toNum(g.irtra)),
+              anticipos: String(toNum(g.anticipos)),
+              prestamos: String(toNum(g.prestamos)),
+              descuentos_ventas: String(toNum(g.descuentos_ventas)),
+              descuentos_manual: String(toNum(g.descuentos_manual)),
+              total_devengado: toNum(g.total_devengado),
+              total_descuentos: toNum(g.total_descuentos),
+              liquido_pagar: toNum(g.liquido_pagar),
+              estado: g.estado,
+              fecha_pago: g.fecha_pago || '',
+              observaciones: g.observaciones || '',
+            }
         })
-        .filter((row): row is PlanillaRow => row !== null)
+        .filter((row): row is NonNullable<typeof row> => row !== null)
 
       const empleadosFaltantes = empleadosDelPeriodo.filter((emp) => !guardadasEmpleadoIds.has(emp.id))
       let filasNuevas: PlanillaRow[] = []
 
       if (empleadosFaltantes.length > 0) {
         const anticiposMap = await cargarAnticipos(empleadosFaltantes)
-        const prestamosMap = await cargarCuotasPrestamo(empleadosFaltantes, p.id)
-        const ventasCuotasMap = await cargarCuotasVentas(empleadosFaltantes, p.id)
+        const prestamosMap = await cargarCuotasPrestamo(empleadosFaltantes, p?.id || 0)
+        const ventasCuotasMap = await cargarCuotasVentas(empleadosFaltantes, p?.id || 0)
 
         filasNuevas = empleadosFaltantes.map((emp) =>
-          crearFilaInicial(emp, saldoMap, anticiposMap, prestamosMap, ventasCuotasMap)
+          crearFilaInicial(emp, saldoMap, anticiposMap, prestamosMap, ventasCuotasMap, parametrosActuales)
         )
       }
 
       const rows = [...rowsGuardadas, ...filasNuevas].sort((a, b) => a.codigo.localeCompare(b.codigo))
 
       setFilas(rows)
+      setPeriodoCargado(`${anio}-${mes}-${quincena}`)
       setMensaje(
         filasNuevas.length > 0
           ? `Planilla cargada desde registros guardados. Se agregaron ${filasNuevas.length} empleado(s) nuevo(s) que trabajaron en este período.`
@@ -788,514 +751,97 @@ export default function RrhhPlanillaPage() {
   }, [])
 
   const updateRow = (empleadoId: number, field: keyof PlanillaRow, value: string) => {
-    setFilas((prev) =>
-      prev.map((row) => {
-        if (row.empleado_id !== empleadoId) return row
-        return calcularFila({ ...row, [field]: value }, parametros)
-      })
-    )
+    if (!mismoPeriodo || saving || pagandoEmpleadoId !== null) return
+    setFilas((prev) => prev.map((row) => {
+      if (row.empleado_id !== empleadoId || row.estado !== 'PENDIENTE') return row
+      if (field === 'fecha_pago') return { ...row, fecha_pago: value }
+      if (field === 'observaciones') return { ...row, observaciones: value }
+      return calcularFila({ ...row, [field]: value }, parametros)
+    }))
+    // Elegir fecha real del pago no modifica el borrador.
+    if (field !== 'fecha_pago') {
+      setDirtyIds((prev) => prev.includes(empleadoId) ? prev : [...prev, empleadoId])
+    }
   }
 
-  const updateEstado = (empleadoId: number, estado: PlanillaRow['estado']) => {
-    setFilas((prev) =>
-      prev.map((row) => {
-        if (row.empleado_id !== empleadoId) return row
-        return { ...row, estado, fecha_pago: estado === 'PAGADO' && !row.fecha_pago ? todayISO() : row.fecha_pago }
-      })
-    )
-  }
-
-  const marcarTodosPagados = () => {
-    const fecha = todayISO()
-
-    setFilas((prev) =>
-      prev.map((row) => (
-        row.estado === 'ANULADO'
-          ? row
-          : { ...row, estado: 'PAGADO', fecha_pago: row.fecha_pago || fecha }
-      ))
-    )
-  }
-
-  const marcarTodosPendientes = () => {
-    setFilas((prev) =>
-      prev.map((row) => (
-        row.estado === 'ANULADO'
-          ? row
-          : { ...row, estado: 'PENDIENTE', fecha_pago: '' }
-      ))
-    )
-  }
-
-  const detalleParaFila = (row: PlanillaRow) => {
-    const detalles = [
-      { tipo: 'DEVENGADO', concepto: 'Salario ordinario', monto: row.salario_ordinario },
-      { tipo: 'DEVENGADO', concepto: 'Horas extra', monto: row.monto_horas_extra },
-      { tipo: 'DEVENGADO', concepto: 'Bono producción', monto: row.bono_produccion_total },
-      { tipo: 'DEVENGADO', concepto: 'Bonificación de ley', monto: toNum(row.bonificacion_ley) },
-      { tipo: 'DEVENGADO', concepto: 'Otros bonos', monto: toNum(row.otros_bonos) },
-      { tipo: 'DESCUENTO', concepto: 'IGSS', monto: toNum(row.igss) },
-      { tipo: 'DESCUENTO', concepto: 'IRTRA', monto: toNum(row.irtra) },
-      { tipo: 'DESCUENTO', concepto: 'Anticipos', monto: toNum(row.anticipos) },
-      { tipo: 'DESCUENTO', concepto: 'Préstamos', monto: toNum(row.prestamos) },
-      { tipo: 'DESCUENTO', concepto: 'Ventas descontadas', monto: toNum(row.descuentos_ventas) },
-      { tipo: 'DESCUENTO', concepto: 'Otros descuentos', monto: toNum(row.descuentos_manual) },
-    ]
-
-    return detalles.filter((d) => toNum(d.monto) !== 0)
-  }
-
-  const payloadPlanillaFila = (
-    row: PlanillaRow,
-    p: Periodo,
-    userId: string | null,
-    userEmail: string | null
-  ) => ({
-    periodo_id: p.id,
-    empleado_id: row.empleado_id,
-    salario_base: round2(toNum(row.salario_base)),
-    salario_diario: round2(row.salario_diario),
-    hora_normal: round2(row.hora_normal),
-    dias_trabajados: round2(toNum(row.dias_trabajados)),
-    horas_extra: round2(toNum(row.horas_extra)),
-    valor_hora_extra: round2(row.valor_hora_extra),
-    salario_ordinario: round2(row.salario_ordinario),
-    monto_horas_extra: round2(row.monto_horas_extra),
-    bono_produccion_diario: round2(toNum(row.bono_produccion_diario)),
-    bono_produccion_total: round2(row.bono_produccion_total),
-    bonificacion_ley: round2(toNum(row.bonificacion_ley)),
-    otros_bonos: round2(toNum(row.otros_bonos)),
-    igss: round2(toNum(row.igss)),
-    irtra: round2(toNum(row.irtra)),
-    anticipos: round2(toNum(row.anticipos)),
-    prestamos: round2(toNum(row.prestamos)),
-    descuentos_ventas: round2(toNum(row.descuentos_ventas)),
-    descuentos_manual: round2(toNum(row.descuentos_manual)),
-    total_devengado: round2(row.total_devengado),
-    total_descuentos: round2(row.total_descuentos),
-    liquido_pagar: round2(row.liquido_pagar),
-    estado: row.estado,
-    fecha_pago: row.estado === 'PAGADO' ? row.fecha_pago || todayISO() : null,
-    observaciones: row.observaciones || null,
-    user_id: userId,
-    updated_at: new Date().toISOString(),
-    editado_por: userEmail,
-    editado_en: new Date().toISOString(),
+  const borradorPayload = (row: PlanillaRow) => ({
+    ...(dirtyIds.includes(row.empleado_id) || !row.id ? calcularFila(row, parametros) : row),
+    anio: Number(anio), mes: Number(mes), quincena: Number(quincena),
+    // Estado y fecha_pago se deciden EXCLUSIVAMENTE en el servidor.
+    id: undefined, estado: undefined, fecha_pago: undefined,
+    revision: row.revision,
   })
 
-  const guardarDetallePlanillaFila = async (row: PlanillaRow, planillaId: number) => {
-    await supabase.from('rrhh_planilla_detalle').delete().eq('planilla_empleado_id', planillaId)
-    await supabase.from('rrhh_planilla_area_costo').delete().eq('planilla_empleado_id', planillaId)
-
-    const detalles = detalleParaFila(row).map((d) => ({
-      planilla_empleado_id: planillaId,
-      tipo: d.tipo,
-      concepto: d.concepto,
-      monto: round2(toNum(d.monto)),
-    }))
-
-    if (detalles.length > 0) {
-      const { error: detErr } = await supabase.from('rrhh_planilla_detalle').insert(detalles)
-      if (detErr) throw new Error(`Error guardando detalle: ${detErr.message}`)
-    }
-
-    const dist = distribucionesPorEmpleado.get(row.empleado_id) || []
-    const costos = dist
-      .filter((d) => toNum(d.porcentaje) > 0)
-      .map((d) => ({
-        planilla_empleado_id: planillaId,
-        area_id: d.area_id,
-        porcentaje: round2(toNum(d.porcentaje)),
-        monto: round2(row.liquido_pagar * (toNum(d.porcentaje) / 100)),
-      }))
-
-    if (costos.length > 0) {
-      const { error: costErr } = await supabase.from('rrhh_planilla_area_costo').insert(costos)
-      if (costErr) throw new Error(`Error guardando distribución: ${costErr.message}`)
-    }
-  }
-
-  const crearDescuentosVentasDirectos = async (p: Periodo, userId: string | null) => {
-    const filasPagadasConVentas = filas.filter(
-      (row) => row.estado === 'PAGADO' && toNum(row.descuentos_ventas) > 0
-    )
-
-    if (filasPagadasConVentas.length === 0) return
-
-    const empleadoIds = filasPagadasConVentas.map((row) => row.empleado_id)
-
-    const { data: cuotasExistentes, error: cuotasError } = await supabase
-      .from('rrhh_descuentos_ventas_cuotas')
-      .select('monto,estado,rrhh_descuentos_ventas!inner(empleado_id,estado,modulo)')
-      .eq('periodo_id', p.id)
-      .in('rrhh_descuentos_ventas.empleado_id', empleadoIds)
-
-    if (cuotasError) throw new Error(`Error revisando descuentos de ventas existentes: ${cuotasError.message}`)
-
-    const programadoPorEmpleado = new Map<number, number>()
-
-    ;((cuotasExistentes || []) as unknown[]).forEach((item) => {
-      const row = item as {
-        monto?: number
-        estado?: string
-        rrhh_descuentos_ventas?: { empleado_id?: number; estado?: string } | { empleado_id?: number; estado?: string }[]
-      }
-      const descuento = Array.isArray(row.rrhh_descuentos_ventas)
-        ? row.rrhh_descuentos_ventas[0]
-        : row.rrhh_descuentos_ventas
-
-      if (!descuento || descuento.estado === 'ANULADO' || row.estado === 'ANULADA') return
-
-      const empleadoId = Number(descuento.empleado_id || 0)
-      if (empleadoId > 0) {
-        programadoPorEmpleado.set(
-          empleadoId,
-          round2((programadoPorEmpleado.get(empleadoId) || 0) + toNum(row.monto))
-        )
-      }
-    })
-
-    const crearDescuento = async (
-      row: PlanillaRow,
-      modulo: 'VENTAS' | 'GRANJA_CERDOS',
-      monto: number
-    ) => {
-      if (monto <= 0) return
-      if (!row.cliente_id) {
-        throw new Error(`El empleado ${row.codigo} - ${row.nombre} no tiene cliente vinculado.`)
-      }
-
-      const { data: descData, error: descError } = await supabase
-        .from('rrhh_descuentos_ventas')
-        .insert({
-          empleado_id: row.empleado_id,
-          cliente_id: row.cliente_id,
-          periodo_id: p.id,
-          modulo,
-          fecha: p.fecha_fin,
-          monto_total: round2(monto),
-          numero_cuotas: 1,
-          monto_cuota: round2(monto),
-          estado: 'PENDIENTE',
-          observaciones: `DESCUENTO DIRECTO DESDE PLANILLA ${p.fecha_inicio} a ${p.fecha_fin}.`,
-          user_id: userId,
-        })
-        .select('id')
-        .single()
-
-      if (descError) throw new Error(`Error creando descuento directo de ventas: ${descError.message}`)
-
-      const descuentoId = Number(descData?.id || 0)
-      if (!descuentoId) throw new Error('No se pudo obtener el ID del descuento directo.')
-
-      const { error: cuotaError } = await supabase
-        .from('rrhh_descuentos_ventas_cuotas')
-        .insert({
-          descuento_id: descuentoId,
-          numero_cuota: 1,
-          periodo_id: p.id,
-          monto: round2(monto),
-          estado: 'PENDIENTE',
-        })
-
-      if (cuotaError) throw new Error(`Error creando cuota directa de ventas: ${cuotaError.message}`)
-    }
-
-    for (const row of filasPagadasConVentas) {
-      const montoEnPlanilla = round2(toNum(row.descuentos_ventas))
-      const montoYaProgramado = round2(programadoPorEmpleado.get(row.empleado_id) || 0)
-      const faltantePorProgramar = round2(montoEnPlanilla - montoYaProgramado)
-
-      if (faltantePorProgramar <= 0) continue
-
-      if (!row.cliente_id) {
-        throw new Error(`El empleado ${row.codigo} - ${row.nombre} tiene descuento de ventas pero no tiene cliente vinculado.`)
-      }
-
-      let restante = faltantePorProgramar
-      const montoVentasRegulares = round2(Math.min(restante, Math.max(row.saldo_ventas, 0)))
-      restante = round2(restante - montoVentasRegulares)
-      const montoVentasGranja = round2(Math.min(restante, Math.max(row.saldo_granja, 0)))
-      restante = round2(restante - montoVentasGranja)
-
-      if (montoVentasRegulares > 0) {
-        await crearDescuento(row, 'VENTAS', montoVentasRegulares)
-      }
-
-      if (montoVentasGranja > 0) {
-        await crearDescuento(row, 'GRANJA_CERDOS', montoVentasGranja)
-      }
-
-      if (restante > 0) {
-        throw new Error(
-          `El descuento de ventas de ${row.codigo} - ${row.nombre} excede la deuda actual por ${money(restante)}. `
-          + `Deuda actual: ventas ${money(row.saldo_ventas)}, granja ${money(row.saldo_granja)}.`
-        )
-      }
-    }
-  }
-
-  const aplicarMovimientosPagados = async (p: Periodo, idByEmpleado: Map<number, number>) => {
-    const filasPagadas = filas.filter((row) => row.estado === 'PAGADO')
-    const empleadosConAnticipos = filasPagadas
-      .filter((row) => toNum(row.anticipos) > 0)
-      .map((row) => row.empleado_id)
-
-    const empleadosConPrestamos = filasPagadas
-      .filter((row) => toNum(row.prestamos) > 0)
-      .map((row) => row.empleado_id)
-
-    const empleadosConVentas = filasPagadas
-      .filter((row) => toNum(row.descuentos_ventas) > 0)
-      .map((row) => row.empleado_id)
-
-    if (empleadosConAnticipos.length > 0) {
-      for (const empleadoId of empleadosConAnticipos) {
-        const fichaId = idByEmpleado.get(empleadoId)
-        if (!fichaId) throw new Error(`No existe ficha guardada del empleado ${empleadoId}.`)
-        const { error } = await supabase.rpc('rrhh_aplicar_anticipos_ficha', {
-          p_ficha_id: fichaId,
-        })
-        if (error) throw new Error(`Error aplicando anticipos de empleado ${empleadoId}: ${error.message}`)
-      }
-    }
-
-    if (empleadosConPrestamos.length > 0) {
-      const { data: cuotasData, error: cuotasError } = await supabase
-        .from('rrhh_prestamo_cuotas')
-        .select('id,prestamo_id,rrhh_prestamos!inner(empleado_id)')
-        .eq('estado', 'PENDIENTE')
-        .eq('periodo_id', p.id)
-        .in('rrhh_prestamos.empleado_id', empleadosConPrestamos)
-
-      if (cuotasError) throw new Error(`Error buscando cuotas de préstamo: ${cuotasError.message}`)
-
-      const cuotas = (cuotasData || []) as unknown[]
-      const cuotaIds: number[] = []
-      const prestamoIds = new Set<number>()
-
-      cuotas.forEach((item) => {
-        const row = item as { id?: number; prestamo_id?: number }
-        const cuotaId = Number(row.id || 0)
-        const prestamoId = Number(row.prestamo_id || 0)
-
-        if (cuotaId > 0) cuotaIds.push(cuotaId)
-        if (prestamoId > 0) prestamoIds.add(prestamoId)
-      })
-
-      if (cuotaIds.length > 0) {
-        const { error } = await supabase
-          .from('rrhh_prestamo_cuotas')
-          .update({ estado: 'APLICADA' })
-          .in('id', cuotaIds)
-
-        if (error) throw new Error(`Error aplicando cuotas de préstamo: ${error.message}`)
-      }
-
-      for (const prestamoId of Array.from(prestamoIds)) {
-        const { count, error: countError } = await supabase
-          .from('rrhh_prestamo_cuotas')
-          .select('id', { count: 'exact', head: true })
-          .eq('prestamo_id', prestamoId)
-          .eq('estado', 'PENDIENTE')
-
-        if (countError) throw new Error(`Error revisando préstamo: ${countError.message}`)
-
-        if ((count || 0) === 0) {
-          const { error } = await supabase
-            .from('rrhh_prestamos')
-            .update({ estado: 'PAGADO' })
-            .eq('id', prestamoId)
-
-          if (error) throw new Error(`Error cerrando préstamo: ${error.message}`)
-        }
-      }
-    }
-
-    if (empleadosConVentas.length > 0) {
-      const { data: cuotasData, error: cuotasError } = await supabase
-        .from('rrhh_descuentos_ventas_cuotas')
-        .select('id,descuento_id,rrhh_descuentos_ventas!inner(empleado_id)')
-        .eq('estado', 'PENDIENTE')
-        .eq('periodo_id', p.id)
-        .in('rrhh_descuentos_ventas.empleado_id', empleadosConVentas)
-
-      if (cuotasError) throw new Error(`Error buscando cuotas de ventas: ${cuotasError.message}`)
-
-      const cuotasVentas = (cuotasData || []) as unknown[]
-      const cuotaIds: number[] = []
-      const descuentoIds = new Set<number>()
-
-      cuotasVentas.forEach((item) => {
-        const row = item as { id?: number; descuento_id?: number }
-        const cuotaId = Number(row.id || 0)
-        const descuentoId = Number(row.descuento_id || 0)
-
-        if (cuotaId > 0) cuotaIds.push(cuotaId)
-        if (descuentoId > 0) descuentoIds.add(descuentoId)
-      })
-
-      if (cuotaIds.length > 0) {
-        const { error } = await supabase
-          .from('rrhh_descuentos_ventas_cuotas')
-          .update({ estado: 'APLICADA' })
-          .in('id', cuotaIds)
-
-        if (error) throw new Error(`Error aplicando cuotas de ventas: ${error.message}`)
-      }
-
-      for (const descuentoId of Array.from(descuentoIds)) {
-        const { count, error: countError } = await supabase
-          .from('rrhh_descuentos_ventas_cuotas')
-          .select('id', { count: 'exact', head: true })
-          .eq('descuento_id', descuentoId)
-          .eq('estado', 'PENDIENTE')
-
-        if (countError) throw new Error(`Error revisando descuento de ventas: ${countError.message}`)
-
-        if ((count || 0) === 0) {
-          const { error } = await supabase
-            .from('rrhh_descuentos_ventas')
-            .update({ estado: 'APLICADO' })
-            .eq('id', descuentoId)
-
-          if (error) throw new Error(`Error cerrando descuento de ventas: ${error.message}`)
-        }
-      }
-    }
-
-    const hayPendientes = filas.some((row) => row.estado === 'PENDIENTE')
-    const hayPagadas = filas.some((row) => row.estado === 'PAGADO')
-    const nuevoEstadoPeriodo = hayPendientes ? 'ABIERTO' : hayPagadas ? 'PAGADO' : 'ANULADO'
-
-    const { error: periodoError } = await supabase
-      .from('rrhh_periodos_planilla')
-      .update({
-        estado: nuevoEstadoPeriodo,
-        pagado_en: nuevoEstadoPeriodo === 'PAGADO' ? new Date().toISOString() : null,
-      })
-      .eq('id', p.id)
-
-    if (periodoError) throw new Error(`Error actualizando período: ${periodoError.message}`)
-  }
-
   const guardarPlanilla = async () => {
-    if (filas.length === 0) {
-      alert('Primero carga o genera una planilla.')
+    if (!mismoPeriodo) { alert('Carga el período seleccionado antes de guardar.'); return }
+    if (!filas.length) return
+    if (filas.some((r) => r.estado !== 'PENDIENTE' && dirtyIds.includes(r.empleado_id))) {
+      alert('No se pueden editar fichas PAGADAS o ANULADAS. Recarga la planilla.')
       return
     }
-
     setSaving(true)
     setMensaje('')
-
     try {
-      const p = periodo || (await obtenerOCrearPeriodo())
-      const { data: userData } = await supabase.auth.getUser()
-      const userId = userData?.user?.id || null
-      const userEmail = userData?.user?.email || null
-
-      const payload = filas.map((row) => payloadPlanillaFila(row, p, userId, userEmail))
-
-      const { data: saved, error } = await supabase
-        .from('rrhh_planilla_empleado')
-        .upsert(payload, { onConflict: 'periodo_id,empleado_id' })
-        .select('id,empleado_id')
-
-      if (error) throw new Error(`Error guardando planilla: ${error.message}`)
-
-      const savedRows = (saved || []) as { id: number; empleado_id: number }[]
-      const idByEmpleado = new Map(savedRows.map((r) => [Number(r.empleado_id), Number(r.id)]))
-
-      for (const row of filas) {
-        const planillaId = idByEmpleado.get(row.empleado_id) || row.id
-        if (!planillaId) continue
-
-        await guardarDetallePlanillaFila(row, planillaId)
+      const pendientes = filas.filter((r) => r.estado === 'PENDIENTE')
+      if (pendientes.length === 0) { setMensaje('No hay borradores pendientes que guardar.'); return }
+      if (!dirtyIds.length && pendientes.every((r) => r.id !== null)) {
+        setMensaje('Todas las fichas pendientes ya están guardadas y sin cambios.'); return
       }
-
-      await crearDescuentosVentasDirectos(p, userId)
-      await aplicarMovimientosPagados(p, idByEmpleado)
-
-      setFilas((prev) =>
-        prev.map((row) => ({ ...row, id: idByEmpleado.get(row.empleado_id) || row.id }))
-      )
-
-      setMensaje('Planilla guardada correctamente. Los anticipos y cuotas de empleados marcados como pagados quedaron aplicados.')
+      if (pendientes.some((r) => !Number.isFinite(r.liquido_pagar) || r.liquido_pagar < 0)) {
+        throw new Error('Hay fichas con importe líquido negativo o inválido.')
+      }
+      const { error } = await supabase.rpc('rrhh_guardar_borrador_planilla', {
+        p_filas: pendientes.map(borradorPayload),
+      })
+      if (error) throw new Error(`No se guardó la planilla: ${error.message}`)
+      await cargarPlanilla()
+      setMensaje('Borradores guardados. NO se confirmó ningún pago ni se aplicaron descuentos.')
     } catch (err) {
-      console.error(err)
-      setMensaje(err instanceof Error ? err.message : 'Error guardando planilla.')
-    } finally {
-      setSaving(false)
-    }
+      setMensaje(err instanceof Error ? err.message : 'Error guardando borradores.')
+    } finally { setSaving(false) }
   }
 
-  // DESCARGA DE SOLO LECTURA: no crea períodos, no guarda fichas y no aplica deudas.
-  // Para fichas existentes usa los importes ALMACENADOS en lugar de recalcular
-  // cifras históricas con parámetros actuales o cambios sin guardar del formulario.
+  const confirmarPago = async (row: PlanillaRow) => {
+    if (!mismoPeriodo || !row.id || !row.revision || row.estado !== 'PENDIENTE') return
+    if (dirtyIds.includes(row.empleado_id)) {
+      alert('Tienes cambios sin guardar en esta ficha. Primero guarda la planilla.'); return
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(row.fecha_pago)) {
+      alert('Selecciona la fecha REAL de entrega del salario antes de confirmar.'); return
+    }
+    if (!window.confirm(
+      `¿Confirmas que el salario de ${row.codigo} - ${row.nombre} YA FUE ENTREGADO el ${row.fecha_pago}?\n` +
+      `Líquido: ${money(row.liquido_pagar)}. Esta acción aplicará anticipos y cuotas y no se puede deshacer desde esta pantalla.`
+    )) return
+    setPagandoEmpleadoId(row.empleado_id)
+    setMensaje('')
+    try {
+      const { error } = await supabase.rpc('rrhh_confirmar_pago_ficha', {
+        p_ficha_id: row.id, p_fecha_pago: row.fecha_pago, p_revision: row.revision,
+      })
+      if (error) throw new Error(`NO se confirmó el pago: ${error.message}`)
+      await cargarPlanilla()
+      setMensaje(`Pago real confirmado para ${row.codigo} y descuentos registrados una sola vez.`)
+    } catch (err) {
+      setMensaje(err instanceof Error ? err.message : 'Error confirmando pago.')
+    } finally { setPagandoEmpleadoId(null) }
+  }
+
   const imprimirFicha = async (row: PlanillaRow) => {
     if (savingFichaEmpleadoId !== null || saving) return
 
     setSavingFichaEmpleadoId(row.empleado_id)
 
     try {
-      let rowGuardada: PlanillaRow
-      let fichaId: number | null = null
-      let documentoGuardado = false
-
-      if (row.id !== null) {
-        const { data, error } = await supabase
-          .from('rrhh_planilla_empleado')
-          .select('*')
-          .eq('id', row.id)
-          .eq('empleado_id', row.empleado_id)
-          .single()
-
-        if (error || !data) {
-          throw new Error(`No se pudo consultar la ficha guardada: ${error?.message || 'registro no encontrado'}`)
-        }
-
-        const g = data as PlanillaGuardada
-        if (periodo && Number(g.periodo_id) !== Number(periodo.id)) {
-          throw new Error('La ficha pertenece a otro período. Vuelve a cargar la planilla.')
-        }
-
-        fichaId = Number(g.id)
-        documentoGuardado = true
-        rowGuardada = {
-          ...row,
-          id: fichaId,
-          salario_base: String(toNum(g.salario_base)),
-          salario_diario: toNum(g.salario_diario),
-          hora_normal: toNum(g.hora_normal),
-          dias_trabajados: String(toNum(g.dias_trabajados)),
-          horas_extra: String(toNum(g.horas_extra)),
-          valor_hora_extra: toNum(g.valor_hora_extra),
-          salario_ordinario: toNum(g.salario_ordinario),
-          monto_horas_extra: toNum(g.monto_horas_extra),
-          bono_produccion_diario: String(toNum(g.bono_produccion_diario)),
-          bono_produccion_total: toNum(g.bono_produccion_total),
-          bonificacion_ley: String(toNum(g.bonificacion_ley)),
-          otros_bonos: String(toNum(g.otros_bonos)),
-          igss: String(toNum(g.igss)),
-          irtra: String(toNum(g.irtra)),
-          anticipos: String(toNum(g.anticipos)),
-          prestamos: String(toNum(g.prestamos)),
-          descuentos_ventas: String(toNum(g.descuentos_ventas)),
-          descuentos_manual: String(toNum(g.descuentos_manual)),
-          total_devengado: toNum(g.total_devengado),
-          total_descuentos: toNum(g.total_descuentos),
-          liquido_pagar: toNum(g.liquido_pagar),
-          estado: g.estado,
-          fecha_pago: g.fecha_pago || '',
-          observaciones: g.observaciones || '',
-        }
-      } else {
-        // Vista previa todavía no guardada: únicamente cálculos en memoria.
-        rowGuardada = calcularFila(row, parametros)
+      if (!mismoPeriodo || !row.id || dirtyIds.includes(row.empleado_id)) {
+        alert('Primero GUARDA el borrador y vuelve a descargar. El PDF no guarda cambios ni pagos.')
+        return
       }
+      const rowGuardada = row
+      const fichaId = row.id
 
       const doc = new jsPDF('p', 'mm', 'letter') as AutoTableDoc
-      await addHeader(doc, documentoGuardado ? 'FICHA QUINCENAL GUARDADA' : 'VISTA PREVIA DE PLANILLA')
+      await addHeader(doc, rowGuardada.estado === 'PAGADO' ? 'FICHA DE PAGO QUINCENAL' : 'FICHA DE PLANILLA - SIN PAGAR')
 
       doc.setFontSize(10)
       doc.setFont('helvetica', 'bold')
@@ -1303,18 +849,18 @@ export default function RrhhPlanillaPage() {
       doc.setFont('helvetica', 'normal')
       doc.text(`Ficha planilla ID: ${fichaId || 'N/A'}`, 14, 45)
       doc.text(`Período: ${fechas.etiqueta}`, 14, 52)
-      doc.text(`Estado: ${documentoGuardado ? rowGuardada.estado : 'SIN GUARDAR'}`, 105, 52)
-      doc.text(`Fecha de pago en sistema: ${documentoGuardado ? rowGuardada.fecha_pago || 'Sin confirmar' : 'No registrada'}`, 14, 59)
+      doc.text(`Estado: ${rowGuardada.estado}`, 105, 52)
+      doc.text(`Fecha de pago: ${rowGuardada.fecha_pago || 'Pendiente'}`, 150, 52)
       doc.text(
-        documentoGuardado
-          ? 'Consulta histórica: el estado registrado no verifica la entrega del salario.'
-          : 'VISTA PREVIA SIN GUARDAR - NO ES COMPROBANTE DE PAGO.',
+        rowGuardada.estado === 'PAGADO'
+          ? 'Pago registrado en la ficha'
+          : 'BORRADOR: NO ACREDITA ENTREGA DE SALARIO NI DESCUENTOS',
         14,
-        66
+        58
       )
 
     autoTable(doc, {
-      startY: 74,
+      startY: 66,
       head: [['Concepto', 'Cantidad / base', 'Monto']],
       body: [
         ['Salario base mensual', '', money(rowGuardada.salario_base)],
@@ -1374,11 +920,6 @@ export default function RrhhPlanillaPage() {
     }
 
     doc.save(fichaPlanillaFileName(rowGuardada, fichaId, anio, mes, quincena))
-    setMensaje(
-      documentoGuardado
-        ? `PDF de la ficha ID ${fichaId} descargado usando sus valores guardados. No se modificó la base de datos.`
-        : 'Vista previa PDF descargada sin crear ni modificar fichas o pagos.'
-    )
     } catch (err) {
       console.error(err)
       alert(err instanceof Error ? err.message : 'No se pudo descargar la ficha.')
@@ -1388,13 +929,13 @@ export default function RrhhPlanillaPage() {
   }
 
   const imprimirReporteGeneral = async () => {
-    if (filas.length === 0) {
-      alert('No hay planilla cargada.')
+    if (!mismoPeriodo || filas.length === 0 || dirtyIds.length || filas.some((r) => !r.id)) {
+      alert('Primero guarda todos los borradores de este período. Descargar PDF no guarda datos ni aplica descuentos.')
       return
     }
 
     const doc = new jsPDF('l', 'mm', 'letter') as AutoTableDoc
-    await addHeader(doc, 'REPORTE GENERAL DE PLANILLA')
+    await addHeader(doc, 'REPORTE GENERAL DE PLANILLA (GUARDADO)')
 
     doc.setFontSize(9)
     doc.text(`Período: ${fechas.etiqueta}`, 14, 34)
@@ -1476,7 +1017,7 @@ export default function RrhhPlanillaPage() {
               type="number"
               className="mt-1 border rounded px-3 py-2 w-full"
               value={anio}
-              onChange={(e) => setAnio(e.target.value)}
+              onChange={(e) => { setAnio(e.target.value); setFilas([]); setPeriodo(null); setPeriodoCargado('') }}
             />
           </label>
 
@@ -1485,7 +1026,7 @@ export default function RrhhPlanillaPage() {
             <select
               className="mt-1 border rounded px-3 py-2 w-full"
               value={mes}
-              onChange={(e) => setMes(e.target.value)}
+              onChange={(e) => { setMes(e.target.value); setFilas([]); setPeriodo(null); setPeriodoCargado('') }}
             >
               {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => (
                 <option key={m} value={m}>
@@ -1500,7 +1041,7 @@ export default function RrhhPlanillaPage() {
             <select
               className="mt-1 border rounded px-3 py-2 w-full"
               value={quincena}
-              onChange={(e) => setQuincena(e.target.value as '1' | '2')}
+              onChange={(e) => { setQuincena(e.target.value as '1' | '2'); setFilas([]); setPeriodo(null); setPeriodoCargado('') }}
             >
               <option value="1">1 al 15</option>
               <option value="2">16 al 30</option>
@@ -1526,13 +1067,14 @@ export default function RrhhPlanillaPage() {
           <button
             type="button"
             onClick={guardarPlanilla}
-            disabled={saving || filas.length === 0}
+            disabled={saving || !mismoPeriodo || filas.length === 0 || pagandoEmpleadoId !== null}
             className="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white px-4 py-2 rounded"
           >
-            {saving ? 'Guardando...' : 'Guardar'}
+            {saving ? 'Guardando...' : 'Guardar borrador (sin pagar)'}
           </button>
         </div>
 
+        <p className="mt-3 text-sm text-slate-700">{periodo ? `Período #${periodo.id}: ${periodo.estado}. ` : 'Período todavía sin registrar. '}Guardar es un borrador. Descargar PDF exige haber guardado, y nunca marca un salario como pagado. Solo «Confirmar pago real» aplica descuentos.</p>
         {mensaje && <div className="mt-3 border rounded p-3 text-sm bg-slate-50">{mensaje}</div>}
       </section>
 
@@ -1596,22 +1138,6 @@ export default function RrhhPlanillaPage() {
       <div className="flex flex-wrap justify-end gap-2 mb-3">
         <button
           type="button"
-          onClick={marcarTodosPagados}
-          disabled={filas.length === 0}
-          className="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white px-4 py-2 rounded text-sm"
-        >
-          Marcar todos pagados
-        </button>
-        <button
-          type="button"
-          onClick={marcarTodosPendientes}
-          disabled={filas.length === 0}
-          className="bg-slate-500 hover:bg-slate-600 disabled:opacity-60 text-white px-4 py-2 rounded text-sm"
-        >
-          Marcar todos pendientes
-        </button>
-        <button
-          type="button"
           onClick={imprimirReporteGeneral}
           disabled={filas.length === 0}
           className="bg-slate-800 hover:bg-slate-900 disabled:opacity-60 text-white px-4 py-2 rounded text-sm"
@@ -1654,6 +1180,7 @@ export default function RrhhPlanillaPage() {
                 <td className="border p-2 min-w-[220px]">
                   <div className="font-semibold">{row.codigo}</div>
                   <div>{row.nombre}</div>
+                  {!row.cliente_id && <div className="mt-1 text-[11px] text-amber-800">Sin cliente relacionado: revisar ventas a crédito.</div>}
                   {row.saldo_cliente > 0 && (
                     <div className="mt-1 text-[11px] text-red-700">
                       Saldo cliente: {money(row.saldo_cliente)}
@@ -1666,6 +1193,7 @@ export default function RrhhPlanillaPage() {
                     type="number"
                     className="border rounded px-1 py-1 w-24"
                     value={row.salario_base}
+                    disabled={row.estado !== 'PENDIENTE' || saving || pagandoEmpleadoId !== null}
                     onChange={(e) => updateRow(row.empleado_id, 'salario_base', e.target.value)}
                   />
                   <div className="text-[10px] text-slate-500">Día {money(row.salario_diario)}</div>
@@ -1676,6 +1204,7 @@ export default function RrhhPlanillaPage() {
                     type="number"
                     className="border rounded px-1 py-1 w-16"
                     value={row.dias_trabajados}
+                    disabled={row.estado !== 'PENDIENTE' || saving || pagandoEmpleadoId !== null}
                     onChange={(e) => updateRow(row.empleado_id, 'dias_trabajados', e.target.value)}
                   />
                   <div className="text-[10px] text-slate-500">{money(row.salario_ordinario)}</div>
@@ -1686,6 +1215,7 @@ export default function RrhhPlanillaPage() {
                     type="number"
                     className="border rounded px-1 py-1 w-16"
                     value={row.horas_extra}
+                    disabled={row.estado !== 'PENDIENTE' || saving || pagandoEmpleadoId !== null}
                     onChange={(e) => updateRow(row.empleado_id, 'horas_extra', e.target.value)}
                   />
                   <div className="text-[10px] text-slate-500">{money(row.monto_horas_extra)}</div>
@@ -1696,6 +1226,7 @@ export default function RrhhPlanillaPage() {
                     type="number"
                     className="border rounded px-1 py-1 w-20"
                     value={row.bono_produccion_diario}
+                    disabled={row.estado !== 'PENDIENTE' || saving || pagandoEmpleadoId !== null}
                     onChange={(e) =>
                       updateRow(row.empleado_id, 'bono_produccion_diario', e.target.value)
                     }
@@ -1708,6 +1239,7 @@ export default function RrhhPlanillaPage() {
                     type="number"
                     className="border rounded px-1 py-1 w-20"
                     value={row.bonificacion_ley}
+                    disabled={row.estado !== 'PENDIENTE' || saving || pagandoEmpleadoId !== null}
                     onChange={(e) => updateRow(row.empleado_id, 'bonificacion_ley', e.target.value)}
                   />
                 </td>
@@ -1717,6 +1249,7 @@ export default function RrhhPlanillaPage() {
                     type="number"
                     className="border rounded px-1 py-1 w-20"
                     value={row.igss}
+                    disabled={row.estado !== 'PENDIENTE' || saving || pagandoEmpleadoId !== null}
                     onChange={(e) => updateRow(row.empleado_id, 'igss', e.target.value)}
                   />
                 </td>
@@ -1726,6 +1259,7 @@ export default function RrhhPlanillaPage() {
                     type="number"
                     className="border rounded px-1 py-1 w-20"
                     value={row.irtra}
+                    disabled={row.estado !== 'PENDIENTE' || saving || pagandoEmpleadoId !== null}
                     onChange={(e) => updateRow(row.empleado_id, 'irtra', e.target.value)}
                   />
                 </td>
@@ -1735,6 +1269,7 @@ export default function RrhhPlanillaPage() {
                     type="number"
                     className="border rounded px-1 py-1 w-20"
                     value={row.anticipos}
+                    disabled={row.estado !== 'PENDIENTE' || saving || pagandoEmpleadoId !== null}
                     onChange={(e) => updateRow(row.empleado_id, 'anticipos', e.target.value)}
                   />
                   {toNum(row.anticipos) > 0 && (
@@ -1747,6 +1282,8 @@ export default function RrhhPlanillaPage() {
                     type="number"
                     className="border rounded px-1 py-1 w-20"
                     value={row.prestamos}
+                    disabled
+                    title="Este importe se programa en RRHH / Préstamos y se actualiza al recargar la planilla."
                     onChange={(e) => updateRow(row.empleado_id, 'prestamos', e.target.value)}
                   />
                   {toNum(row.prestamos) > 0 && (
@@ -1759,6 +1296,8 @@ export default function RrhhPlanillaPage() {
                     type="number"
                     className="border rounded px-1 py-1 w-20"
                     value={row.descuentos_ventas}
+                    disabled
+                    title="Este importe se programa en RRHH / Ventas a empleados."
                     onChange={(e) => updateRow(row.empleado_id, 'descuentos_ventas', e.target.value)}
                   />
                   {row.saldo_cliente > 0 && (
@@ -1781,6 +1320,7 @@ export default function RrhhPlanillaPage() {
                     type="number"
                     className="border rounded px-1 py-1 w-20"
                     value={row.descuentos_manual}
+                    disabled={row.estado !== 'PENDIENTE' || saving || pagandoEmpleadoId !== null}
                     onChange={(e) => updateRow(row.empleado_id, 'descuentos_manual', e.target.value)}
                   />
                 </td>
@@ -1792,43 +1332,43 @@ export default function RrhhPlanillaPage() {
                 </td>
 
                 <td className="border p-2">
-                  <select
-                    className="border rounded px-1 py-1"
-                    value={row.estado}
-                    onChange={(e) => updateEstado(row.empleado_id, e.target.value as PlanillaRow['estado'])}
-                  >
-                    <option value="PENDIENTE">Pendiente</option>
-                    <option value="PAGADO">Pagado</option>
-                    <option value="ANULADO">Anulado</option>
-                  </select>
-
-                  {row.estado === 'PAGADO' && (
-                    <input
-                      type="date"
-                      className="border rounded px-1 py-1 mt-1 w-full"
-                      value={row.fecha_pago}
-                      onChange={(e) => updateRow(row.empleado_id, 'fecha_pago', e.target.value)}
-                    />
-                  )}
+                  <span className="font-semibold">{row.estado}</span>
+                  {row.estado === 'PENDIENTE' ? (
+                    <label className="block mt-1 text-[10px]">
+                      Fecha real de pago
+                      <input type="date" className="border rounded px-1 py-1 w-full"
+                        value={row.fecha_pago}
+                        onChange={(e) => updateRow(row.empleado_id, 'fecha_pago', e.target.value)} />
+                    </label>
+                  ) : <div className="text-[10px]">{row.fecha_pago || '—'}</div>}
                 </td>
 
                 <td className="border p-2 min-w-[120px]">
                   <button
                     type="button"
                     onClick={() => imprimirFicha(row)}
-                    disabled={saving || savingFichaEmpleadoId === row.empleado_id}
+                    disabled={saving || !mismoPeriodo || !row.id || dirtyIds.includes(row.empleado_id) || savingFichaEmpleadoId === row.empleado_id}
                     className="bg-slate-700 hover:bg-slate-800 disabled:opacity-60 text-white rounded px-2 py-1 text-xs mb-1 w-full"
-                    title="Descarga el PDF sin guardar, modificar ni aplicar pagos o descuentos."
+                    title="La descarga NO guarda cambios ni aplica descuentos. Guarda el borrador primero."
                   >
-                    {savingFichaEmpleadoId === row.empleado_id ? 'Generando...' : 'Descargar PDF'}
+                    {savingFichaEmpleadoId === row.empleado_id ? 'Generando...' : 'PDF guardado'}
                   </button>
                   <div className="text-[10px] text-slate-500 mb-1">
-                    {row.id ? `Ficha ID ${row.id} · PDF de última versión guardada` : 'PDF de vista previa (sin guardar)'}
+                    {row.id ? `Ficha ID ${row.id}` : 'Guarda el borrador antes del PDF'}
                   </div>
+                  {row.estado === 'PENDIENTE' && (
+                    <button type="button" onClick={() => confirmarPago(row)}
+                      disabled={saving || pagandoEmpleadoId !== null || dirtyIds.includes(row.empleado_id) || !row.id}
+                      className="mb-2 bg-red-700 text-white rounded px-2 py-1 text-xs w-full disabled:opacity-50">
+                      {pagandoEmpleadoId === row.empleado_id ? 'Confirmando...' : 'Confirmar pago REAL'}
+                    </button>
+                  )}
+                  {dirtyIds.includes(row.empleado_id) && <div className="text-amber-700 text-[10px]">Cambios sin guardar</div>}
                   <textarea
                     className="border rounded px-1 py-1 w-full text-[11px]"
                     placeholder="Observaciones"
                     value={row.observaciones}
+                    disabled={row.estado !== 'PENDIENTE' || saving || pagandoEmpleadoId !== null}
                     onChange={(e) => updateRow(row.empleado_id, 'observaciones', e.target.value)}
                   />
                 </td>
