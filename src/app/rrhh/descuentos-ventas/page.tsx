@@ -337,25 +337,40 @@ export default function RrhhDescuentosVentasPage() {
   }
 
   const obtenerOCrearPeriodo = async (anio: number, mes: number, quincena: number) => {
-    const fechas = fechasPeriodo(anio, mes, quincena)
+    const { data: existente, error: consultaError } = await supabase
+      .from('rrhh_periodos_planilla')
+      .select('id,anio,mes,quincena,fecha_inicio,fecha_fin,estado')
+      .eq('anio', anio)
+      .eq('mes', mes)
+      .eq('quincena', quincena)
+      .maybeSingle()
+    if (consultaError) throw new Error(`Error consultando período ${anio}-${mes} Q${quincena}: ${consultaError.message}`)
+    if (existente) {
+      if (existente.estado !== 'ABIERTO') {
+        throw new Error(`El período ${anio}-${mes} Q${quincena} está ${existente.estado}. No se pueden programar cuotas allí.`)
+      }
+      return existente as Periodo
+    }
 
+    const fechas = fechasPeriodo(anio, mes, quincena)
     const { data, error } = await supabase
       .from('rrhh_periodos_planilla')
-      .upsert(
-        {
-          anio,
-          mes,
-          quincena,
-          fecha_inicio: fechas.fecha_inicio,
-          fecha_fin: fechas.fecha_fin,
-          estado: 'ABIERTO',
-        },
-        { onConflict: 'anio,mes,quincena' }
-      )
+      .insert({ anio, mes, quincena, fecha_inicio: fechas.fecha_inicio, fecha_fin: fechas.fecha_fin, estado: 'ABIERTO' })
       .select('id,anio,mes,quincena,fecha_inicio,fecha_fin,estado')
       .single()
-
-    if (error) throw new Error(`Error creando período ${anio}-${mes} Q${quincena}: ${error.message}`)
+    if (error) {
+      // Otro usuario pudo crear el período entre la lectura y la inserción.
+      if (error.code === '23505') {
+        const { data: nuevo, error: nuevoError } = await supabase
+          .from('rrhh_periodos_planilla')
+          .select('id,anio,mes,quincena,fecha_inicio,fecha_fin,estado')
+          .eq('anio', anio).eq('mes', mes).eq('quincena', quincena).single()
+        if (nuevoError || !nuevo) throw new Error(`No se pudo recuperar el período ${anio}-${mes} Q${quincena}.`)
+        if (nuevo.estado !== 'ABIERTO') throw new Error(`El período ${anio}-${mes} Q${quincena} ya no está abierto.`)
+        return nuevo as Periodo
+      }
+      throw new Error(`Error creando período ${anio}-${mes} Q${quincena}: ${error.message}`)
+    }
     return data as Periodo
   }
 
@@ -390,6 +405,11 @@ export default function RrhhDescuentosVentasPage() {
       return
     }
 
+    if (form.modulo !== 'MANUAL' && !emp.cliente_id) {
+      alert('Este empleado no tiene cliente relacionado. Debes vincularlo en RRHH / Empleados antes de programar un descuento por ventas o granja.')
+      return
+    }
+
     const montoTotal = round2(toNum(form.monto_total))
     if (montoTotal <= 0) {
       alert('El monto debe ser mayor que 0.')
@@ -405,6 +425,42 @@ export default function RrhhDescuentosVentasPage() {
     setSaving(true)
 
     try {
+      // Evita crear cuotas duplicadas que superen la deuda que tiene el cliente.
+      // Se usa el saldo real actualizado, no el valor cargado al abrir la página.
+      if (form.modulo !== 'MANUAL' && emp.cliente_id) {
+        const { data: saldoActual, error: saldoError } = await supabase
+          .from('rrhh_v_cliente_saldo_total')
+          .select('saldo_ventas,saldo_granja')
+          .eq('cliente_id', emp.cliente_id)
+          .maybeSingle()
+        if (saldoError) throw new Error(`Error consultando deuda actual: ${saldoError.message}`)
+        const deudaActual = form.modulo === 'VENTAS'
+          ? toNum(saldoActual?.saldo_ventas)
+          : toNum(saldoActual?.saldo_granja)
+        const { data: planes, error: planesError } = await supabase
+          .from('rrhh_descuentos_ventas')
+          .select('id')
+          .eq('cliente_id', emp.cliente_id)
+          .eq('modulo', form.modulo)
+          .eq('estado', 'PENDIENTE')
+        if (planesError) throw new Error(`Error consultando descuentos anteriores: ${planesError.message}`)
+        const ids = (planes || []).map((p: { id: number }) => p.id)
+        let yaProgramado = 0
+        if (ids.length) {
+          const { data: cuotasPendientes, error: cuotasPendientesError } = await supabase
+            .from('rrhh_descuentos_ventas_cuotas')
+            .select('monto')
+            .in('descuento_id', ids)
+            .eq('estado', 'PENDIENTE')
+          if (cuotasPendientesError) throw new Error(`Error consultando cuotas pendientes: ${cuotasPendientesError.message}`)
+          yaProgramado = round2((cuotasPendientes || []).reduce((s: number, c: { monto: number }) => s + toNum(c.monto), 0))
+        }
+        const disponible = round2(deudaActual - yaProgramado)
+        if (montoTotal > disponible + 0.009) {
+          throw new Error(`No se puede programar ${money(montoTotal)}: deuda ${money(deudaActual)}, cuotas ya programadas ${money(yaProgramado)}, disponible ${money(Math.max(0, disponible))}. Revisa el estado de cuenta.`)
+        }
+      }
+
       const { data: userData } = await supabase.auth.getUser()
       const userId = userData?.user?.id || null
       const periodosCuotas = await crearPeriodosCuotas(numeroCuotas)
@@ -452,8 +508,8 @@ export default function RrhhDescuentosVentasPage() {
 
       if (cuotasError) throw new Error(`Error guardando cuotas: ${cuotasError.message}`)
 
-      setMensaje('Descuento registrado correctamente.')
       limpiar()
+      setMensaje('Descuento registrado correctamente.')
       await cargarCatalogos()
       await cargarDescuentos()
     } catch (err) {
