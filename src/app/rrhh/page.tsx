@@ -53,6 +53,10 @@ export default function RrhhMenuPage() {
               Planilla quincenal
             </Link>
 
+            <Link href="/rrhh/estado-cuenta" className="block bg-sky-700 hover:bg-sky-800 text-white text-center py-3 rounded">
+              Estado de cuenta: deudas, cuotas y pagos por empleado
+            </Link>
+
             <Link
               href="/rrhh/planilla/fichas"
               className="block bg-indigo-700 hover:bg-indigo-800 text-white text-center py-3 rounded"
