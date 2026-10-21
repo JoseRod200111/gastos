@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type ChangeEvent } from 'react'
 import Link from 'next/link'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
@@ -62,7 +62,6 @@ type FormState = {
 type EditCuotaState = {
   id: number
   monto: string
-  estado: Cuota['estado']
   periodo_id: string
 }
 
@@ -90,27 +89,6 @@ function todayISO() {
   const month = String(d.getMonth() + 1).padStart(2, '0')
   const day = String(d.getDate()).padStart(2, '0')
   return `${d.getFullYear()}-${month}-${day}`
-}
-
-const monthISO = (anio: number, mes: number, dia: number) => {
-  const m = String(mes).padStart(2, '0')
-  const d = String(dia).padStart(2, '0')
-  return `${anio}-${m}-${d}`
-}
-
-const lastDayOfMonth = (anio: number, mes: number) => new Date(anio, mes, 0).getDate()
-
-const fechasPeriodo = (anio: number, mes: number, quincena: number) => {
-  if (quincena === 1) {
-    return { inicio: monthISO(anio, mes, 1), fin: monthISO(anio, mes, 15) }
-  }
-  return { inicio: monthISO(anio, mes, 16), fin: monthISO(anio, mes, Math.min(30, lastDayOfMonth(anio, mes))) }
-}
-
-const siguienteQuincena = (anio: number, mes: number, quincena: number) => {
-  if (quincena === 1) return { anio, mes, quincena: 2 }
-  if (mes === 12) return { anio: anio + 1, mes: 1, quincena: 1 }
-  return { anio, mes: mes + 1, quincena: 1 }
 }
 
 const periodoLabel = (p: Periodo) => `${p.anio}-${String(p.mes).padStart(2, '0')} Q${p.quincena} (${p.fecha_inicio} a ${p.fecha_fin})`
@@ -308,7 +286,6 @@ export default function RrhhPrestamosPage() {
         edits[c.id] = {
           id: c.id,
           monto: String(c.monto),
-          estado: c.estado,
           periodo_id: c.periodo_id ? String(c.periodo_id) : '',
         }
       })
@@ -344,49 +321,6 @@ export default function RrhhPrestamosPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [empleados, periodos])
 
-  const obtenerOCrearPeriodo = async (anio: number, mes: number, quincena: number) => {
-    const fechas = fechasPeriodo(anio, mes, quincena)
-
-    const { data, error } = await supabase
-      .from('rrhh_periodos_planilla')
-      .upsert(
-        {
-          anio,
-          mes,
-          quincena,
-          fecha_inicio: fechas.inicio,
-          fecha_fin: fechas.fin,
-          estado: 'ABIERTO',
-        },
-        { onConflict: 'anio,mes,quincena' }
-      )
-      .select('id,anio,mes,quincena,fecha_inicio,fecha_fin,estado')
-      .single()
-
-    if (error) throw new Error(`Error creando período ${anio}-${mes} Q${quincena}: ${error.message}`)
-    return data as Periodo
-  }
-
-  const generarPeriodosCuotas = async (numeroCuotas: number) => {
-    let anio = Number(form.inicio_anio)
-    let mes = Number(form.inicio_mes)
-    let quincena = Number(form.inicio_quincena)
-    const result: Periodo[] = []
-
-    if (!anio || !mes || !quincena) return result
-
-    for (let i = 0; i < numeroCuotas; i += 1) {
-      const periodo = await obtenerOCrearPeriodo(anio, mes, quincena)
-      result.push(periodo)
-      const siguiente = siguienteQuincena(anio, mes, quincena)
-      anio = siguiente.anio
-      mes = siguiente.mes
-      quincena = siguiente.quincena
-    }
-
-    return result
-  }
-
   const guardarPrestamo = async () => {
     setMensaje('')
 
@@ -401,72 +335,33 @@ export default function RrhhPrestamosPage() {
     }
 
     const montoTotal = round2(toNum(form.monto_total))
-    const numeroCuotas = Math.trunc(toNum(form.numero_cuotas))
+    const numeroCuotas = Number(form.numero_cuotas)
 
-    if (montoTotal <= 0) {
+    if (montoTotal <= 0 || !Number.isFinite(montoTotal)) {
       alert('El monto total debe ser mayor que 0.')
       return
     }
 
-    if (numeroCuotas <= 0) {
-      alert('El número de cuotas debe ser mayor que 0.')
+    if (!Number.isInteger(numeroCuotas) || numeroCuotas <= 0 || numeroCuotas > 120) {
+      alert('El numero de cuotas debe ser un entero entre 1 y 120.')
       return
     }
 
     setSaving(true)
 
     try {
-      const { data: userData } = await supabase.auth.getUser()
-      const userId = userData?.user?.id || null
-      const userEmail = userData?.user?.email || null
-      const periodosCuotas = await generarPeriodosCuotas(numeroCuotas)
-
-      const { data: prestamoData, error: prestErr } = await supabase
-        .from('rrhh_prestamos')
-        .insert({
-          empleado_id: Number(form.empleado_id),
-          fecha: form.fecha,
-          monto_total: montoTotal,
-          numero_cuotas: numeroCuotas,
-          observaciones: form.observaciones.trim() || null,
-          estado: 'ACTIVO',
-          user_id: userId,
-        })
-        .select('id')
-        .single()
-
-      if (prestErr) throw new Error(`Error creando préstamo: ${prestErr.message}`)
-
-      const prestamoId = Number(prestamoData?.id || 0)
-      const cuotaBase = round2(montoTotal / numeroCuotas)
-      let acumulado = 0
-
-      const cuotasPayload = Array.from({ length: numeroCuotas }).map((_, index) => {
-        const numero = index + 1
-        const monto = numero === numeroCuotas ? round2(montoTotal - acumulado) : cuotaBase
-        acumulado = round2(acumulado + monto)
-        return {
-          prestamo_id: prestamoId,
-          numero_cuota: numero,
-          periodo_id: periodosCuotas[index]?.id || null,
-          monto,
-          estado: 'PENDIENTE',
-        }
+      // Un unico RPC crea prestamo, quincenas y cuotas en una transaccion.
+      const { error } = await supabase.rpc('rrhh_crear_prestamo_con_cuotas', {
+        p_empleado_id: Number(form.empleado_id),
+        p_fecha: form.fecha,
+        p_monto_total: montoTotal,
+        p_numero_cuotas: numeroCuotas,
+        p_anio: Number(form.inicio_anio),
+        p_mes: Number(form.inicio_mes),
+        p_quincena: Number(form.inicio_quincena),
+        p_observaciones: form.observaciones.trim() || null,
       })
-
-      const { error: cuotasErr } = await supabase.from('rrhh_prestamo_cuotas').insert(cuotasPayload)
-      if (cuotasErr) throw new Error(`Error creando cuotas: ${cuotasErr.message}`)
-
-      await supabase.from('rrhh_auditoria').insert({
-        tabla: 'rrhh_prestamos',
-        accion: 'CREAR',
-        registro_id: String(prestamoId),
-        empleado_id: Number(form.empleado_id),
-        usuario_id: userId,
-        usuario_email: userEmail,
-        detalle: { monto_total: montoTotal, numero_cuotas: numeroCuotas, cuotas: cuotasPayload },
-        observaciones: form.observaciones.trim() || null,
-      })
+      if (error) throw new Error(`No se guardo el prestamo: ${error.message}`)
 
       setForm(emptyForm())
       await cargarCatalogos()
@@ -480,90 +375,68 @@ export default function RrhhPrestamosPage() {
     }
   }
 
-  const cambiarEstadoPrestamo = async (prestamo: Prestamo, estado: Prestamo['estado']) => {
-    if (!confirm(`¿Cambiar el préstamo #${prestamo.id} a ${estado}?`)) return
-
+  const anularPrestamo = async (prestamo: Prestamo) => {
+    if (prestamo.estado !== 'ACTIVO') return
+    if (!confirm(`¿Anular el prestamo #${prestamo.id}? Solo es posible si ninguna cuota fue cobrada. Se conservara el historial.`)) return
+    setSaving(true)
+    setMensaje('')
     try {
-      const { data: userData } = await supabase.auth.getUser()
-      const userId = userData?.user?.id || null
-      const userEmail = userData?.user?.email || null
-
-      const { error } = await supabase.from('rrhh_prestamos').update({ estado }).eq('id', prestamo.id)
-      if (error) throw new Error(error.message)
-
-      if (estado === 'ANULADO') {
-        const { error: cuotasError } = await supabase
-          .from('rrhh_prestamo_cuotas')
-          .update({ estado: 'ANULADA' })
-          .eq('prestamo_id', prestamo.id)
-        if (cuotasError) throw new Error(cuotasError.message)
-      }
-
-      if (estado === 'PAGADO') {
-        const { error: cuotasError } = await supabase
-          .from('rrhh_prestamo_cuotas')
-          .update({ estado: 'APLICADA' })
-          .eq('prestamo_id', prestamo.id)
-        if (cuotasError) throw new Error(cuotasError.message)
-      }
-
-      await supabase.from('rrhh_auditoria').insert({
-        tabla: 'rrhh_prestamos',
-        accion: `CAMBIAR_ESTADO_${estado}`,
-        registro_id: String(prestamo.id),
-        empleado_id: prestamo.empleado_id,
-        usuario_id: userId,
-        usuario_email: userEmail,
-        detalle: { estado_anterior: prestamo.estado, estado_nuevo: estado },
+      const { error } = await supabase.rpc('rrhh_anular_prestamo_seguro', {
+        p_prestamo_id: prestamo.id,
       })
-
+      if (error) throw new Error(error.message)
       await cargarPrestamos()
+      setMensaje('Prestamo anulado. No se elimino ningun registro historico.')
     } catch (err) {
       console.error(err)
-      setMensaje(err instanceof Error ? err.message : 'Error cambiando estado de préstamo.')
+      setMensaje(err instanceof Error ? err.message : 'Error anulando prestamo.')
+    } finally {
+      setSaving(false)
     }
   }
 
-  const guardarCuota = async (cuotaId: number) => {
-    const edit = editCuotas[cuotaId]
-    if (!edit) return
-
-    const monto = round2(toNum(edit.monto))
-    if (monto < 0) {
-      alert('La cuota no puede ser negativa.')
-      return
+  const guardarCuotasPrestamo = async (prestamoId: number) => {
+    const prestamo = prestamos.find((p) => p.id === prestamoId)
+    if (!prestamo || prestamo.estado !== 'ACTIVO') return
+    const pendientes = (cuotasPorPrestamo.get(prestamoId) || []).filter((c) => c.estado === 'PENDIENTE')
+    const payload: {
+      id: number
+      monto: number
+      periodo_id: number | null
+      monto_original: number
+      periodo_original: number | null
+    }[] = []
+    for (const cuota of pendientes) {
+      const edit = editCuotas[cuota.id]
+      const monto = Number(edit?.monto)
+      if (!edit || !edit.monto.trim() || !Number.isFinite(monto) || monto <= 0 || Math.abs(Math.round(monto * 100) - monto * 100) > 1e-6) {
+        setMensaje(`La cuota #${cuota.numero_cuota} debe tener un importe positivo con hasta dos decimales.`)
+        return
+      }
+      payload.push({
+        id: cuota.id,
+        monto,
+        periodo_id: edit.periodo_id ? Number(edit.periodo_id) : null,
+        monto_original: cuota.monto,
+        periodo_original: cuota.periodo_id,
+      })
     }
-
+    if (!confirm('¿Guardar la programacion? Los importes pendientes, mas los ya cobrados, deben sumar el prestamo original. Esto NO aplica ni cobra cuotas.')) return
+    setSaving(true)
+    setMensaje('')
     try {
-      const { error } = await supabase
-        .from('rrhh_prestamo_cuotas')
-        .update({
-          monto,
-          estado: edit.estado,
-          periodo_id: edit.periodo_id ? Number(edit.periodo_id) : null,
-        })
-        .eq('id', cuotaId)
-
+      const { error } = await supabase.rpc('rrhh_editar_cuotas_prestamo', {
+        p_prestamo_id: prestamoId,
+        p_cuotas: payload,
+      })
       if (error) throw new Error(error.message)
       await cargarPrestamos()
-      setMensaje('Cuota actualizada correctamente.')
+      setMensaje('Programacion guardada sin cobrar cuotas. Si ya habia un borrador de planilla, vuelve a cargarlo y guardarlo.')
     } catch (err) {
       console.error(err)
-      setMensaje(err instanceof Error ? err.message : 'Error actualizando cuota.')
-    }
-  }
-
-  const eliminarPrestamo = async (prestamo: Prestamo) => {
-    if (!confirm(`¿Eliminar el préstamo #${prestamo.id} de ${prestamo.empleado_nombre}?`)) return
-
-    try {
-      const { error } = await supabase.from('rrhh_prestamos').delete().eq('id', prestamo.id)
-      if (error) throw new Error(error.message)
-      await cargarPrestamos()
-      setMensaje('Préstamo eliminado correctamente.')
-    } catch (err) {
-      console.error(err)
-      setMensaje(err instanceof Error ? err.message : 'Error eliminando préstamo.')
+      setMensaje(err instanceof Error ? err.message : 'Error actualizando cuotas.')
+    } finally {
+      setSaving(false)
     }
   }
 
@@ -856,7 +729,7 @@ export default function RrhhPrestamosPage() {
           <img src={RRHH_LOGO_URL} alt="Logo Tech Nine" className="h-14" />
           <div>
             <h1 className="text-2xl font-bold">Recursos Humanos — Préstamos</h1>
-            <p className="text-sm text-slate-600">Registra préstamos y divide el descuento en cuotas por quincena.</p>
+            <p className="text-sm text-slate-600">Registra prestamos y programa cuotas. Solo Confirmar pago real en Planillas registra recuperaciones.</p>
           </div>
         </div>
         <Link href="/rrhh" className="bg-slate-700 hover:bg-slate-800 text-white px-4 py-2 rounded">
@@ -873,7 +746,7 @@ export default function RrhhPrestamosPage() {
             <label className="block text-sm font-semibold mb-1">Empleado</label>
             <select
               value={form.empleado_id}
-              onChange={(e) => setForm({ ...form, empleado_id: e.target.value })}
+              onChange={(e: ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => setForm({ ...form, empleado_id: e.target.value })}
               className="w-full border p-2"
             >
               <option value="">Selecciona empleado</option>
@@ -886,36 +759,36 @@ export default function RrhhPrestamosPage() {
           </div>
           <div>
             <label className="block text-sm font-semibold mb-1">Fecha</label>
-            <input type="date" value={form.fecha} onChange={(e) => setForm({ ...form, fecha: e.target.value })} className="w-full border p-2" />
+            <input type="date" value={form.fecha} onChange={(e: ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => setForm({ ...form, fecha: e.target.value })} className="w-full border p-2" />
           </div>
           <div>
             <label className="block text-sm font-semibold mb-1">Monto total</label>
-            <input type="number" step="0.01" value={form.monto_total} onChange={(e) => setForm({ ...form, monto_total: e.target.value })} className="w-full border p-2" />
+            <input type="number" step="0.01" value={form.monto_total} onChange={(e: ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => setForm({ ...form, monto_total: e.target.value })} className="w-full border p-2" />
           </div>
           <div>
             <label className="block text-sm font-semibold mb-1">Número de cuotas</label>
-            <input type="number" min="1" step="1" value={form.numero_cuotas} onChange={(e) => setForm({ ...form, numero_cuotas: e.target.value })} className="w-full border p-2" />
+            <input type="number" min="1" step="1" value={form.numero_cuotas} onChange={(e: ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => setForm({ ...form, numero_cuotas: e.target.value })} className="w-full border p-2" />
           </div>
           <div>
             <label className="block text-sm font-semibold mb-1">Inicio año</label>
-            <input type="number" value={form.inicio_anio} onChange={(e) => setForm({ ...form, inicio_anio: e.target.value })} className="w-full border p-2" />
+            <input type="number" value={form.inicio_anio} onChange={(e: ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => setForm({ ...form, inicio_anio: e.target.value })} className="w-full border p-2" />
           </div>
           <div>
             <label className="block text-sm font-semibold mb-1">Inicio mes</label>
-            <select value={form.inicio_mes} onChange={(e) => setForm({ ...form, inicio_mes: e.target.value })} className="w-full border p-2">
+            <select value={form.inicio_mes} onChange={(e: ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => setForm({ ...form, inicio_mes: e.target.value })} className="w-full border p-2">
               {Array.from({ length: 12 }).map((_, i) => <option key={i + 1} value={i + 1}>{i + 1}</option>)}
             </select>
           </div>
           <div>
             <label className="block text-sm font-semibold mb-1">Inicio quincena</label>
-            <select value={form.inicio_quincena} onChange={(e) => setForm({ ...form, inicio_quincena: e.target.value })} className="w-full border p-2">
+            <select value={form.inicio_quincena} onChange={(e: ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => setForm({ ...form, inicio_quincena: e.target.value })} className="w-full border p-2">
               <option value="1">1 al 15</option>
               <option value="2">16 al 30</option>
             </select>
           </div>
           <div className="md:col-span-4">
             <label className="block text-sm font-semibold mb-1">Observaciones</label>
-            <textarea value={form.observaciones} onChange={(e) => setForm({ ...form, observaciones: e.target.value })} className="w-full border p-2" rows={3} />
+            <textarea value={form.observaciones} onChange={(e: ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => setForm({ ...form, observaciones: e.target.value })} className="w-full border p-2" rows={3} />
           </div>
         </div>
 
@@ -933,8 +806,8 @@ export default function RrhhPrestamosPage() {
         <h2 className="font-semibold mb-4">Préstamos registrados</h2>
 
         <div className="grid md:grid-cols-4 gap-3 mb-4">
-          <input value={busqueda} onChange={(e) => setBusqueda(e.target.value)} placeholder="Buscar empleado, código u observación" className="border p-2 md:col-span-2" />
-          <select value={estadoFiltro} onChange={(e) => setEstadoFiltro(e.target.value)} className="border p-2">
+          <input value={busqueda} onChange={(e: ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => setBusqueda(e.target.value)} placeholder="Buscar empleado, código u observación" className="border p-2 md:col-span-2" />
+          <select value={estadoFiltro} onChange={(e: ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => setEstadoFiltro(e.target.value)} className="border p-2">
             <option value="TODOS">Todos</option>
             <option value="ACTIVO">Activos</option>
             <option value="PAGADO">Pagados</option>
@@ -996,9 +869,7 @@ export default function RrhhPrestamosPage() {
                       <div className="flex flex-wrap gap-1">
                         <button type="button" onClick={() => setPrestamoSeleccionado(prestamoSeleccionado === p.id ? null : p.id)} className="bg-slate-700 text-white px-2 py-1 rounded text-xs">Cuotas</button>
                         <button type="button" onClick={() => generarPDFEmpleado(p.empleado_id)} disabled={generandoPdf === `empleado-${p.empleado_id}`} className="bg-blue-600 disabled:bg-slate-400 text-white px-2 py-1 rounded text-xs">PDF empleado</button>
-                        {p.estado !== 'PAGADO' && <button type="button" onClick={() => cambiarEstadoPrestamo(p, 'PAGADO')} className="bg-emerald-600 text-white px-2 py-1 rounded text-xs">Pagar</button>}
-                        {p.estado !== 'ANULADO' && <button type="button" onClick={() => cambiarEstadoPrestamo(p, 'ANULADO')} className="bg-orange-600 text-white px-2 py-1 rounded text-xs">Anular</button>}
-                        <button type="button" onClick={() => eliminarPrestamo(p)} className="bg-red-600 text-white px-2 py-1 rounded text-xs">Eliminar</button>
+                        {p.estado === 'ACTIVO' && <button type="button" onClick={() => anularPrestamo(p)} disabled={saving} className="bg-orange-600 disabled:bg-slate-400 text-white px-2 py-1 rounded text-xs">Anular sin abonos</button>}
                       </div>
                     </td>
                   </tr>
@@ -1014,7 +885,15 @@ export default function RrhhPrestamosPage() {
 
         {prestamoSeleccionado && (
           <div className="mt-4 border rounded p-4">
-            <h3 className="font-semibold mb-3">Cuotas del préstamo #{prestamoSeleccionado}</h3>
+            <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+              <div>
+                <h3 className="font-semibold">Cuotas del préstamo #{prestamoSeleccionado}</h3>
+                <p className="text-xs text-slate-600">Las cuotas aplicadas no se editan. Para cambiar importes, ajusta las cuotas pendientes y guarda todas juntas; no se aplicara ningun pago.</p>
+              </div>
+              {prestamos.find((p) => p.id === prestamoSeleccionado)?.estado === 'ACTIVO' && (
+                <button type="button" onClick={() => guardarCuotasPrestamo(prestamoSeleccionado)} disabled={saving} className="bg-blue-600 disabled:bg-slate-400 text-white px-3 py-2 rounded text-xs">{saving ? 'Guardando...' : 'Guardar cambios de cuotas'}</button>
+              )}
+            </div>
             <div className="overflow-auto">
               <table className="w-full text-sm border-collapse">
                 <thead className="bg-slate-200">
@@ -1023,33 +902,26 @@ export default function RrhhPrestamosPage() {
                     <th className="border p-2">Período</th>
                     <th className="border p-2">Monto</th>
                     <th className="border p-2">Estado</th>
-                    <th className="border p-2">Acción</th>
                   </tr>
                 </thead>
                 <tbody>
                   {(cuotasPorPrestamo.get(prestamoSeleccionado) || []).map((c) => {
                     const edit = editCuotas[c.id]
+                    const editable = c.estado === 'PENDIENTE' && prestamos.some((p) => p.id === c.prestamo_id && p.estado === 'ACTIVO')
                     return (
                       <tr key={c.id}>
                         <td className="border p-2 text-center">{c.numero_cuota}</td>
                         <td className="border p-2">
-                          <select value={edit?.periodo_id || ''} onChange={(e) => actualizarEditCuota(c.id, { periodo_id: e.target.value })} className="w-full border p-1">
+                          <select value={edit?.periodo_id || ''} disabled={!editable || saving} onChange={(e: ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => actualizarEditCuota(c.id, { periodo_id: e.target.value })} className="w-full border p-1 disabled:bg-slate-100">
                             <option value="">Sin período</option>
-                            {periodos.map((p) => <option key={p.id} value={p.id}>{periodoLabel(p)}</option>)}
+                            {periodos.filter((p) => p.estado === 'ABIERTO' || p.id === c.periodo_id).map((p) => <option key={p.id} value={p.id}>{periodoLabel(p)}{p.estado !== 'ABIERTO' ? ` [${p.estado}]` : ''}</option>)}
                           </select>
                         </td>
                         <td className="border p-2">
-                          <input type="number" step="0.01" value={edit?.monto || ''} onChange={(e) => actualizarEditCuota(c.id, { monto: e.target.value })} className="w-full border p-1 text-right" />
+                          <input type="number" min="0.01" step="0.01" disabled={!editable || saving} value={edit?.monto ?? ''} onChange={(e: ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => actualizarEditCuota(c.id, { monto: e.target.value })} className="w-full border p-1 text-right disabled:bg-slate-100" />
                         </td>
                         <td className="border p-2">
-                          <select value={edit?.estado || c.estado} onChange={(e) => actualizarEditCuota(c.id, { estado: e.target.value as Cuota['estado'] })} className="w-full border p-1">
-                            <option value="PENDIENTE">Pendiente</option>
-                            <option value="APLICADA">Aplicada</option>
-                            <option value="ANULADA">Anulada</option>
-                          </select>
-                        </td>
-                        <td className="border p-2">
-                          <button type="button" onClick={() => guardarCuota(c.id)} className="bg-blue-600 text-white px-2 py-1 rounded text-xs">Guardar cuota</button>
+                          <span className="font-medium">{c.estado}</span>
                         </td>
                       </tr>
                     )
