@@ -191,7 +191,7 @@ export default function ReportesVentas() {
       while (true) {
         const { data, error } = await query.range(desde, desde + 999)
         if (error) throw error
-        cabeceras.push(...((data || []) as Record<string, unknown>[]))
+        cabeceras.push(...((data ?? []) as unknown as Record<string, unknown>[]))
         if (!data || data.length < 1000) break
         desde += 1000
       }
@@ -240,7 +240,7 @@ export default function ReportesVentas() {
             .order('id', { ascending: true })
             .range(desde, desde + 999)
           if (detErr) throw detErr
-          detAll.push(...((data || []) as Record<string, unknown>[]))
+          detAll.push(...((data ?? []) as unknown as Record<string, unknown>[]))
           if (!data || data.length < 1000) break
           desde += 1000
         }
