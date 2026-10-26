@@ -7,6 +7,8 @@ import { useSearchParams } from 'next/navigation'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
 import { supabase } from '@/lib/supabaseClient'
+import { calcularSaldoVenta, distribuirAbonosGenerales, esMetodoPendiente, redondearCentavos } from '@/lib/ventasSaldos'
+import { obtenerAbonosGeneralesPorCliente } from '@/lib/ventasPagosGenerales'
 
 export const dynamic = 'force-dynamic'
 
@@ -16,6 +18,7 @@ type VentaRow = {
   credito: number
   abonado: number
   saldo: number
+  requiereRevision: boolean
 }
 
 type ProductoObj = {
@@ -251,9 +254,9 @@ function VistaDeudasClienteInner() {
         [k: number]: {
           fecha: string
           credito: number
+          total: number
           abonado: number
           tienePendiente: boolean
-          tienePago: boolean
         }
       }
 
@@ -264,15 +267,11 @@ function VistaDeudasClienteInner() {
         const ventaRel = Array.isArray(r.ventas) ? r.ventas[0] : r.ventas
         const fecha = ventaRel?.fecha as string
         const fpId = r.forma_pago_id == null ? null : Number(r.forma_pago_id)
-        const documento = String(r.documento || '').toLowerCase()
         const formaPagoRel = Array.isArray(r.forma_pago) ? r.forma_pago[0] : r.forma_pago
         const metodo = String(formaPagoRel?.metodo || '').toLowerCase()
         const imp = toNum(r.importe)
 
-        const esPendiente =
-          (fpId != null && idsPendientes.has(fpId)) ||
-          metodo.includes('pendiente') ||
-          documento.includes('pend')
+        const esPendiente = esMetodoPendiente(fpId, metodo, idsPendientes)
 
         if (!vId) continue
 
@@ -280,17 +279,16 @@ function VistaDeudasClienteInner() {
           agg[vId] = {
             fecha,
             credito: 0,
+            total: 0,
             abonado: 0,
             tienePendiente: false,
-            tienePago: false,
           }
         }
 
-        // En ventas mixtas, el saldo correcto se calcula como:
-        // total de la venta completa - abonos reales de esa venta.
-        // Antes solo se sumaban las líneas pendientes y luego se restaban todos los abonos,
-        // por eso una venta reabierta podía desaparecer de saldos.
-        agg[vId].credito += imp
+        // No atribuir al crédito líneas cobradas de contado.
+        // Un abono registrado tampoco convierte una venta de contado en deuda.
+        agg[vId].total += imp
+        if (esPendiente) agg[vId].credito += imp
         agg[vId].tienePendiente = agg[vId].tienePendiente || esPendiente
       }
 
@@ -299,6 +297,9 @@ function VistaDeudasClienteInner() {
       if (vIds.length > 0) {
         const { data: pagosRows, error: pErr } = await fetchAllPagosVenta(vIds)
 
+        if (pErr) {
+          throw new Error(`No se pudieron consultar los abonos: ${pErr.message}`)
+        }
         if (!pErr) {
           for (const pr of pagosRows || []) {
             const ventaId = Number((pr as any).venta_id)
@@ -306,21 +307,39 @@ function VistaDeudasClienteInner() {
 
             if (agg[ventaId]) {
               agg[ventaId].abonado += m
-              agg[ventaId].tienePago = true
             }
           }
         }
       }
 
+      // Los abonos generales (venta_id NULL) deben reducir una sola vez la
+      // deuda más antigua del cliente. Nunca crean deuda nueva.
+      const generales = await obtenerAbonosGeneralesPorCliente([id])
+      const montoGeneral = generales[id] || 0
+      const reparto = distribuirAbonosGenerales(
+        Object.entries(agg).map(([venta_id, v]) => ({
+          venta_id: Number(venta_id), fecha: v.fecha, credito: v.credito, abonado: v.abonado,
+        })), montoGeneral
+      )
+      for (const [ventaId, monto] of Object.entries(reparto)) {
+        agg[Number(ventaId)].abonado += monto
+      }
+
       const final: VentaRow[] = Object.entries(agg)
-        .filter(([, v]) => v.tienePendiente || v.tienePago)
-        .map(([venta_id, v]) => ({
-          venta_id: Number(venta_id),
-          fecha: v.fecha,
-          credito: round2(v.credito),
-          abonado: round2(Math.min(v.abonado, v.credito)),
-          saldo: round2(v.credito - v.abonado),
-        }))
+        .map(([venta_id, v]) => {
+          const resultado = calcularSaldoVenta([
+            { importe: v.credito, forma_pago_id: null, metodo: 'Pendiente de Pago' },
+            { importe: redondearCentavos(v.total - v.credito), forma_pago_id: null, metodo: 'Contado' },
+          ], v.abonado)
+          return {
+            venta_id: Number(venta_id),
+            fecha: v.fecha,
+            credito: resultado.credito,
+            abonado: resultado.abonado,
+            saldo: resultado.saldo,
+            requiereRevision: resultado.requiereRevision,
+          }
+        })
         .filter((v) => v.saldo > 0.000001)
 
       final.sort((a, b) => {
@@ -331,6 +350,10 @@ function VistaDeudasClienteInner() {
       })
 
       setVentas(final)
+    } catch (error) {
+      console.error('Error calculando deudas de cliente:', error)
+      setVentas([])
+      alert('No se pudo verificar el saldo. No se permiten abonos hasta recargar correctamente.')
     } finally {
       setLoading(false)
     }
@@ -438,7 +461,8 @@ function VistaDeudasClienteInner() {
       const documento = pago.documento || null
       const observaciones = pago.observaciones || null
 
-      const ventasConSaldo = ventas.filter((v) => v.saldo > 0)
+      // No cobrar una diferencia contable cuyo origen no ha sido conciliado.
+      const ventasConSaldo = ventas.filter((v) => v.saldo > 0 && !v.requiereRevision)
 
       if (ventasConSaldo.length === 0) {
         alert('No hay ventas con saldo para este cliente.')
@@ -775,7 +799,13 @@ function VistaDeudasClienteInner() {
         <div className="mt-4 border rounded p-3 bg-gray-50 text-sm">
           <div>Total crédito histórico pendiente: {formatoQ(totales.tCred)}</div>
           <div>Total abonado aplicado: {formatoQ(totales.tAbo)}</div>
-          <div>Total saldo histórico pendiente: {formatoQ(totales.tSal)}</div>
+          <div>Saldo pendiente o por conciliar: {formatoQ(totales.tSal)}</div>
+          {ventas.some((v) => v.requiereRevision) && (
+            <div className="mt-2 text-amber-900 font-semibold">
+              Hay ventas con pagos parciales registrados que figuran como contado.
+              Sus diferencias requieren conciliación; no se pueden abonar aquí hasta verificar el origen.
+            </div>
+          )}
           <div className="mt-2 pt-2 border-t text-base">
             <b>Saldo pendiente actual: {formatoQ(totales.tSal)}</b>
           </div>
@@ -810,7 +840,10 @@ function VistaDeudasClienteInner() {
             ) : (
               ventas.map((v) => (
                 <tr key={v.venta_id} className="border-t">
-                  <td className="p-2">#{v.venta_id}</td>
+                  <td className="p-2">
+                    #{v.venta_id}
+                    {v.requiereRevision && <div className="text-amber-800 font-semibold text-xs">REVISAR SALDO</div>}
+                  </td>
                   <td className="p-2">{v.fecha}</td>
                   <td className="p-2 text-right">{formatoQ(v.credito)}</td>
                   <td className="p-2 text-right">{formatoQ(v.abonado)}</td>

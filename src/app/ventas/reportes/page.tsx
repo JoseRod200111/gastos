@@ -5,6 +5,8 @@ import Image from 'next/image'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
 import { supabase } from '@/lib/supabaseClient'
+import { calcularSaldoVenta, esMetodoPendiente } from '@/lib/ventasSaldos'
+import { obtenerAbonosGeneralesPorCliente, obtenerAbonosPorVenta } from '@/lib/ventasPagosGenerales'
 
 type EmpresaRel = { nombre: string } | null
 type DivisionRel = { nombre: string } | null
@@ -38,6 +40,7 @@ type SaldoVenta = {
   abonado: number
   pagado: number
   saldo: number
+  requiereRevision: boolean
 }
 
 type Catalogo = {
@@ -80,8 +83,7 @@ function round2(n: number) {
 
 function esPendienteDetalle(d: Detalle) {
   const metodo = d.forma_pago?.metodo?.toLowerCase() || ''
-  const documento = (d.documento || '').toLowerCase()
-  return metodo.includes('pendiente') || documento.includes('pend')
+  return esMetodoPendiente(d.forma_pago_id, metodo)
 }
 
 function textoPagoDetalle(d: Detalle, saldoVenta: number) {
@@ -163,6 +165,7 @@ export default function ReportesVentas() {
       .from('ventas')
       .select(selectString)
       .order('fecha', { ascending: false })
+      .order('id', { ascending: false })
 
     if (filtros.id.trim()) query = query.eq('id', Number(filtros.id))
     if (filtros.empresa_id.trim()) {
@@ -182,18 +185,26 @@ export default function ReportesVentas() {
       query = query.ilike('clientes.nit', `%${filtros.cliente_nit.trim()}%`)
     }
 
-    const { data: cabeceras, error } = await query
-
-    if (error) {
+    const cabeceras: Record<string, unknown>[] = []
+    try {
+      let desde = 0
+      while (true) {
+        const { data, error } = await query.range(desde, desde + 999)
+        if (error) throw error
+        cabeceras.push(...((data || []) as Record<string, unknown>[]))
+        if (!data || data.length < 1000) break
+        desde += 1000
+      }
+    } catch (error) {
       console.error('Error cargando ventas:', error)
       setVentas([])
       setDetalles({})
       setSaldos({})
-      alert(`Error cargando ventas: ${error.message}`)
+      alert('No se pudieron consultar todas las ventas; vuelve a intentarlo.')
       return
     }
 
-    const norm = ((cabeceras || []) as unknown as Record<string, unknown>[]).map(normalizeVenta)
+    const norm = cabeceras.map(normalizeVenta)
     const ids = norm.map((v) => v.id)
 
     if (ids.length === 0) {
@@ -214,24 +225,32 @@ export default function ReportesVentas() {
       ? Number(metodoPendiente.id)
       : null
 
-    const { data: detAll, error: detErr } = await supabase
-      .from('detalle_venta')
-      .select(
-        `
-        venta_id, concepto, cantidad, precio_unitario, importe,
-        forma_pago_id,
-        forma_pago ( metodo ),
-        documento
-      `
-      )
-      .in('venta_id', ids)
-
-    if (detErr) {
-      console.error('Error cargando detalles:', detErr)
-      setVentas(norm)
+    // Cargar todos los detalles. Un único .in(...) se truncaba en 1000 filas.
+    const detAll: Record<string, unknown>[] = []
+    try {
+      for (let pos = 0; pos < ids.length; pos += 100) {
+        const bloque = ids.slice(pos, pos + 100)
+        let desde = 0
+        while (true) {
+          const { data, error: detErr } = await supabase
+            .from('detalle_venta')
+            .select(`id, venta_id, concepto, cantidad, precio_unitario, importe,
+              forma_pago_id, forma_pago ( metodo ), documento`)
+            .in('venta_id', bloque)
+            .order('id', { ascending: true })
+            .range(desde, desde + 999)
+          if (detErr) throw detErr
+          detAll.push(...((data || []) as Record<string, unknown>[]))
+          if (!data || data.length < 1000) break
+          desde += 1000
+        }
+      }
+    } catch (error) {
+      console.error('Error cargando detalles:', error)
+      setVentas([])
       setDetalles({})
       setSaldos({})
-      alert(`Error cargando detalles: ${detErr.message}`)
+      alert('No se pudieron leer todos los detalles. Intenta cargar nuevamente el reporte.')
       return
     }
 
@@ -269,25 +288,19 @@ export default function ReportesVentas() {
       )
       const totalVenta = round2(totalDetalle || Number(v.cantidad || 0))
 
-      const tienePendiente = det.some((d) => {
-        const metodo = d.forma_pago?.metodo?.toLowerCase() || ''
-        const documento = (d.documento || '').toLowerCase()
-        const esPendientePorId =
-          metodoPendienteId !== null && d.forma_pago_id === metodoPendienteId
-        const esPendientePorTexto = metodo.includes('pendiente') || documento.includes('pend')
-
-        return esPendientePorId || esPendientePorTexto
-      })
+      const creditoOriginal = round2(det.reduce((sum, d) => {
+        const pendiente = esMetodoPendiente(d.forma_pago_id, d.forma_pago?.metodo, metodoPendienteId == null ? undefined : new Set([metodoPendienteId]))
+        return sum + (pendiente ? Number(d.importe || 0) : 0)
+      }, 0))
+      const tienePendiente = creditoOriginal > 0
 
       return {
         venta_id: v.id,
         cliente_id: v.cliente_id,
         fecha: v.fecha,
         totalVenta,
-        // Si una venta tiene al menos una línea pendiente, la deuda se calcula
-        // contra el total de la venta, igual que en Saldos por Cliente.
-        // Esto evita duplicar pagos en ventas mixtas: líneas pagadas + línea pendiente.
-        creditoOriginal: tienePendiente ? totalVenta : 0,
+        // Las líneas pagadas al contado no forman parte de la deuda.
+        creditoOriginal,
         tienePendiente,
       }
     })
@@ -303,46 +316,26 @@ export default function ReportesVentas() {
     const pagosPorVenta: Record<number, number> = {}
     const pagosGeneralesPorCliente: Record<number, number> = {}
 
-    const { data: pagosRows, error: pagosErr } = await supabase
-      .from('pagos_venta')
-      .select('cliente_id, venta_id, monto')
-      .in('venta_id', ids)
-
-    if (pagosErr) {
-      console.error('Error cargando pagos por venta:', pagosErr)
-    }
-
-    for (const p of pagosRows || []) {
-      const row = p as Record<string, unknown>
-      const ventaId = Number(row.venta_id)
-
-      if (!Number.isFinite(ventaId) || ventaId <= 0) continue
-
-      pagosPorVenta[ventaId] = round2(
-        (pagosPorVenta[ventaId] || 0) + Number(row.monto || 0)
-      )
+    try {
+      Object.assign(pagosPorVenta, await obtenerAbonosPorVenta(ids))
+    } catch (error) {
+      console.error('Error cargando abonos:', error)
+      setVentas([])
+      setSaldos({})
+      alert('No se pudieron verificar los pagos vinculados. Intenta de nuevo.')
+      return
     }
 
     if (clienteIds.length > 0) {
-      const { data: pagosGenerales, error: pagosGenErr } = await supabase
-        .from('pagos_venta')
-        .select('cliente_id, venta_id, monto')
-        .in('cliente_id', clienteIds)
-        .is('venta_id', null)
-
-      if (pagosGenErr) {
-        console.error('Error cargando abonos generales por cliente:', pagosGenErr)
-      } else {
-        for (const p of pagosGenerales || []) {
-          const row = p as Record<string, unknown>
-          const clienteId = Number(row.cliente_id)
-
-          if (!Number.isFinite(clienteId) || clienteId <= 0) continue
-
-          pagosGeneralesPorCliente[clienteId] = round2(
-            (pagosGeneralesPorCliente[clienteId] || 0) + Number(row.monto || 0)
-          )
-        }
+      try {
+        const generales = await obtenerAbonosGeneralesPorCliente(clienteIds)
+        Object.assign(pagosGeneralesPorCliente, generales)
+      } catch (error) {
+        console.error('Error cargando pagos generales:', error)
+        alert('No se pudo verificar el saldo por los pagos generales. Intenta nuevamente.')
+        setVentas([])
+        setSaldos({})
+        return
       }
     }
 
@@ -373,26 +366,23 @@ export default function ReportesVentas() {
     }
 
     const saldosCalc: Record<number, SaldoVenta> = {}
-
+    const idsPendientesCalc = metodoPendienteId === null ? undefined : new Set([metodoPendienteId])
     for (const base of baseVentas) {
-      const abonado = round2(pagosPorVenta[base.venta_id] || 0)
-
-      if (base.tienePendiente) {
-        const saldoPendiente = Math.max(0, base.creditoOriginal - abonado)
-
-        saldosCalc[base.venta_id] = {
-          credito: round2(base.creditoOriginal),
-          abonado,
-          pagado: round2(Math.min(base.totalVenta, abonado)),
-          saldo: round2(saldoPendiente),
-        }
-      } else {
-        saldosCalc[base.venta_id] = {
-          credito: 0,
-          abonado,
-          pagado: round2(base.totalVenta),
-          saldo: 0,
-        }
+      const resultado = calcularSaldoVenta(
+        (grouped[base.venta_id] || []).map((d) => ({
+          importe: Number(d.importe || 0),
+          forma_pago_id: d.forma_pago_id,
+          metodo: d.forma_pago?.metodo,
+        })),
+        pagosPorVenta[base.venta_id] || 0,
+        idsPendientesCalc
+      )
+      saldosCalc[base.venta_id] = {
+        credito: resultado.credito,
+        abonado: resultado.abonado,
+        pagado: resultado.pagado,
+        saldo: resultado.saldo,
+        requiereRevision: resultado.requiereRevision,
       }
     }
 
@@ -769,7 +759,7 @@ export default function ReportesVentas() {
       doc.text(q(s.pagado), leftX + 16, bodyY)
 
       doc.setFont('helvetica', 'bold')
-      doc.text('Pendiente:', midX, bodyY)
+      doc.text(s.requiereRevision ? 'Por conciliar:' : 'Pendiente:', midX, bodyY)
       doc.setFont('helvetica', 'normal')
       doc.text(q(s.saldo), midX + 21, bodyY)
 
@@ -844,7 +834,7 @@ export default function ReportesVentas() {
         body: [
           ['Total venta', q(venta.cantidad)],
           ['Pagado', q(s.pagado)],
-          ['Saldo pendiente', q(s.saldo)],
+          [s.requiereRevision ? 'Diferencia POR CONCILIAR' : 'Saldo pendiente', q(s.saldo)],
         ],
         columnStyles: {
           0: { cellWidth: 38, fontStyle: 'bold' },
@@ -1074,10 +1064,16 @@ export default function ReportesVentas() {
                 </div>
 
                 <div>
-                  <span className="font-semibold">Saldo pendiente:</span>{' '}
+                  <span className="font-semibold">{s.requiereRevision ? 'Diferencia por conciliar:' : 'Saldo pendiente:'}</span>{' '}
                   <span className="text-red-700 font-semibold">{q(s.saldo)}</span>
                 </div>
 
+                {s.requiereRevision && (
+                  <div className="md:col-span-2 text-amber-800 font-semibold">
+                    REVISAR: hay abonos parciales incompatibles con los métodos de pago de esta venta.
+                    Este importe no está confirmado como deuda ni como cobro total.
+                  </div>
+                )}
                 <div className="md:col-span-2">
                   <span className="font-semibold">Observaciones:</span>{' '}
                   {v.observaciones || '—'}

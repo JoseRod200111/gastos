@@ -6,6 +6,8 @@ import Image from 'next/image'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
 import { supabase } from '@/lib/supabaseClient'
+import { calcularSaldoVenta, distribuirAbonosGenerales, esMetodoPendiente } from '@/lib/ventasSaldos'
+import { obtenerAbonosGeneralesPorCliente } from '@/lib/ventasPagosGenerales'
 
 type Cliente = {
   id: number
@@ -20,6 +22,7 @@ type SaldoItem = {
   credito: number
   abonado: number
   saldo: number
+  revisiones: number
 }
 
 const toNum = (v: any) => {
@@ -197,26 +200,25 @@ export default function SaldosPorClientePage() {
         venta_id: number
         cliente_id: number
         credito: number
+        total: number
         abonado: number
         tienePendiente: boolean
         tienePago: boolean
       }
 
       const porVenta: Record<number, VentaAgg> = {}
+      const fechasPorVenta: Record<number, string> = {}
 
       for (const raw of (detallesRows || []) as any[]) {
         const ventaId = Number(raw.venta_id)
         const ventaRel = Array.isArray(raw.ventas) ? raw.ventas[0] : raw.ventas
         const clienteId = Number(ventaRel?.cliente_id)
+        fechasPorVenta[ventaId] = String(ventaRel?.fecha || '')
         const formaPagoId = raw.forma_pago_id == null ? null : Number(raw.forma_pago_id)
-        const documento = String(raw.documento || '').toLowerCase()
         const formaPagoRel = Array.isArray(raw.forma_pago) ? raw.forma_pago[0] : raw.forma_pago
         const metodo = String(formaPagoRel?.metodo || '').toLowerCase()
 
-        const esPendiente =
-          (formaPagoId != null && idsPendientes.has(formaPagoId)) ||
-          metodo.includes('pendiente') ||
-          documento.includes('pend')
+        const esPendiente = esMetodoPendiente(formaPagoId, metodo, idsPendientes)
 
         if (!ventaId || !clienteId) continue
 
@@ -225,15 +227,16 @@ export default function SaldosPorClientePage() {
             venta_id: ventaId,
             cliente_id: clienteId,
             credito: 0,
+            total: 0,
             abonado: 0,
             tienePendiente: false,
             tienePago: false,
           }
         }
 
-        // El crédito de una deuda por venta debe calcularse con el total de la venta completa,
-        // no solo con las líneas pendientes. Así soporta ventas mixtas: una parte pagada y otra pendiente.
-        porVenta[ventaId].credito += toNum(raw.importe)
+        // Solo las líneas Pendiente de Pago originan deuda.
+        porVenta[ventaId].total += toNum(raw.importe)
+        if (esPendiente) porVenta[ventaId].credito += toNum(raw.importe)
         porVenta[ventaId].tienePendiente = porVenta[ventaId].tienePendiente || esPendiente
       }
 
@@ -244,6 +247,9 @@ export default function SaldosPorClientePage() {
 
         if (pagosErr) {
           console.error('Error cargando abonos:', pagosErr)
+          setRows([])
+          alert('No se pudieron consultar los abonos. El saldo no está disponible.')
+          return
         } else {
           for (const pago of (pagosRows || []) as any[]) {
             const ventaId = Number(pago.venta_id)
@@ -252,6 +258,32 @@ export default function SaldosPorClientePage() {
               porVenta[ventaId].tienePago = true
             }
           }
+        }
+      }
+
+      // También aplicar abonos generales (sin venta_id), por antigüedad,
+      // después de los abonos vinculados. No crean crédito en ventas de contado.
+      const idsDeClientes = Array.from(new Set(Object.values(porVenta).map((v) => v.cliente_id)))
+      let totalesGenerales: Record<number, number>
+      try {
+        totalesGenerales = await obtenerAbonosGeneralesPorCliente(idsDeClientes)
+      } catch (error) {
+        console.error('Error cargando abonos generales:', error)
+        setRows([])
+        alert('No se pudieron verificar los abonos generales. Reintenta antes de consultar los saldos.')
+        return
+      }
+      for (const clienteId of idsDeClientes) {
+        const totalGeneral = totalesGenerales[clienteId] || 0
+        const reparto = distribuirAbonosGenerales(
+          Object.values(porVenta).filter((v) => v.cliente_id === clienteId)
+            .map((v) => ({
+              venta_id: v.venta_id, fecha: fechasPorVenta[v.venta_id] || '',
+              credito: v.credito, abonado: v.abonado,
+            })), totalGeneral
+        )
+        for (const [vId, monto] of Object.entries(reparto)) {
+          porVenta[Number(vId)].abonado += monto
         }
       }
 
@@ -276,33 +308,26 @@ export default function SaldosPorClientePage() {
       const porCliente: Record<number, SaldoItem> = {}
 
       for (const venta of Object.values(porVenta)) {
-        // Solo se considera deuda si la venta tiene al menos una línea pendiente
-        // o si tiene abonos registrados. Esto evita que ventas pagadas al contado sin abonos
-        // aparezcan como deuda.
-        if (!venta.tienePendiente && !venta.tienePago) continue
-
-        const credito = round2(venta.credito)
-        const abonado = round2(venta.abonado)
-        const saldoVenta = round2(credito - abonado)
-
-        if (saldoVenta <= 0.000001) continue
-
+        // No hay forma de saber si un contado con abono parcial fue realmente
+        // pagado en su totalidad: preservar la diferencia como POR CONCILIAR.
+        const resultado = calcularSaldoVenta([
+          { importe: venta.credito, forma_pago_id: null, metodo: 'Pendiente de Pago' },
+          { importe: round2(venta.total - venta.credito), forma_pago_id: null, metodo: 'Contado' },
+        ], venta.abonado)
+        if (resultado.saldo <= 0.000001) continue
         const c = clientesMap.get(venta.cliente_id)
-
         if (!porCliente[venta.cliente_id]) {
           porCliente[venta.cliente_id] = {
             cliente_id: venta.cliente_id,
             nombre: c?.nombre || `Cliente #${venta.cliente_id}`,
             nit: c?.nit || null,
-            credito: 0,
-            abonado: 0,
-            saldo: 0,
+            credito: 0, abonado: 0, saldo: 0, revisiones: 0,
           }
         }
-
-        porCliente[venta.cliente_id].credito += credito
-        porCliente[venta.cliente_id].abonado += Math.min(abonado, credito)
-        porCliente[venta.cliente_id].saldo += saldoVenta
+        porCliente[venta.cliente_id].credito += resultado.credito
+        porCliente[venta.cliente_id].abonado += resultado.abonado
+        porCliente[venta.cliente_id].saldo += resultado.saldo
+        if (resultado.requiereRevision) porCliente[venta.cliente_id].revisiones += 1
       }
 
       const normalizados = Object.values(porCliente)
@@ -499,7 +524,7 @@ export default function SaldosPorClientePage() {
         <div>Total a crédito: {fmtQ(totals.tCredito)}</div>
         <div>Total abonado: {fmtQ(totals.tAbonado)}</div>
         <div>
-          <b>Saldo pendiente: {fmtQ(totals.tSaldo)}</b>
+          <b>Saldo pendiente o por conciliar: {fmtQ(totals.tSaldo)}</b>
         </div>
 
         {selectedClienteId && totals.tSaldo <= 0 && (
@@ -540,7 +565,12 @@ export default function SaldosPorClientePage() {
             ) : (
               rows.map((r) => (
                 <tr key={r.cliente_id} className="border-t">
-                  <td className="p-2">{r.nombre}</td>
+                  <td className="p-2">
+                    {r.nombre}
+                    {r.revisiones > 0 && <div className="text-xs font-semibold text-amber-800">
+                      {r.revisiones} venta(s) por conciliar: revisar métodos y abonos
+                    </div>}
+                  </td>
                   <td className="p-2">{r.nit || '—'}</td>
                   <td className="p-2 text-right">{fmtQ(r.credito)}</td>
                   <td className="p-2 text-right">{fmtQ(r.abonado)}</td>
