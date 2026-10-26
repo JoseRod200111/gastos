@@ -1,4 +1,5 @@
 import { supabase } from '@/lib/supabaseClient'
+import { esCobroAutomaticoDeDetalle } from '@/lib/ventasSaldos'
 
 const PAGINA = 1000
 
@@ -47,12 +48,13 @@ export async function obtenerAbonosPorVenta(
     while (true) {
       const { data, error } = await supabase
         .from('pagos_venta')
-        .select('id,venta_id,monto')
+        .select('id,venta_id,monto,observaciones')
         .in('venta_id', bloque)
         .order('id', { ascending: true })
         .range(desde, desde + PAGINA - 1)
       if (error) throw new Error(`No fue posible consultar los abonos: ${error.message}`)
       for (const p of data || []) {
+        if (esCobroAutomaticoDeDetalle(p.observaciones)) continue
         const ventaId = Number(p.venta_id)
         totales[ventaId] = (totales[ventaId] || 0) + Number(p.monto || 0)
       }

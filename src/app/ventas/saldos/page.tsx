@@ -6,7 +6,7 @@ import Image from 'next/image'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
 import { supabase } from '@/lib/supabaseClient'
-import { calcularSaldoVenta, distribuirAbonosGenerales, esMetodoPendiente } from '@/lib/ventasSaldos'
+import { calcularSaldoVenta, distribuirAbonosGenerales, esMetodoPendiente, esCobroAutomaticoDeDetalle } from '@/lib/ventasSaldos'
 import { obtenerAbonosGeneralesPorCliente } from '@/lib/ventasPagosGenerales'
 
 type Cliente = {
@@ -86,7 +86,7 @@ async function fetchAllPagosVenta(ventaIds: number[]) {
     while (true) {
       const { data, error } = await supabase
         .from('pagos_venta')
-        .select('venta_id, monto')
+        .select('venta_id, monto, observaciones')
         .in('venta_id', chunk)
         .order('id', { ascending: true })
         .range(from, from + PAGE_SIZE - 1)
@@ -252,6 +252,7 @@ export default function SaldosPorClientePage() {
           return
         } else {
           for (const pago of (pagosRows || []) as any[]) {
+            if (esCobroAutomaticoDeDetalle(pago.observaciones)) continue
             const ventaId = Number(pago.venta_id)
             if (porVenta[ventaId]) {
               porVenta[ventaId].abonado += toNum(pago.monto)
@@ -308,8 +309,8 @@ export default function SaldosPorClientePage() {
       const porCliente: Record<number, SaldoItem> = {}
 
       for (const venta of Object.values(porVenta)) {
-        // No hay forma de saber si un contado con abono parcial fue realmente
-        // pagado en su totalidad: preservar la diferencia como POR CONCILIAR.
+        // Los detalles de contado no generan saldo, aunque sus asientos
+        // automáticos en pagos_venta todavía no estén completos.
         const resultado = calcularSaldoVenta([
           { importe: venta.credito, forma_pago_id: null, metodo: 'Pendiente de Pago' },
           { importe: round2(venta.total - venta.credito), forma_pago_id: null, metodo: 'Contado' },
@@ -465,7 +466,7 @@ export default function SaldosPorClientePage() {
         <select
           className="border p-2 text-sm w-full md:w-[440px]"
           value={selectedClienteId}
-          onChange={(e) => setSelectedClienteId(e.target.value)}
+          onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setSelectedClienteId(e.target.value)}
         >
           <option value="">— Todos los clientes con saldo pendiente —</option>
           {clientes.map((c) => (
@@ -524,7 +525,7 @@ export default function SaldosPorClientePage() {
         <div>Total a crédito: {fmtQ(totals.tCredito)}</div>
         <div>Total abonado: {fmtQ(totals.tAbonado)}</div>
         <div>
-          <b>Saldo pendiente o por conciliar: {fmtQ(totals.tSaldo)}</b>
+          <b>Saldo pendiente: {fmtQ(totals.tSaldo)}</b>
         </div>
 
         {selectedClienteId && totals.tSaldo <= 0 && (
@@ -568,7 +569,7 @@ export default function SaldosPorClientePage() {
                   <td className="p-2">
                     {r.nombre}
                     {r.revisiones > 0 && <div className="text-xs font-semibold text-amber-800">
-                      {r.revisiones} venta(s) por conciliar: revisar métodos y abonos
+                      {r.revisiones} venta(s) con abonos superiores al crédito: revisar historial
                     </div>}
                   </td>
                   <td className="p-2">{r.nit || '—'}</td>

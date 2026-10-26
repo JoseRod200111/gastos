@@ -1,11 +1,12 @@
 /**
- * Regla única para saldos de ventas. El método de pago es el origen del
- * crédito; un registro en pagos_venta documenta dinero recibido, NO crea deuda.
+ * El crédito de una venta proviene únicamente de sus detalles marcados
+ * "Pendiente de Pago". Los métodos de contado son pagos declarados en
+ * la venta y NO generan una cuenta por cobrar por faltar un pago duplicado
+ * en pagos_venta.
  *
- * Una venta puede tener líneas de contado y líneas a crédito. Solamente la
- * suma de las líneas marcadas Pendiente de Pago forma el crédito original.
- * Los abonos vinculados (y los generales una vez distribuidos) reducen ese
- * crédito, pero nunca incrementan la deuda de una venta de contado.
+ * Los abonos posteriores reducen el crédito existente; jamás crean deuda.
+ * Al sincronizar por SQL una venta saldada, los detalles pendientes pueden
+ * cambiar a otro método. Una venta así pasa a saldo 0 por su método actual.
  */
 export const redondearCentavos = (valor: number) =>
   Math.round((valor + Number.EPSILON) * 100) / 100
@@ -17,6 +18,15 @@ export function esMetodoPendiente(
 ): boolean {
   if (formaPagoId !== null && idsPendientes?.has(formaPagoId)) return true
   return String(nombreMetodo ?? '').toLocaleLowerCase('es').includes('pendiente')
+}
+
+/**
+ * Los movimientos generados automáticamente al guardar un detalle de contado
+ * documentan el cobro inicial, no un abono a la porción pendiente de esa venta.
+ * Nunca deben descontarse de nuevo de otra línea marcada a crédito.
+ */
+export function esCobroAutomaticoDeDetalle(observaciones: string | null | undefined): boolean {
+  return /pago\s+autom[aá]tico\s+desde\s+detalle\s+de\s+venta/i.test(observaciones || '')
 }
 
 export type LineaSaldoVenta = {
@@ -36,6 +46,9 @@ export type ResultadoSaldoVenta = {
   motivoRevision: string | null
 }
 
+/** totalAbonos corresponde exclusivamente a pagos aplicables al crédito.
+ * Los movimientos automáticos de contado deben excluirse de esta cifra.
+ */
 export function calcularSaldoVenta(
   lineas: ReadonlyArray<LineaSaldoVenta>,
   totalAbonos: number,
@@ -45,38 +58,32 @@ export function calcularSaldoVenta(
   const credito = redondearCentavos(lineas.reduce((s, l) =>
     s + (esMetodoPendiente(l.forma_pago_id, l.metodo, idsPendientes)
       ? Number(l.importe || 0) : 0), 0))
-  const totalRecibido = redondearCentavos(Math.max(0, Number(totalAbonos || 0)))
-  const hayLineaContado = total > credito
-  const contadoConPagoParcial = credito === 0 && totalRecibido > 0 && totalRecibido < total
-  const ventaMixtaAmbigua = credito > 0 && hayLineaContado && totalRecibido > 0 && totalRecibido < total
-  const requiereRevision = contadoConPagoParcial || ventaMixtaAmbigua
-  const motivoRevision = contadoConPagoParcial
-    ? 'Los detalles indican pago de contado, pero los abonos registrados no cubren la venta.'
-    : ventaMixtaAmbigua
-      ? 'La venta mezcla líneas de contado y crédito y tiene abonos: verificar que no se descuente dos veces el pago de contado.'
-      : null
-  // Una venta de contado con solo un pago parcial documentado es ambigua.
-  // NO declarar saldo cero ni inventar un cobro. Exponer provisionalmente
-  // la diferencia, identificándola claramente para conciliación humana.
-  const creditoEnRevision = contadoConPagoParcial ? total : credito
-  const abonado = redondearCentavos(Math.min(creditoEnRevision, totalRecibido))
-  const saldo = redondearCentavos(Math.max(0, creditoEnRevision - abonado))
+  const abonadoReal = redondearCentavos(Math.max(0, Number(totalAbonos || 0)))
+  const abonado = redondearCentavos(Math.min(credito, abonadoReal))
+  const saldo = redondearCentavos(Math.max(0, credito - abonado))
+  // En una venta exclusivamente de contado, los pagos_venta pueden ser
+  // asientos de caja ya representados en el método del detalle: no son
+  // sobrepagos a crédito. Solo alertar si exceden incluso el total vendido.
+  const excesoAbonos = redondearCentavos(Math.max(
+    0, abonadoReal - (credito > 0 ? credito : total)
+  ))
+  // Nunca crear deuda por una discrepancia entre movimientos de contado.
+  const requiereRevision = excesoAbonos > 0.009
   return {
     total,
-    credito: creditoEnRevision,
+    credito,
     abonado,
     pagado: redondearCentavos(Math.max(0, total - saldo)),
     saldo,
-    excesoAbonos: redondearCentavos(Math.max(0, totalRecibido - creditoEnRevision)),
+    excesoAbonos,
     requiereRevision,
-    motivoRevision,
+    motivoRevision: requiereRevision
+      ? 'Existen abonos superiores al crédito actualmente marcado como pendiente. Revisar historial sin crear deuda adicional.'
+      : null,
   }
 }
 
-/** Distribuye abonos sin venta_id de la deuda más antigua a la más reciente.
- * Nunca asigna un abono general a ventas totalmente de contado.
- * No escribe datos: solo evita que el mismo abono se reste a varias ventas.
- */
+/** Distribuye abonos sin venta_id solo entre créditos reales, por antigüedad. */
 export function distribuirAbonosGenerales(
   ventas: ReadonlyArray<{ venta_id: number; fecha: string; credito: number; abonado: number }>,
   montoGeneral: number

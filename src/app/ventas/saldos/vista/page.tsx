@@ -7,7 +7,7 @@ import { useSearchParams } from 'next/navigation'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
 import { supabase } from '@/lib/supabaseClient'
-import { calcularSaldoVenta, distribuirAbonosGenerales, esMetodoPendiente, redondearCentavos } from '@/lib/ventasSaldos'
+import { calcularSaldoVenta, distribuirAbonosGenerales, esMetodoPendiente, redondearCentavos, esCobroAutomaticoDeDetalle } from '@/lib/ventasSaldos'
 import { obtenerAbonosGeneralesPorCliente } from '@/lib/ventasPagosGenerales'
 
 export const dynamic = 'force-dynamic'
@@ -114,7 +114,7 @@ async function fetchAllPagosVenta(ventaIds: number[]) {
     while (true) {
       const { data, error } = await supabase
         .from('pagos_venta')
-        .select('venta_id, monto')
+        .select('venta_id, monto, observaciones')
         .in('venta_id', chunk)
         .order('id', { ascending: true })
         .range(from, from + PAGE_SIZE - 1)
@@ -302,6 +302,7 @@ function VistaDeudasClienteInner() {
         }
         if (!pErr) {
           for (const pr of pagosRows || []) {
+            if (esCobroAutomaticoDeDetalle((pr as any).observaciones)) continue
             const ventaId = Number((pr as any).venta_id)
             const m = toNum((pr as any).monto)
 
@@ -461,7 +462,7 @@ function VistaDeudasClienteInner() {
       const documento = pago.documento || null
       const observaciones = pago.observaciones || null
 
-      // No cobrar una diferencia contable cuyo origen no ha sido conciliado.
+      // No registrar un segundo abono sobre ventas ya pagadas de contado.
       const ventasConSaldo = ventas.filter((v) => v.saldo > 0 && !v.requiereRevision)
 
       if (ventasConSaldo.length === 0) {
@@ -487,6 +488,10 @@ function VistaDeudasClienteInner() {
           return
         }
 
+        if (restante > v.saldo + 0.009) {
+          alert(`El monto indicado supera el saldo de la venta (${formatoQ(v.saldo)}). No se registró ningún abono.`)
+          return
+        }
         const aplicar = Math.min(v.saldo, restante)
 
         inserts.push({
@@ -518,6 +523,11 @@ function VistaDeudasClienteInner() {
 
           restante -= aplicar
         }
+      }
+
+      if (pago.modo === 'auto' && restante > 0.009) {
+        alert(`El monto supera el saldo disponible en ${formatoQ(restante)}. No se registró ningún abono.`)
+        return
       }
 
       if (inserts.length === 0) {
@@ -718,7 +728,7 @@ function VistaDeudasClienteInner() {
               type="date"
               className="border p-2 w-full"
               value={pago.fecha}
-              onChange={(e) => setPago((p) => ({ ...p, fecha: e.target.value }))}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPago((p) => ({ ...p, fecha: e.target.value }))}
             />
           </div>
 
@@ -727,7 +737,7 @@ function VistaDeudasClienteInner() {
             <select
               className="border p-2 w-full"
               value={pago.metodo_pago_id}
-              onChange={(e) => setPago((p) => ({ ...p, metodo_pago_id: e.target.value }))}
+              onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setPago((p) => ({ ...p, metodo_pago_id: e.target.value }))}
             >
               <option value="">— Selecciona —</option>
               {metodos.map((m) => (
@@ -744,7 +754,7 @@ function VistaDeudasClienteInner() {
               <select
                 className="border p-2 w-full"
                 value={pago.venta_id}
-                onChange={(e) => setPago((p) => ({ ...p, venta_id: e.target.value }))}
+                onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setPago((p) => ({ ...p, venta_id: e.target.value }))}
               >
                 <option value="">— Selecciona una venta —</option>
                 {ventas.map((v) => (
@@ -761,7 +771,7 @@ function VistaDeudasClienteInner() {
             <input
               className="border p-2 w-full"
               value={pago.monto}
-              onChange={(e) => setPago((p) => ({ ...p, monto: e.target.value }))}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPago((p) => ({ ...p, monto: e.target.value }))}
               inputMode="decimal"
               placeholder="0.00"
             />
@@ -772,7 +782,7 @@ function VistaDeudasClienteInner() {
             <input
               className="border p-2 w-full"
               value={pago.documento}
-              onChange={(e) => setPago((p) => ({ ...p, documento: e.target.value }))}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPago((p) => ({ ...p, documento: e.target.value }))}
             />
           </div>
 
@@ -781,7 +791,7 @@ function VistaDeudasClienteInner() {
             <input
               className="border p-2 w-full"
               value={pago.observaciones}
-              onChange={(e) => setPago((p) => ({ ...p, observaciones: e.target.value }))}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPago((p) => ({ ...p, observaciones: e.target.value }))}
             />
           </div>
         </div>
@@ -799,11 +809,10 @@ function VistaDeudasClienteInner() {
         <div className="mt-4 border rounded p-3 bg-gray-50 text-sm">
           <div>Total crédito histórico pendiente: {formatoQ(totales.tCred)}</div>
           <div>Total abonado aplicado: {formatoQ(totales.tAbo)}</div>
-          <div>Saldo pendiente o por conciliar: {formatoQ(totales.tSal)}</div>
+          <div>Saldo pendiente: {formatoQ(totales.tSal)}</div>
           {ventas.some((v) => v.requiereRevision) && (
             <div className="mt-2 text-amber-900 font-semibold">
-              Hay ventas con pagos parciales registrados que figuran como contado.
-              Sus diferencias requieren conciliación; no se pueden abonar aquí hasta verificar el origen.
+              Se detectaron abonos superiores al crédito pendiente. Revisa los movimientos correspondientes.
             </div>
           )}
           <div className="mt-2 pt-2 border-t text-base">

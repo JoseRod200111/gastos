@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Image from 'next/image'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
@@ -136,6 +136,11 @@ export default function ReportesVentas() {
     cliente_nit: '',
   })
 
+  // Solo consultar cuando se presione "Aplicar filtros", nunca al escribir.
+  const [filtrosAplicados, setFiltrosAplicados] = useState(filtros)
+  const [recarga, setRecarga] = useState(0)
+  const ultimoRequest = useRef(0)
+
   useEffect(() => {
     ;(async () => {
       const [emp, div] = await Promise.all([
@@ -149,9 +154,11 @@ export default function ReportesVentas() {
   }, [])
 
   const cargarDatos = useCallback(async () => {
+    const requestId = ++ultimoRequest.current
+    const vigente = () => requestId === ultimoRequest.current
     const usaFiltroCliente =
-      Boolean(filtros.cliente_nombre.trim()) ||
-      Boolean(filtros.cliente_nit.trim())
+      Boolean(filtrosAplicados.cliente_nombre.trim()) ||
+      Boolean(filtrosAplicados.cliente_nit.trim())
 
     const selectString = `
       id, fecha, cantidad, observaciones,
@@ -167,22 +174,22 @@ export default function ReportesVentas() {
       .order('fecha', { ascending: false })
       .order('id', { ascending: false })
 
-    if (filtros.id.trim()) query = query.eq('id', Number(filtros.id))
-    if (filtros.empresa_id.trim()) {
-      query = query.eq('empresa_id', Number(filtros.empresa_id))
+    if (filtrosAplicados.id.trim()) query = query.eq('id', Number(filtrosAplicados.id))
+    if (filtrosAplicados.empresa_id.trim()) {
+      query = query.eq('empresa_id', Number(filtrosAplicados.empresa_id))
     }
-    if (filtros.division_id.trim()) {
-      query = query.eq('division_id', Number(filtros.division_id))
+    if (filtrosAplicados.division_id.trim()) {
+      query = query.eq('division_id', Number(filtrosAplicados.division_id))
     }
-    if (filtros.desde) query = query.gte('fecha', filtros.desde)
-    if (filtros.hasta) query = query.lte('fecha', filtros.hasta)
+    if (filtrosAplicados.desde) query = query.gte('fecha', filtrosAplicados.desde)
+    if (filtrosAplicados.hasta) query = query.lte('fecha', filtrosAplicados.hasta)
 
-    if (filtros.cliente_nombre.trim()) {
-      query = query.ilike('clientes.nombre', `%${filtros.cliente_nombre.trim()}%`)
+    if (filtrosAplicados.cliente_nombre.trim()) {
+      query = query.ilike('clientes.nombre', `%${filtrosAplicados.cliente_nombre.trim()}%`)
     }
 
-    if (filtros.cliente_nit.trim()) {
-      query = query.ilike('clientes.nit', `%${filtros.cliente_nit.trim()}%`)
+    if (filtrosAplicados.cliente_nit.trim()) {
+      query = query.ilike('clientes.nit', `%${filtrosAplicados.cliente_nit.trim()}%`)
     }
 
     const cabeceras: Record<string, unknown>[] = []
@@ -197,9 +204,9 @@ export default function ReportesVentas() {
       }
     } catch (error) {
       console.error('Error cargando ventas:', error)
-      setVentas([])
-      setDetalles({})
-      setSaldos({})
+      if (vigente()) setVentas([])
+      if (vigente()) setDetalles({})
+      if (vigente()) setSaldos({})
       alert('No se pudieron consultar todas las ventas; vuelve a intentarlo.')
       return
     }
@@ -208,9 +215,9 @@ export default function ReportesVentas() {
     const ids = norm.map((v) => v.id)
 
     if (ids.length === 0) {
-      setVentas([])
-      setDetalles({})
-      setSaldos({})
+      if (vigente()) setVentas([])
+      if (vigente()) setDetalles({})
+      if (vigente()) setSaldos({})
       return
     }
 
@@ -247,9 +254,9 @@ export default function ReportesVentas() {
       }
     } catch (error) {
       console.error('Error cargando detalles:', error)
-      setVentas([])
-      setDetalles({})
-      setSaldos({})
+      if (vigente()) setVentas([])
+      if (vigente()) setDetalles({})
+      if (vigente()) setSaldos({})
       alert('No se pudieron leer todos los detalles. Intenta cargar nuevamente el reporte.')
       return
     }
@@ -320,8 +327,8 @@ export default function ReportesVentas() {
       Object.assign(pagosPorVenta, await obtenerAbonosPorVenta(ids))
     } catch (error) {
       console.error('Error cargando abonos:', error)
-      setVentas([])
-      setSaldos({})
+      if (vigente()) setVentas([])
+      if (vigente()) setSaldos({})
       alert('No se pudieron verificar los pagos vinculados. Intenta de nuevo.')
       return
     }
@@ -333,8 +340,8 @@ export default function ReportesVentas() {
       } catch (error) {
         console.error('Error cargando pagos generales:', error)
         alert('No se pudo verificar el saldo por los pagos generales. Intenta nuevamente.')
-        setVentas([])
-        setSaldos({})
+        if (vigente()) setVentas([])
+        if (vigente()) setSaldos({})
         return
       }
     }
@@ -390,10 +397,10 @@ export default function ReportesVentas() {
       mostrarIncompletas ? true : (grouped[v.id]?.length ?? 0) > 0
     )
 
-    setDetalles(grouped)
-    setSaldos(saldosCalc)
-    setVentas(filtradas)
-  }, [filtros, mostrarIncompletas])
+    if (vigente()) setDetalles(grouped)
+    if (vigente()) setSaldos(saldosCalc)
+    if (vigente()) setVentas(filtradas)
+  }, [filtrosAplicados, mostrarIncompletas, recarga])
 
   useEffect(() => {
     cargarDatos()
@@ -406,16 +413,23 @@ export default function ReportesVentas() {
     setFiltros((prev) => ({ ...prev, [name]: value }))
   }
 
-  const limpiarFiltros = () =>
-    setFiltros({
-      empresa_id: '',
-      division_id: '',
-      desde: '',
-      hasta: '',
-      id: '',
-      cliente_nombre: '',
-      cliente_nit: '',
-    })
+  const limpiarFiltros = () => {
+    ultimoRequest.current += 1
+    const vacios = {
+      empresa_id: '', division_id: '', desde: '', hasta: '',
+      id: '', cliente_nombre: '', cliente_nit: '',
+    }
+    setFiltros(vacios)
+    setFiltrosAplicados(vacios)
+    setRecarga((v) => v + 1)
+  }
+
+  const aplicarFiltros = () => {
+    // Invalidar cualquier respuesta anterior inmediatamente al pulsar.
+    ultimoRequest.current += 1
+    setFiltrosAplicados({ ...filtros })
+    setRecarga((v) => v + 1)
+  }
 
   const resumen = useMemo(() => {
     const totalQ = ventas.reduce((acc, v) => acc + Number(v.cantidad || 0), 0)
@@ -437,11 +451,11 @@ export default function ReportesVentas() {
   }, [ventas, saldos])
 
   const nombreEmpresaFiltro =
-    empresas.find((e) => String(e.id) === String(filtros.empresa_id))?.nombre ||
+    empresas.find((e) => String(e.id) === String(filtrosAplicados.empresa_id))?.nombre ||
     'Todas'
 
   const nombreDivisionFiltro =
-    divisiones.find((d) => String(d.id) === String(filtros.division_id))
+    divisiones.find((d) => String(d.id) === String(filtrosAplicados.division_id))
       ?.nombre || 'Todas'
 
   const agregarFooter = (doc: jsPDF) => {
@@ -534,7 +548,7 @@ export default function ReportesVentas() {
         body: [
           [
             'Rango',
-            `${filtros.desde || '—'} a ${filtros.hasta || '—'}`,
+            `${filtrosAplicados.desde || '—'} a ${filtrosAplicados.hasta || '—'}`,
             'Empresa',
             nombreEmpresaFiltro,
           ],
@@ -542,9 +556,9 @@ export default function ReportesVentas() {
             'División',
             nombreDivisionFiltro,
             'Cliente',
-            filtros.cliente_nombre || 'Todos',
+            filtrosAplicados.cliente_nombre || 'Todos',
           ],
-          ['NIT', filtros.cliente_nit || 'Todos', 'ID', filtros.id || 'Todos'],
+          ['NIT', filtrosAplicados.cliente_nit || 'Todos', 'ID', filtrosAplicados.id || 'Todos'],
         ],
         columnStyles: {
           0: { fontStyle: 'bold', fillColor: [245, 245, 245], cellWidth: 24 },
@@ -759,7 +773,7 @@ export default function ReportesVentas() {
       doc.text(q(s.pagado), leftX + 16, bodyY)
 
       doc.setFont('helvetica', 'bold')
-      doc.text(s.requiereRevision ? 'Por conciliar:' : 'Pendiente:', midX, bodyY)
+      doc.text('Pendiente:', midX, bodyY)
       doc.setFont('helvetica', 'normal')
       doc.text(q(s.saldo), midX + 21, bodyY)
 
@@ -834,7 +848,7 @@ export default function ReportesVentas() {
         body: [
           ['Total venta', q(venta.cantidad)],
           ['Pagado', q(s.pagado)],
-          [s.requiereRevision ? 'Diferencia POR CONCILIAR' : 'Saldo pendiente', q(s.saldo)],
+          ['Saldo pendiente', q(s.saldo)],
         ],
         columnStyles: {
           0: { cellWidth: 38, fontStyle: 'bold' },
@@ -946,7 +960,7 @@ export default function ReportesVentas() {
 
         <div className="mt-4 flex flex-wrap gap-2 items-center">
           <button
-            onClick={cargarDatos}
+            onClick={aplicarFiltros}
             className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded"
           >
             🔍 Aplicar filtros
@@ -1064,14 +1078,13 @@ export default function ReportesVentas() {
                 </div>
 
                 <div>
-                  <span className="font-semibold">{s.requiereRevision ? 'Diferencia por conciliar:' : 'Saldo pendiente:'}</span>{' '}
+                  <span className="font-semibold">{'Saldo pendiente:'}</span>{' '}
                   <span className="text-red-700 font-semibold">{q(s.saldo)}</span>
                 </div>
 
                 {s.requiereRevision && (
                   <div className="md:col-span-2 text-amber-800 font-semibold">
-                    REVISAR: hay abonos parciales incompatibles con los métodos de pago de esta venta.
-                    Este importe no está confirmado como deuda ni como cobro total.
+                    REVISAR: el importe registrado como abono excede el crédito actualmente pendiente. No se genera una deuda adicional.
                   </div>
                 )}
                 <div className="md:col-span-2">

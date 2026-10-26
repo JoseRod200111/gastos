@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import Image from 'next/image'
 import { supabase } from '@/lib/supabaseClient'
 
@@ -129,6 +129,9 @@ export default function VerVentas() {
   const [guardandoDetalleId, setGuardandoDetalleId] = useState<number | null>(null)
   const [loading, setLoading] = useState(false)
   const [mensaje, setMensaje] = useState('')
+  // Solo la búsqueda más reciente puede publicar resultados.
+  const solicitudActiva = useRef(0)
+  const permitirIdDeUrl = useRef(true)
 
   const marcarPendiente = (ventaId: number, val: boolean) => {
     setVentasConPendientes((prev) => ({ ...prev, [ventaId]: val }))
@@ -156,19 +159,23 @@ export default function VerVentas() {
 
   /* datos */
   const cargarDatos = async () => {
+    const solicitud = ++solicitudActiva.current
+    const vigente = () => solicitud === solicitudActiva.current
     setLoading(true)
     setMensaje('')
 
     const params = new URLSearchParams(window.location.search)
     const idUrl = params.get('id')
 
+    // Strict Mode puede ejecutar la carga inicial dos veces. Mantener el
+    // id de URL hasta que el usuario realice una búsqueda explícita.
+    const idInicial = permitirIdDeUrl.current ? (idUrl || '') : ''
     const filtrosAplicados = {
       ...filtros,
-      id: filtros.id || idUrl || '',
+      id: filtros.id || idInicial,
     }
-
-    if (idUrl && !filtros.id) {
-      setFiltros((prev) => ({ ...prev, id: idUrl }))
+    if (idInicial && !filtros.id) {
+      setFiltros((prev) => ({ ...prev, id: idInicial }))
     }
 
     const usaFiltroCliente =
@@ -223,6 +230,7 @@ export default function VerVentas() {
     }
 
     const { data, error } = await query
+    if (!vigente()) return
 
     if (error) {
       console.error('Error cargando ventas', error)
@@ -272,6 +280,8 @@ export default function VerVentas() {
       .in('venta_id', ids)
       .order('id', { ascending: true })
 
+    if (!vigente()) return
+
     if (detErr) {
       console.error('Error cargando detalles', detErr)
       setMensaje(`La venta sí cargó, pero hubo problema cargando detalles: ${detErr.message}`)
@@ -319,12 +329,19 @@ export default function VerVentas() {
 
   useEffect(() => {
     cargarDatos()
+    return () => { solicitudActiva.current += 1 }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   /* utils */
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
-    setFiltros({ ...filtros, [e.target.name]: e.target.value })
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
+    if (e.target.name === 'id') permitirIdDeUrl.current = false
+    setFiltros((prev) => ({ ...prev, [e.target.name]: e.target.value }))
+  }
+  const aplicarBusqueda = () => {
+    permitirIdDeUrl.current = false
+    void cargarDatos()
+  }
 
   const totalLocalVenta = (ventaId: number) => {
     const arr = detalles[ventaId] || []
@@ -342,7 +359,7 @@ export default function VerVentas() {
       return
     }
 
-    const total = round2((sumRows || []).reduce((acc, r: any) => acc + Number(r.importe || 0), 0))
+    const total = round2((sumRows || []).reduce((acc: number, r: any) => acc + Number(r.importe || 0), 0))
 
     const { error: updErr } = await supabase
       .from('ventas')
@@ -404,7 +421,11 @@ export default function VerVentas() {
     })
 
     if (error) {
-      console.warn('No se pudo sincronizar pago desde detalle de venta:', error)
+      console.error('No se pudo sincronizar pago desde detalle de venta:', error)
+      alert(
+        `ATENCIÓN: el detalle #${detalleId} se guardó, pero no se pudo sincronizar su cobro en Supabase. ` +
+        `No asumas que el movimiento de caja quedó registrado. Error: ${error.message}`
+      )
     }
   }
 
@@ -798,7 +819,7 @@ export default function VerVentas() {
 
       <div className="mb-6 flex items-center gap-4">
         <button
-          onClick={cargarDatos}
+          onClick={aplicarBusqueda}
           disabled={loading}
           className="bg-blue-600 disabled:bg-blue-400 text-white px-4 py-2 rounded"
         >
@@ -809,7 +830,7 @@ export default function VerVentas() {
           <input
             type="checkbox"
             checked={mostrarIncompletas}
-            onChange={(e) => setMostrarIncompletas(e.target.checked)}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setMostrarIncompletas(e.target.checked)}
           />
           Mostrar ventas sin detalle
         </label>
@@ -858,7 +879,7 @@ export default function VerVentas() {
                   type="date"
                   className="border p-1"
                   value={v.fecha}
-                  onChange={(ev) => handleInputChangeCab(v.id, 'fecha', ev.target.value)}
+                  onChange={(ev: React.ChangeEvent<HTMLInputElement>) => handleInputChangeCab(v.id, 'fecha', ev.target.value)}
                 />
               </td>
 
@@ -866,7 +887,7 @@ export default function VerVentas() {
                 <select
                   className="border p-1"
                   value={v.empresa_id ?? ''}
-                  onChange={(ev) =>
+                  onChange={(ev: React.ChangeEvent<HTMLSelectElement>) =>
                     handleInputChangeCab(
                       v.id,
                       'empresa_id',
@@ -887,7 +908,7 @@ export default function VerVentas() {
                 <select
                   className="border p-1"
                   value={v.division_id ?? ''}
-                  onChange={(ev) =>
+                  onChange={(ev: React.ChangeEvent<HTMLSelectElement>) =>
                     handleInputChangeCab(
                       v.id,
                       'division_id',
@@ -920,7 +941,7 @@ export default function VerVentas() {
                 <input
                   className="border p-1 w-56"
                   value={v.observaciones ?? ''}
-                  onChange={(ev) => handleInputChangeCab(v.id, 'observaciones', ev.target.value)}
+                  onChange={(ev: React.ChangeEvent<HTMLInputElement>) => handleInputChangeCab(v.id, 'observaciones', ev.target.value)}
                 />
               </td>
 
@@ -994,7 +1015,7 @@ export default function VerVentas() {
                       <select
                         className="border p-1 w-full"
                         value={d.producto_id ?? ''}
-                        onChange={(ev) =>
+                        onChange={(ev: React.ChangeEvent<HTMLSelectElement>) =>
                           handleInputChangeDet(
                             v.id,
                             d.id,
@@ -1026,7 +1047,7 @@ export default function VerVentas() {
                       <input
                         className="border p-1 w-full"
                         value={d.concepto ?? ''}
-                        onChange={(ev) =>
+                        onChange={(ev: React.ChangeEvent<HTMLInputElement>) =>
                           handleInputChangeDet(v.id, d.id, 'concepto', ev.target.value)
                         }
                       />
@@ -1037,7 +1058,7 @@ export default function VerVentas() {
                         type="number"
                         className="border p-1 w-20"
                         value={toNum(d.cantidad)}
-                        onChange={(ev) =>
+                        onChange={(ev: React.ChangeEvent<HTMLInputElement>) =>
                           handleInputChangeDet(v.id, d.id, 'cantidad', Number(ev.target.value))
                         }
                       />
@@ -1048,7 +1069,7 @@ export default function VerVentas() {
                         type="number"
                         className="border p-1 w-24"
                         value={toNum(d.precio_unitario)}
-                        onChange={(ev) =>
+                        onChange={(ev: React.ChangeEvent<HTMLInputElement>) =>
                           handleInputChangeDet(
                             v.id,
                             d.id,
@@ -1065,7 +1086,7 @@ export default function VerVentas() {
                       <select
                         className="border p-1"
                         value={d.forma_pago_id ?? ''}
-                        onChange={(ev) =>
+                        onChange={(ev: React.ChangeEvent<HTMLSelectElement>) =>
                           handleInputChangeDet(
                             v.id,
                             d.id,
@@ -1088,7 +1109,7 @@ export default function VerVentas() {
                       <input
                         className="border p-1 w-40"
                         value={d.documento ?? ''}
-                        onChange={(ev) =>
+                        onChange={(ev: React.ChangeEvent<HTMLInputElement>) =>
                           handleInputChangeDet(v.id, d.id, 'documento', ev.target.value)
                         }
                       />
