@@ -1,35 +1,3 @@
-/**
- * El crédito de una venta proviene únicamente de sus detalles marcados
- * "Pendiente de Pago". Los métodos de contado son pagos declarados en
- * la venta y NO generan una cuenta por cobrar por faltar un pago duplicado
- * en pagos_venta.
- *
- * Los abonos posteriores reducen el crédito existente; jamás crean deuda.
- * Al sincronizar por SQL una venta saldada, los detalles pendientes pueden
- * cambiar a otro método. Una venta así pasa a saldo 0 por su método actual.
- */
-export const redondearCentavos = (valor: number) =>
-  Math.round((valor + Number.EPSILON) * 100) / 100
-
-export function esMetodoPendiente(
-  formaPagoId: number | null,
-  nombreMetodo: string | null | undefined,
-  idsPendientes?: ReadonlySet<number>
-): boolean {
-  if (formaPagoId !== null && idsPendientes?.has(formaPagoId)) return true
-  return String(nombreMetodo ?? '').toLocaleLowerCase('es').includes('pendiente')
-}
-
-/**
- * Los movimientos generados automáticamente al guardar un detalle de contado
- * documentan el cobro inicial, no un abono a la porción pendiente de esa venta.
- * Nunca deben descontarse de nuevo de otra línea marcada a crédito.
- */
-export function esCobroAutomaticoDeDetalle(observaciones: string | null | undefined): boolean {
-  return /pago\s+autom[aá]tico\s+desde\s+detalle\s+de\s+venta/i.test(observaciones || '')
-}
-
-export type LineaSaldoVenta = {
   importe: number
   forma_pago_id: number | null
   metodo?: string | null
