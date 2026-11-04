@@ -5,24 +5,58 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabaseClient'
 
-// ETAPA 1: pantalla SOLO DE LECTURA. No ejecuta RPC, INSERT, UPDATE ni DELETE.
-type Empleado = { id: number; codigo: string; nombre_completo: string }
+// Solo lectura: no ejecuta RPC, INSERT, UPDATE ni DELETE.
+
+type Empleado = {
+  id: number
+  codigo: string
+  nombre_completo: string
+}
+
 type Periodo = {
-  id: number; anio: number; mes: number; quincena: number
-  fecha_inicio: string; fecha_fin: string; estado: string
+  id: number
+  anio: number
+  mes: number
+  quincena: number
+  fecha_inicio: string
+  fecha_fin: string
+  estado: string
 }
+
 type Ficha = {
-  id: number; empleado_id: number; periodo_id: number; estado: string
-  fecha_pago: string | null; descuentos_ventas: number; prestamos: number
+  id: number
+  empleado_id: number
+  periodo_id: number
+  estado: string
+  fecha_pago: string | null
+  descuentos_ventas: number
+  prestamos: number
 }
-type VentaPadre = { empleado_id: number; estado: string; fecha: string }
-type PrestamoPadre = { empleado_id: number; estado: string; fecha: string }
+
+type VentaPadre = {
+  empleado_id: number
+  estado: string
+  fecha: string
+}
+
+type PrestamoPadre = {
+  empleado_id: number
+  estado: string
+  fecha: string
+}
+
 type Cuota = {
-  id: number; tipo: 'VENTA_EMPLEADO' | 'PRESTAMO'; empleado_id: number
-  periodo_id: number | null; monto: number; numero_cuota: number
-  fecha_origen: string; estado_padre: string; evidencia_pago: boolean
+  id: number
+  tipo: 'VENTA_EMPLEADO' | 'PRESTAMO'
+  empleado_id: number
+  periodo_id: number | null
+  monto: number
+  numero_cuota: number
+  fecha_origen: string
+  estado_padre: string
+  evidencia_pago: boolean
 }
-type Aplicacion = { tipo: string; cuota_id: number; monto: number; ficha_id: number }
+
 type EstadoRevision =
   | 'CON_FICHA_PAGADA_COINCIDE'
   | 'CON_FICHA_PAGADA_DIFIERE'
@@ -32,8 +66,12 @@ type EstadoRevision =
   | 'REVISAR'
 
 type Caso = Cuota & {
-  empleado?: Empleado; periodo?: Periodo; ficha?: Ficha
-  importeGrupo: number; descuentoFicha: number; estadoRevision: EstadoRevision
+  empleado?: Empleado
+  periodo?: Periodo
+  ficha?: Ficha
+  importeGrupo: number
+  descuentoFicha: number
+  estadoRevision: EstadoRevision
 }
 
 const n = (valor: unknown): number => {
@@ -44,12 +82,13 @@ const n = (valor: unknown): number => {
 const moneda = (valor: number): string =>
   `Q${n(valor).toLocaleString('es-GT', {
     minimumFractionDigits: 2,
-    maximumFractionDigits: 2
+    maximumFractionDigits: 2,
   })}`
 
-const nombrePeriodo = (p?: Periodo): string => p
-  ? `${p.anio}-${String(p.mes).padStart(2, '0')} Q${p.quincena}`
-  : 'Sin período'
+const nombrePeriodo = (p?: Periodo): string =>
+  p
+    ? `${p.anio}-${String(p.mes).padStart(2, '0')} Q${p.quincena}`
+    : 'Sin período'
 
 const normalizarRelacion = <T,>(
   valor: T | T[] | null | undefined
@@ -61,7 +100,6 @@ export default function CuotasPendientesSoloLectura() {
   const [periodos, setPeriodos] = useState<Periodo[]>([])
   const [fichas, setFichas] = useState<Ficha[]>([])
   const [cuotas, setCuotas] = useState<Cuota[]>([])
-  const [aplicaciones, setAplicaciones] = useState<Aplicacion[]>([])
   const [periodoId, setPeriodoId] = useState('')
   const [busqueda, setBusqueda] = useState('')
   const [soloAtrasadas, setSoloAtrasadas] = useState(true)
@@ -75,7 +113,7 @@ export default function CuotasPendientesSoloLectura() {
     setCargado(false)
 
     try {
-      const [e, p, v, pr, f, a] = await Promise.all([
+      const [e, p, v, pr, f] = await Promise.all([
         supabase
           .from('rrhh_empleados')
           .select('id,codigo,nombre_completo')
@@ -104,11 +142,6 @@ export default function CuotasPendientesSoloLectura() {
           .from('rrhh_planilla_empleado')
           .select('id,empleado_id,periodo_id,estado,fecha_pago,descuentos_ventas,prestamos')
           .range(0, 999),
-
-        supabase
-          .from('rrhh_planilla_cuota_aplicaciones')
-          .select('tipo,cuota_id,monto,ficha_id')
-          .range(0, 999),
       ])
 
       const consultas = [
@@ -117,7 +150,6 @@ export default function CuotasPendientesSoloLectura() {
         { nombre: 'cuotas de ventas', respuesta: v },
         { nombre: 'cuotas de préstamos', respuesta: pr },
         { nombre: 'fichas', respuesta: f },
-        { nombre: 'aplicaciones', respuesta: a },
       ]
 
       for (const consulta of consultas) {
@@ -147,7 +179,9 @@ export default function CuotasPendientesSoloLectura() {
           tipo: 'VENTA_EMPLEADO',
           empleado_id: n(padre?.empleado_id),
           periodo_id:
-            registro.periodo_id === null ? null : n(registro.periodo_id),
+            registro.periodo_id === null
+              ? null
+              : n(registro.periodo_id),
           numero_cuota: n(registro.numero_cuota),
           monto: n(registro.monto),
           fecha_origen: padre?.fecha || '',
@@ -174,7 +208,9 @@ export default function CuotasPendientesSoloLectura() {
           tipo: 'PRESTAMO',
           empleado_id: n(padre?.empleado_id),
           periodo_id:
-            registro.periodo_id === null ? null : n(registro.periodo_id),
+            registro.periodo_id === null
+              ? null
+              : n(registro.periodo_id),
           numero_cuota: n(registro.numero_cuota),
           monto: n(registro.monto),
           fecha_origen: padre?.fecha || '',
@@ -188,7 +224,6 @@ export default function CuotasPendientesSoloLectura() {
       setEmpleados((e.data || []) as Empleado[])
       setPeriodos(listaPeriodos)
       setFichas((f.data || []) as Ficha[])
-      setAplicaciones((a.data || []) as Aplicacion[])
       setCuotas([...listaVenta, ...listaPrestamo])
 
       setPeriodoId((anterior) =>
@@ -236,7 +271,7 @@ export default function CuotasPendientesSoloLectura() {
     const mapaFichas = new Map(
       fichas.map((f) => [
         `${f.periodo_id}:${f.empleado_id}`,
-        f
+        f,
       ])
     )
 
@@ -252,16 +287,6 @@ export default function CuotasPendientesSoloLectura() {
       )
     }
 
-    const aplicadoPorFicha = new Map<string, number>()
-
-    for (const a of aplicaciones) {
-      const clave = `${a.ficha_id}:${a.tipo}`
-      aplicadoPorFicha.set(
-        clave,
-        n(aplicadoPorFicha.get(clave)) + n(a.monto)
-      )
-    }
-
     return cuotas.map((c) => {
       const periodo =
         c.periodo_id === null
@@ -271,7 +296,9 @@ export default function CuotasPendientesSoloLectura() {
       const ficha =
         c.periodo_id === null
           ? undefined
-          : mapaFichas.get(`${c.periodo_id}:${c.empleado_id}`)
+          : mapaFichas.get(
+              `${c.periodo_id}:${c.empleado_id}`
+            )
 
       const descuentoFicha = ficha
         ? n(
@@ -279,10 +306,6 @@ export default function CuotasPendientesSoloLectura() {
               ? ficha.descuentos_ventas
               : ficha.prestamos
           )
-        : 0
-
-      const aplicadoAnterior = ficha
-        ? n(aplicadoPorFicha.get(`${ficha.id}:${c.tipo}`))
         : 0
 
       const importeGrupo = n(
@@ -295,11 +318,6 @@ export default function CuotasPendientesSoloLectura() {
 
       if (
         c.evidencia_pago ||
-        aplicaciones.some(
-          (a) =>
-            a.tipo === c.tipo &&
-            n(a.cuota_id) === c.id
-        ) ||
         c.estado_padre !==
           (c.tipo === 'VENTA_EMPLEADO' ? 'PENDIENTE' : 'ACTIVO')
       ) {
@@ -318,9 +336,7 @@ export default function CuotasPendientesSoloLectura() {
         estadoRevision = 'FUTURA'
       } else if (ficha?.estado === 'PAGADO') {
         estadoRevision =
-          Math.abs(
-            descuentoFicha - aplicadoAnterior - importeGrupo
-          ) < 0.01
+          Math.abs(descuentoFicha - importeGrupo) < 0.01
             ? 'CON_FICHA_PAGADA_COINCIDE'
             : 'CON_FICHA_PAGADA_DIFIERE'
       } else if (
@@ -358,8 +374,7 @@ export default function CuotasPendientesSoloLectura() {
     periodos,
     fichas,
     cuotas,
-    aplicaciones,
-    periodoSeleccionado
+    periodoSeleccionado,
   ])
 
   const visibles = useMemo(() => {
@@ -399,7 +414,7 @@ export default function CuotasPendientesSoloLectura() {
 
   const etiquetas: Record<EstadoRevision, string> = {
     CON_FICHA_PAGADA_COINCIDE:
-      'Ficha PAGADA: importes coinciden; verificar retención',
+      'Ficha PAGADA: importes coinciden; confirmar retención y aplicación antes de actuar',
     CON_FICHA_PAGADA_DIFIERE:
       'Ficha PAGADA: importes diferentes; revisar',
     ATRASADA:
@@ -409,7 +424,7 @@ export default function CuotasPendientesSoloLectura() {
     FUTURA:
       'Programada para período posterior',
     REVISAR:
-      'Posible aplicación previa o estado distinto: auditar',
+      'Indicador de aplicación previa o estado distinto: auditar',
   }
 
   return (
@@ -448,8 +463,9 @@ export default function CuotasPendientesSoloLectura() {
         <strong>No confirmar cuotas desde este listado.</strong>
         {' '}Una ficha histórica PAGADA puede mostrar un descuento
         sin que exista su aplicación. Primero se debe confirmar la
-        retención real. Los importes mostrados NO son automáticamente
-        dinero por cobrar.
+        retención real y consultar las aplicaciones en Supabase.
+        La pantalla no lee la tabla de aplicaciones protegida.
+        Los importes mostrados NO son automáticamente dinero por cobrar.
       </div>
 
       <section className="rounded border p-4 mb-4 flex flex-wrap gap-4 items-end">
