@@ -18,6 +18,7 @@ type Filtros = {
 type EmpresaRel = { nombre: string | null }
 type DivisionRel = { nombre: string | null }
 type ClienteRel = { nombre: string | null; nit: string | null }
+type ClienteCatalogo = { id: number; nombre: string; nit: string | null }
 
 type VentaCab = {
   id: number
@@ -27,6 +28,7 @@ type VentaCab = {
   empresa_id: number | null
   division_id: number | null
   cliente_id: number | null
+  cliente_id_original: number | null // referencia al dato que existe en Supabase
   empresas?: EmpresaRel | null
   divisiones?: DivisionRel | null
   clientes?: ClienteRel | null
@@ -111,6 +113,9 @@ export default function VerVentas() {
 
   const [empresas, setEmpresas] = useState<any[]>([])
   const [divisiones, setDivisiones] = useState<any[]>([])
+  const [clientes, setClientes] = useState<ClienteCatalogo[]>([])
+  const [errorClientes, setErrorClientes] = useState('')
+  const [guardandoCabeceraId, setGuardandoCabeceraId] = useState<number | null>(null)
   const [formasPago, setFormasPago] = useState<any[]>([])
   const [productos, setProductos] = useState<Producto[]>([])
 
@@ -154,6 +159,30 @@ export default function VerVentas() {
       setDivisiones(div.data || [])
       setFormasPago(fp.data || [])
       setProductos((prods.data as Producto[]) || [])
+
+      // Evitar el límite de 1000 registros de PostgREST: un desplegable
+      // incompleto podría impedir corregir la venta hacia un cliente existente.
+      const lista: ClienteCatalogo[] = []
+      try {
+        for (let inicio = 0; ; inicio += 1000) {
+          const { data, error } = await supabase
+            .from('clientes')
+            .select('id,nombre,nit')
+            .order('nombre', { ascending: true })
+            .order('id', { ascending: true })
+            .range(inicio, inicio + 999)
+          if (error) throw error
+          lista.push(...((data || []) as ClienteCatalogo[]))
+          if (!data || data.length < 1000) break
+        }
+        setClientes(lista)
+        setErrorClientes('')
+      } catch (error) {
+        setClientes([])
+        setErrorClientes(
+          `No se pudo cargar el catálogo de clientes: ${error instanceof Error ? error.message : 'error de consulta'}. No se permitirá cambiar clientes.`
+        )
+      }
     })()
   }, [])
 
@@ -251,6 +280,7 @@ export default function VerVentas() {
       empresa_id: r.empresa_id,
       division_id: r.division_id,
       cliente_id: r.cliente_id,
+      cliente_id_original: r.cliente_id,
       empresas: r.empresas ?? null,
       divisiones: r.divisiones ?? null,
       clientes: r.clientes ?? null,
@@ -441,34 +471,76 @@ export default function VerVentas() {
   }
 
   const guardarCabecera = async (venta: VentaCab) => {
+    if (guardandoCabeceraId !== null || guardandoDetalleId !== null) return
+
+    const cambiaCliente = venta.cliente_id !== venta.cliente_id_original
+    if (cambiaCliente) {
+      if (!venta.cliente_id || !clientes.some((c) => c.id === venta.cliente_id)) {
+        alert('Selecciona un cliente existente en el listado antes de guardar.')
+        return
+      }
+
+      // No guardar dos cosas distintas en medio de recargas de datos.
+      if (ventasConPendientes[venta.id]) {
+        alert('Primero guarda los detalles modificados de esta venta. Después cambia el cliente.')
+        return
+      }
+
+      const anterior = venta.clientes?.nombre || 'Sin cliente'
+      const nuevo = clientes.find((c) => c.id === venta.cliente_id)!
+      const confirmado = window.confirm(
+        `¿Trasladar la venta #${venta.id} de «${anterior}» a «${nuevo.nombre}»?\n\n` +
+        'Los saldos correspondientes pasarán al cliente nuevo y se trasladarán los pagos vinculados a esta venta. ' +
+        'Los abonos generales sin venta asignada no se moverán. La operación queda auditada.'
+      )
+      if (!confirmado) return
+    }
+
+    setGuardandoCabeceraId(venta.id)
     try {
       if (ventasConPendientes[venta.id]) {
         await guardarDetallesPendientes(venta.id)
       }
 
-      const { error } = await supabase
-        .from('ventas')
-        .update({
-          fecha: venta.fecha,
-          observaciones: venta.observaciones,
-          empresa_id: venta.empresa_id,
-          division_id: venta.division_id,
-          cliente_id: venta.cliente_id,
+      if (cambiaCliente) {
+        // Un único RPC hace el cambio de venta y pagos vinculados en una
+        // misma transacción; bloquea casos de abonos generales o RRHH.
+        const { error } = await supabase.rpc('ventas_cambiar_cliente_seguro', {
+          p_venta_id: venta.id,
+          p_cliente_anterior_id: venta.cliente_id_original,
+          p_cliente_nuevo_id: venta.cliente_id,
+          p_fecha: venta.fecha,
+          p_empresa_id: venta.empresa_id,
+          p_division_id: venta.division_id,
+          p_observaciones: venta.observaciones,
         })
-        .eq('id', venta.id)
-
-      if (error) {
-        alert('Error al guardar la venta')
-        console.error(error)
-        return
+        if (error) throw new Error(error.message)
+      } else {
+        // No cambiar cliente_id desde un UPDATE normal: ese cambio requiere
+        // actualizar los pagos y los saldos atómicamente mediante el RPC.
+        const { error } = await supabase
+          .from('ventas')
+          .update({
+            fecha: venta.fecha,
+            observaciones: venta.observaciones,
+            empresa_id: venta.empresa_id,
+            division_id: venta.division_id,
+          })
+          .eq('id', venta.id)
+        if (error) throw new Error(error.message)
       }
 
       await recalcularTotal(venta.id)
       await cargarDatos()
-      alert('Venta guardada')
+      alert(cambiaCliente
+        ? 'Cliente actualizado. Venta y pagos vinculados trasladados al nuevo cliente.'
+        : 'Venta guardada')
     } catch (e) {
-      alert('Error al guardar (cabecera o detalles). Revisa consola.')
+      const motivo = e instanceof Error ? e.message : 'Error desconocido'
+      alert(`No se pudo guardar la venta #${venta.id}. ${motivo}`)
       console.error(e)
+    } finally {
+      setGuardandoCabeceraId(null)
     }
   }
 
@@ -846,6 +918,12 @@ export default function VerVentas() {
         </div>
       ) : null}
 
+      {errorClientes ? (
+        <div className="mb-4 border rounded bg-red-50 text-red-800 px-3 py-2 text-sm">
+          {errorClientes}
+        </div>
+      ) : null}
+
       <table className="w-full border text-sm text-left mb-8">
         <thead className="bg-gray-200">
           <tr>
@@ -925,8 +1003,39 @@ export default function VerVentas() {
                 </select>
               </td>
 
-              <td className="p-2">{v.clientes?.nombre ?? '—'}</td>
-              <td className="p-2">{v.clientes?.nit ?? '—'}</td>
+              <td className="p-2">
+                <select
+                  className="border p-1 min-w-[190px] max-w-[270px]"
+                  value={v.cliente_id ?? ''}
+                  disabled={clientes.length === 0 || guardandoCabeceraId !== null}
+                  title="El cambio se guardará junto con la venta. Los pagos vinculados se trasladan de manera segura."
+                  onChange={(ev: React.ChangeEvent<HTMLSelectElement>) =>
+                    handleInputChangeCab(v.id, 'cliente_id',
+                      ev.target.value ? Number(ev.target.value) : null)
+                  }
+                >
+                  <option value="" disabled>— Selecciona cliente —</option>
+                  {v.cliente_id != null && !clientes.some((c) => c.id === v.cliente_id) && (
+                    <option value={v.cliente_id}>
+                      {v.clientes?.nombre ?? `Cliente #${v.cliente_id}`}
+                    </option>
+                  )}
+                  {clientes.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.nombre}{c.nit ? ` · ${c.nit}` : ''} (#{c.id})
+                    </option>
+                  ))}
+                </select>
+                {v.cliente_id !== v.cliente_id_original ? (
+                  <div className="text-[11px] text-amber-700 mt-1">
+                    Cambio pendiente de guardar
+                  </div>
+                ) : null}
+              </td>
+              <td className="p-2">
+                {clientes.find((c) => c.id === v.cliente_id)?.nit ??
+                  (v.cliente_id === v.cliente_id_original ? v.clientes?.nit : null) ?? '—'}
+              </td>
 
               <td className="p-2">
                 <input
@@ -952,9 +1061,10 @@ export default function VerVentas() {
 
                 <button
                   onClick={() => guardarCabecera(v)}
-                  className="bg-green-600 text-white px-2 py-1 rounded text-xs"
+                  disabled={guardandoCabeceraId !== null}
+                  className="bg-green-600 disabled:bg-green-400 text-white px-2 py-1 rounded text-xs"
                 >
-                  Guardar
+                  {guardandoCabeceraId === v.id ? 'Guardando...' : 'Guardar'}
                 </button>
               </td>
             </tr>
