@@ -501,84 +501,44 @@ export default function RrhhPlanillaPage() {
     return resultado
   }
 
-  const cargarCuotasPrestamo = async (empleadosList: Empleado[], periodoId: number) => {
-    const ids = empleadosList.map((e) => e.id)
-    if (ids.length === 0) return new Map<number, number>()
+  // Esta misma seleccion de cuotas se utiliza en la funcion SQL de confirmar pago.
+  // No se reescriben periodos historicos ni se incluyen cuotas de fichas PAGADAS.
+  const cargarCuotasAuto = async (empleadosList: Empleado[]) => {
+    const prestamos = new Map<number, number>()
+    const ventas = new Map<number, number>()
+    if (empleadosList.length === 0) return { prestamos, ventas, atrasadas: 0 }
 
-    const { data, error } = await supabase
-      .from('rrhh_prestamo_cuotas')
-      .select('monto,periodo_id, rrhh_prestamos!inner(empleado_id, estado)')
-      .eq('estado', 'PENDIENTE')
-      .eq('periodo_id', periodoId)
-      .eq('rrhh_prestamos.estado', 'ACTIVO')
-      .in('rrhh_prestamos.empleado_id', ids)
-
-    if (error) throw new Error(`Error cargando cuotas de préstamo: ${error.message}`)
-
-    const map = new Map<number, number>()
-
-    ;((data || []) as unknown[]).forEach((item) => {
-      const row = item as {
-        monto?: number
-        rrhh_prestamos?: { empleado_id?: number } | { empleado_id?: number }[]
-      }
-
-      const prestamo = Array.isArray(row.rrhh_prestamos)
-        ? row.rrhh_prestamos[0]
-        : row.rrhh_prestamos
-
-      const empleadoId = Number(prestamo?.empleado_id || 0)
-
-      if (empleadoId > 0) {
-        map.set(
-          empleadoId,
-          round2((map.get(empleadoId) || 0) + toNum(row.monto))
-        )
-      }
+    const { data, error } = await supabase.rpc('rrhh_cuotas_auto_elegibles', {
+      p_anio: Number(anio),
+      p_mes: Number(mes),
+      p_quincena: Number(quincena),
     })
+    if (error) throw new Error(`Error consultando cuotas dinámicas: ${error.message}`)
 
-    return map
-  }
-
-  const cargarCuotasVentas = async (empleadosList: Empleado[], periodoId: number) => {
-    const ids = empleadosList.map((e) => e.id)
-    if (ids.length === 0) return new Map<number, number>()
-
-    const { data, error } = await supabase
-      .from('rrhh_descuentos_ventas_cuotas')
-      .select('monto,periodo_id, rrhh_descuentos_ventas!inner(empleado_id, estado)')
-      .eq('estado', 'PENDIENTE')
-      .eq('periodo_id', periodoId)
-      .eq('rrhh_descuentos_ventas.estado', 'PENDIENTE')
-      .in('rrhh_descuentos_ventas.empleado_id', ids)
-
-    if (error) throw new Error(`Error cargando cuotas de ventas: ${error.message}`)
-
-    const map = new Map<number, number>()
-
-    ;((data || []) as unknown[]).forEach((item) => {
-      const row = item as {
-        monto?: number
-        rrhh_descuentos_ventas?:
-          | { empleado_id?: number }
-          | { empleado_id?: number }[]
+    const ids = new Set(empleadosList.map(e => e.id))
+    let atrasadas = 0
+    for (const cuota of (data || []) as Array<{
+      empleado_id: number; tipo: string; cuota_id: number;
+      monto: number; periodo_origen_id: number | null;
+      origen_fecha_inicio: string | null
+    }>) {
+      // La confirmacion SQL excluye las cuotas sin periodo original.
+      // La pantalla DEBE hacer lo mismo para evitar cobrar un total diferente.
+      if (cuota.periodo_origen_id == null || cuota.origen_fecha_inicio == null) continue
+      const id = Number(cuota.empleado_id)
+      if (!ids.has(id)) continue
+      const monto = toNum(cuota.monto)
+      if (monto <= 0) throw new Error(`Cuota ${cuota.tipo} #${cuota.cuota_id} sin importe válido.`)
+      if (cuota.origen_fecha_inicio < fechas.fechaInicio) atrasadas++
+      if (cuota.tipo === 'PRESTAMO') {
+        prestamos.set(id, round2((prestamos.get(id) || 0) + monto))
+      } else if (cuota.tipo === 'VENTA_EMPLEADO') {
+        ventas.set(id, round2((ventas.get(id) || 0) + monto))
+      } else {
+        throw new Error(`Tipo de cuota no reconocido: ${cuota.tipo}`)
       }
-
-      const descuento = Array.isArray(row.rrhh_descuentos_ventas)
-        ? row.rrhh_descuentos_ventas[0]
-        : row.rrhh_descuentos_ventas
-
-      const empleadoId = Number(descuento?.empleado_id || 0)
-
-      if (empleadoId > 0) {
-        map.set(
-          empleadoId,
-          round2((map.get(empleadoId) || 0) + toNum(row.monto))
-        )
-      }
-    })
-
-    return map
+    }
+    return { prestamos, ventas, atrasadas }
   }
 
   const crearFilaInicial = (
@@ -646,7 +606,6 @@ export default function RrhhPlanillaPage() {
 
   const generarFilasIniciales = async (
     empleadosList: Empleado[],
-    periodoId: number,
     params: Parametros
   ) => {
     const empleadosDelPeriodo = empleadosList.filter(
@@ -660,8 +619,9 @@ export default function RrhhPlanillaPage() {
 
     const saldoMap = await cargarSaldosCliente(empleadosDelPeriodo)
     const anticiposMap = await cargarAnticipos(empleadosDelPeriodo)
-    const prestamosMap = await cargarCuotasPrestamo(empleadosDelPeriodo, periodoId)
-    const ventasCuotasMap = await cargarCuotasVentas(empleadosDelPeriodo, periodoId)
+    const cuotasAuto = await cargarCuotasAuto(empleadosDelPeriodo)
+    const prestamosMap = cuotasAuto.prestamos
+    const ventasCuotasMap = cuotasAuto.ventas
 
     const rows = empleadosDelPeriodo.map((emp) =>
       crearFilaInicial(
@@ -710,7 +670,6 @@ export default function RrhhPlanillaPage() {
       if (guardadas.length === 0) {
         await generarFilasIniciales(
           empleadosList,
-          p?.id || 0,
           parametrosActuales
         )
         setPeriodoCargado(`${anio}-${mes}-${quincena}`)
@@ -730,7 +689,9 @@ export default function RrhhPlanillaPage() {
       )
 
       const saldoMap = await cargarSaldosCliente(empleadosDelPeriodo)
+      const cuotasAuto = await cargarCuotasAuto(empleadosDelPeriodo)
       const empMap = new Map(empleadosDelPeriodo.map((e) => [e.id, e]))
+      const fichasParaActualizar: number[] = []
       const guardadasEmpleadoIds = new Set(
         guardadas.map((g) => Number(g.empleado_id))
       )
@@ -744,7 +705,19 @@ export default function RrhhPlanillaPage() {
             ? saldoMap.get(emp.cliente_id)
             : undefined
 
-          // Los valores pagados/guardados son una fotografía histórica.
+          // Los valores PAGADOS son una fotografía histórica, nunca recalculamos esos registros.
+          // En borradores pendientes, detectar arrastre de cuotas vencidas y exigir guardar
+          // antes de confirmar el salario. Los demás componentes del borrador se conservan.
+          const autoPrestamos = cuotasAuto.prestamos.get(g.empleado_id) || 0
+          const autoVentas = cuotasAuto.ventas.get(g.empleado_id) || 0
+          const requiereActualizacion = g.estado === 'PENDIENTE' && (
+            Math.abs(toNum(g.prestamos) - autoPrestamos) >= 0.01 ||
+            Math.abs(toNum(g.descuentos_ventas) - autoVentas) >= 0.01
+          )
+          if (requiereActualizacion) fichasParaActualizar.push(g.empleado_id)
+          const totalDesc = requiereActualizacion
+            ? round2(toNum(g.total_descuentos) - toNum(g.prestamos) - toNum(g.descuentos_ventas) + autoPrestamos + autoVentas)
+            : toNum(g.total_descuentos)
           return {
             id: g.id,
             revision: g.updated_at,
@@ -772,12 +745,12 @@ export default function RrhhPlanillaPage() {
             igss: String(toNum(g.igss)),
             irtra: String(toNum(g.irtra)),
             anticipos: String(toNum(g.anticipos)),
-            prestamos: String(toNum(g.prestamos)),
-            descuentos_ventas: String(toNum(g.descuentos_ventas)),
+            prestamos: String(requiereActualizacion ? autoPrestamos : toNum(g.prestamos)),
+            descuentos_ventas: String(requiereActualizacion ? autoVentas : toNum(g.descuentos_ventas)),
             descuentos_manual: String(toNum(g.descuentos_manual)),
             total_devengado: toNum(g.total_devengado),
-            total_descuentos: toNum(g.total_descuentos),
-            liquido_pagar: toNum(g.liquido_pagar),
+            total_descuentos: totalDesc,
+            liquido_pagar: requiereActualizacion ? round2(toNum(g.total_devengado) - totalDesc) : toNum(g.liquido_pagar),
             estado: g.estado,
             fecha_pago: g.fecha_pago || '',
             observaciones: g.observaciones || '',
@@ -792,14 +765,8 @@ export default function RrhhPlanillaPage() {
 
       if (empleadosFaltantes.length > 0) {
         const anticiposMap = await cargarAnticipos(empleadosFaltantes)
-        const prestamosMap = await cargarCuotasPrestamo(
-          empleadosFaltantes,
-          p?.id || 0
-        )
-        const ventasCuotasMap = await cargarCuotasVentas(
-          empleadosFaltantes,
-          p?.id || 0
-        )
+        const prestamosMap = cuotasAuto.prestamos
+        const ventasCuotasMap = cuotasAuto.ventas
 
         filasNuevas = empleadosFaltantes.map((emp) =>
           crearFilaInicial(
@@ -818,11 +785,14 @@ export default function RrhhPlanillaPage() {
       )
 
       setFilas(rows)
+      setDirtyIds(fichasParaActualizar)
       setPeriodoCargado(`${anio}-${mes}-${quincena}`)
       setMensaje(
-        filasNuevas.length > 0
-          ? `Planilla cargada desde registros guardados. Se agregaron ${filasNuevas.length} empleado(s) nuevo(s) que trabajaron en este período.`
-          : 'Planilla cargada desde registros guardados.'
+        fichasParaActualizar.length > 0
+          ? `${fichasParaActualizar.length} borrador(es) requieren guardar cuotas actualizadas. Revisa el líquido y GUARDA antes de confirmar pagos. No se modificaron fichas pagadas.`
+          : filasNuevas.length > 0
+            ? `Planilla cargada. Se agregaron ${filasNuevas.length} empleado(s) nuevos del período.`
+            : 'Planilla cargada. Cuotas pendientes y vencidas actualizadas en pantalla, sin marcar pagos.'
       )
     } catch (err) {
       console.error(err)
@@ -1023,7 +993,7 @@ export default function RrhhPlanillaPage() {
 
     try {
       const { error } = await supabase.rpc(
-        'rrhh_confirmar_pago_ficha',
+        'rrhh_confirmar_pago_ficha_con_arrastre',
         {
           p_ficha_id: row.id,
           p_fecha_pago: row.fecha_pago,
@@ -1902,7 +1872,7 @@ export default function RrhhPlanillaPage() {
                   />
                   {toNum(row.prestamos) > 0 && (
                     <div className="text-[10px] text-slate-500 mt-1">
-                      Cuota del período
+                      Cuotas del período y vencidas
                     </div>
                   )}
                 </td>
