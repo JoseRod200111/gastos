@@ -32,6 +32,7 @@ type Filtros = {
   desde: string
   hasta: string
   id: string
+  id_multi: string
   cliente_nombre: string
   cliente_nit: string
   ubicacion: string
@@ -53,8 +54,18 @@ const codigoMultiFolio = (folio: number | null | undefined) => {
 
 const extraerMulti = (obs: string | null | undefined) => {
   if (!obs) return null
-  const m = obs.match(/MULTI:([a-zA-Z0-9_-]+)/)
-  return m ? m[1] : null
+  const m = obs.match(/MULTI:([a-zA-Z0-9_-]+)/i)
+  return m ? m[1].toUpperCase() : null
+}
+
+// Acepta tanto MT351 como 351, pero nunca interpreta un ID de venta como folio.
+const parsearFolioMulti = (valor: string): number | null => {
+  const limpio = valor.trim()
+  if (!limpio) return null
+  const match = limpio.match(/^(?:MT)?0*([1-9]\d*)$/i)
+  if (!match) return null
+  const folio = Number(match[1])
+  return Number.isSafeInteger(folio) ? folio : null
 }
 
 const codigoMultiVenta = (venta: Pick<VentaRow, 'multi_folio' | 'observaciones'>) => {
@@ -103,12 +114,14 @@ const safeDate = (iso: string | null | undefined) => {
 export default function ReporteVentasGranjaPage() {
   const [ventas, setVentas] = useState<VentaRow[]>([])
   const [loading, setLoading] = useState(false)
+  const [errorBusqueda, setErrorBusqueda] = useState('')
   const [generandoReciboId, setGenerandoReciboId] = useState<number | null>(null)
 
   const [filtros, setFiltros] = useState<Filtros>({
     desde: '',
     hasta: '',
     id: '',
+    id_multi: '',
     cliente_nombre: '',
     cliente_nit: '',
     ubicacion: '',
@@ -127,8 +140,22 @@ export default function ReporteVentasGranjaPage() {
   const cargarDatos = useCallback(async () => {
     setLoading(true)
     try {
-      const idTxt = (filtros.id || '').trim()
+      setErrorBusqueda('')
+      const idTxt = filtros.id.trim()
       const idNum = idTxt ? Number(idTxt) : null
+      if (idTxt && (!/^\d+$/.test(idTxt) || !Number.isSafeInteger(idNum) || Number(idNum) <= 0)) {
+        setVentas([])
+        setErrorBusqueda('El ID de venta debe ser un número entero positivo.')
+        return
+      }
+
+      const folioTxt = filtros.id_multi.trim()
+      const folioNum = parsearFolioMulti(folioTxt)
+      if (folioTxt && folioNum === null) {
+        setVentas([])
+        setErrorBusqueda('El ID multitramo debe tener formato MT351 o 351.')
+        return
+      }
 
       const cn = (filtros.cliente_nombre || '').trim()
       const cnit = (filtros.cliente_nit || '').trim()
@@ -168,6 +195,7 @@ export default function ReporteVentasGranjaPage() {
 
       // filtros básicos
       if (idNum !== null && Number.isFinite(idNum)) query = query.eq('id', idNum)
+      if (folioNum !== null) query = query.eq('multi_folio', folioNum)
       if (filtros.desde) query = query.gte('fecha', filtros.desde)
       if (filtros.hasta) query = query.lte('fecha', filtros.hasta)
 
@@ -183,6 +211,7 @@ export default function ReporteVentasGranjaPage() {
       const { data, error } = await query
       if (error) {
         console.error('Error cargando ventas de granja', error)
+        setErrorBusqueda(`No se pudieron cargar las ventas: ${error.message}`)
         setVentas([])
         return
       }
@@ -285,18 +314,18 @@ export default function ReporteVentasGranjaPage() {
     doc.save(name)
   }
 
+  // Un recibo SOLO puede agrupar filas con la misma identidad de venta multitramo.
+  // La antigua heurística de cliente + fecha + precio + minutos combinaba ventas
+  // independientes (por ejemplo, MT351 / ID 535 con MT348 / ID 532).
   const obtenerFilasParaRecibo = async (baseRow: VentaRow) => {
     const multiCodigo = codigoMultiVenta(baseRow)
     const multiObs = extraerMulti(baseRow.observaciones)
-    const multiFolio = codigoMultiFolio(baseRow.multi_folio) ? Number(baseRow.multi_folio) : null
+    const multiFolio = baseRow.multi_folio == null ? null : Number(baseRow.multi_folio)
     const multiId = baseRow.multi_id || null
 
-    if (!multiCodigo && !multiObs && multiFolio === null && !multiId) {
-      return { filas: [baseRow], multi: null }
+    if (!multiCodigo && !multiId && !multiObs && multiFolio === null) {
+      return { filas: [baseRow], multi: null, advertencia: null }
     }
-
-    let multiRows: VentaRow[] = []
-    let multiErr: unknown = null
 
     const selectMulti = `
       id, fecha, cliente_id, ubicacion_id, lote_id,
@@ -307,95 +336,67 @@ export default function ReporteVentasGranjaPage() {
       granja_lotes ( codigo )
     `
 
-    if (multiFolio !== null) {
-      const res = await supabase
-        .from('granja_ventas_cerdos')
-        .select(selectMulti)
-        .eq('multi_folio', multiFolio)
-        .order('id', { ascending: true })
-
-      multiRows = ((res.data || []) as any) as VentaRow[]
-      multiErr = res.error
-    } else if (multiId) {
-      const res = await supabase
-        .from('granja_ventas_cerdos')
-        .select(selectMulti)
-        .eq('multi_id', multiId)
-        .order('id', { ascending: true })
-
-      multiRows = ((res.data || []) as any) as VentaRow[]
-      multiErr = res.error
+    // Un UUID compartido identifica el grupo con mayor precisión.
+    // El folio y la observación se usan solo si el UUID no está disponible.
+    let consulta = supabase.from('granja_ventas_cerdos').select(selectMulti)
+    if (multiId) {
+      consulta = consulta.eq('multi_id', multiId)
+    } else if (multiFolio !== null) {
+      consulta = consulta.eq('multi_folio', multiFolio)
     } else if (multiObs) {
-      const res = await supabase
-        .from('granja_ventas_cerdos')
-        .select(selectMulti)
-        .ilike('observaciones', `%MULTI:${multiObs}%`)
-        .order('id', { ascending: true })
-
-      multiRows = ((res.data || []) as any) as VentaRow[]
-      multiErr = res.error
+      // Para registros antiguos sin columnas de agrupación.
+      consulta = consulta.ilike('observaciones', `%MULTI:${multiObs}%`)
+    } else {
+      return { filas: [baseRow], multi: multiCodigo, advertencia: null }
     }
 
-    if (!multiErr && multiRows.length > 0) {
-      const sameClient = multiRows.filter((r) => r.cliente_id === baseRow.cliente_id)
-      const sameFecha = sameClient.filter((r) => r.fecha === baseRow.fecha)
-      let filas =
-        sameFecha.length > 0
-          ? sameFecha
-          : sameClient.length > 0
-            ? sameClient
-            : [baseRow]
-
-      filas = [...filas].sort((a, b) => {
-        const ca = a.granja_ubicaciones?.codigo || ''
-        const cb = b.granja_ubicaciones?.codigo || ''
-        return ca.localeCompare(cb, 'es', {
-          numeric: true,
-          sensitivity: 'base',
-        })
-      })
-
-      if (filas.length > 1) return { filas, multi: multiCodigo || multiObs }
+    const { data, error } = await consulta.order('id', { ascending: true })
+    if (error) {
+      console.error('No se pudo verificar el grupo multitramo', error)
+      return {
+        filas: [baseRow],
+        multi: multiCodigo,
+        advertencia: 'No fue posible verificar las otras líneas del multitramo. Solo se incluye el ID seleccionado.',
+      }
     }
 
-    // Fallback para ventas viejas sin multi_folio/multi_id consistente:
-    // agrupa filas creadas en una ventana corta para el mismo cliente, fecha y precio.
-    const baseCreated = safeDate(baseRow.created_at)
-    if (!baseCreated) return { filas: [baseRow], multi: multiCodigo || multiObs }
+    const filasGrupo = (((data || []) as unknown) as VentaRow[]).filter((r) => {
+      // Nunca mezclar clientes o fechas distintas en el mismo recibo.
+      if (r.cliente_id !== baseRow.cliente_id || r.fecha !== baseRow.fecha) return false
 
-    const windowMinutes = 3
-    const minT = new Date(baseCreated.getTime() - windowMinutes * 60 * 1000)
-    const maxT = new Date(baseCreated.getTime() + windowMinutes * 60 * 1000)
+      if (multiId) {
+        if (r.multi_id !== multiId) return false
+        // Ante un folio inconsistente, NO agregar esa fila.
+        if (multiFolio !== null && r.multi_folio !== multiFolio) return false
+        return true
+      }
 
-    const { data: candRows, error: candErr } = await supabase
-      .from('granja_ventas_cerdos')
-      .select(selectMulti)
-      .eq('cliente_id', baseRow.cliente_id)
-      .eq('fecha', baseRow.fecha)
-      .gte('created_at', minT.toISOString())
-      .lte('created_at', maxT.toISOString())
-      .order('id', { ascending: true })
+      if (multiFolio !== null) {
+        // Un folio repetido con UUID distintos tampoco autoriza mezclar ventas.
+        return r.multi_folio === multiFolio && r.multi_id === baseRow.multi_id
+      }
 
-    if (candErr || !candRows || candRows.length === 0) {
-      return { filas: [baseRow], multi: multiCodigo || multiObs }
-    }
-
-    let filas = (((candRows || []) as any) as VentaRow[]).filter((r) => {
-      return round2(toNum(r.precio_por_libra)) === round2(toNum(baseRow.precio_por_libra))
+      // Legado: exige una coincidencia exacta del código en observaciones.
+      return r.multi_id == null && r.multi_folio == null &&
+        extraerMulti(r.observaciones) === multiObs
     })
 
-    if (filas.length <= 1) filas = [baseRow]
+    // Asegurar la fila solicitada aunque la búsqueda no devuelva resultados.
+    if (!filasGrupo.some((r) => r.id === baseRow.id)) filasGrupo.push(baseRow)
 
-    filas = [...filas].sort((a, b) => {
+    const filas = filasGrupo.sort((a, b) => {
       const ca = a.granja_ubicaciones?.codigo || ''
       const cb = b.granja_ubicaciones?.codigo || ''
-      return ca.localeCompare(cb, 'es', {
-        numeric: true,
-        sensitivity: 'base',
-      })
+      return ca.localeCompare(cb, 'es', { numeric: true, sensitivity: 'base' }) || a.id - b.id
     })
 
-    return { filas, multi: multiCodigo || multiObs }
+    return {
+      filas,
+      multi: multiCodigo,
+      advertencia: filas.length === 1
+        ? 'No se encontraron otras líneas vinculadas con la misma identidad multitramo. No se agrupan ventas por proximidad de horario.'
+        : null,
+    }
   }
 
   const generarReciboPDF = async (ventaId: number) => {
@@ -421,7 +422,7 @@ export default function ReporteVentasGranjaPage() {
       }
 
       const baseRow = (base as any) as VentaRow
-      const { filas, multi } = await obtenerFilasParaRecibo(baseRow)
+      const { filas, multi, advertencia } = await obtenerFilasParaRecibo(baseRow)
 
       const totalCant = filas.reduce((a, r) => a + toNum(r.cantidad), 0)
       const totalPeso = filas.reduce((a, r) => a + toNum(r.peso_total_lb), 0)
@@ -441,6 +442,7 @@ export default function ReporteVentasGranjaPage() {
       doc.setFontSize(10)
       doc.text(`No. Recibo: ${reciboNo}`, 150, 12)
       doc.text(`Fecha: ${baseRow.fecha}`, 150, 17)
+      doc.text(`ID origen: ${baseRow.id}`, 150, 22)
 
       const clienteNom = baseRow.clientes?.nombre || '—'
       const clienteNit = baseRow.clientes?.nit || '—'
@@ -461,8 +463,9 @@ export default function ReporteVentasGranjaPage() {
 
       autoTable(doc, {
         startY: yInfo,
-        head: [['Ubicación', 'Lote', 'Cant.', 'Peso(lb)', 'Q/lb', 'Subtotal (Q)']],
+        head: [['ID venta', 'Ubicación', 'Lote', 'Cant.', 'Peso(lb)', 'Q/lb', 'Subtotal (Q)']],
         body: filas.map((r) => [
+          String(r.id),
           r.granja_ubicaciones?.codigo || `#${r.ubicacion_id}`,
           r.granja_lotes?.codigo || '—',
           String(toNum(r.cantidad)),
@@ -470,12 +473,12 @@ export default function ReporteVentasGranjaPage() {
           fmtN(toNum(r.precio_por_libra)),
           fmtQ(toNum(r.total)),
         ]),
-        styles: { fontSize: 9 },
+        styles: { fontSize: 8.5 },
         columnStyles: {
-          2: { halign: 'right' },
           3: { halign: 'right' },
           4: { halign: 'right' },
           5: { halign: 'right' },
+          6: { halign: 'right' },
         },
       })
 
@@ -506,13 +509,9 @@ export default function ReporteVentasGranjaPage() {
         doc.text(doc.splitTextToSize(obs, 180), 14, yObs + 4)
       }
 
-      if (multi && filas.length === 1) {
-        doc.setFontSize(8)
-        doc.text(
-          'Nota: Esta venta está marcada como MULTI, pero solo se encontró 1 fila relacionada para el recibo.',
-          14,
-          285
-        )
+      if (advertencia) {
+        doc.setFontSize(7.5)
+        doc.text(doc.splitTextToSize(`Nota: ${advertencia}`, 180), 14, 280)
       } else {
         doc.setFontSize(8)
         doc.text('Este recibo corresponde a una venta registrada en el sistema.', 14, 285)
@@ -522,6 +521,9 @@ export default function ReporteVentasGranjaPage() {
       const pad = (n: number) => (n < 10 ? `0${n}` : `${n}`)
       const name = `recibo_venta_${reciboNo}_${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}.pdf`
       doc.save(name)
+    } catch (error) {
+      console.error('Error generando recibo de venta', error)
+      alert('No se pudo generar el recibo. Revisa la conexión e inténtalo de nuevo.')
     } finally {
       setGenerandoReciboId(null)
     }
@@ -535,7 +537,7 @@ export default function ReporteVentasGranjaPage() {
 
       <h1 className="text-2xl font-bold mb-2">📄 Reporte de ventas de cerdos</h1>
       <p className="text-sm text-gray-600 mb-4">
-        Incluye reporte PDF y recibo (factura) por venta. Si es multi-tramo, intenta agrupar todas las líneas.
+        Incluye reporte PDF y recibo (factura) por venta. Las líneas multitramo se agrupan únicamente mediante su identificador verificado.
       </p>
 
       <div className="grid grid-cols-1 md:grid-cols-8 gap-3 mb-4">
@@ -545,7 +547,8 @@ export default function ReporteVentasGranjaPage() {
         <input name="cliente_nit" placeholder="NIT" value={filtros.cliente_nit} onChange={handleChange} className="border p-2" />
         <input name="ubicacion" placeholder="Ubicación (TR13...)" value={filtros.ubicacion} onChange={handleChange} className="border p-2" />
         <input name="lote" placeholder="Lote" value={filtros.lote} onChange={handleChange} className="border p-2" />
-        <input name="id" placeholder="ID" value={filtros.id} onChange={handleChange} className="border p-2" />
+        <input name="id" placeholder="ID venta (535)" value={filtros.id} onChange={handleChange} className="border p-2" />
+        <input name="id_multi" placeholder="ID multitramo (MT351)" value={filtros.id_multi} onChange={handleChange} className="border p-2" />
 
         <label className="flex items-center gap-2 text-sm border p-2">
           <input
@@ -556,6 +559,12 @@ export default function ReporteVentasGranjaPage() {
           Solo multi-tramo
         </label>
       </div>
+
+      {errorBusqueda && (
+        <p role="alert" className="mb-3 rounded border border-red-300 bg-red-50 p-3 text-sm text-red-800">
+          {errorBusqueda}
+        </p>
+      )}
 
       <div className="mb-6 flex items-center gap-3">
         <button onClick={cargarDatos} className="bg-blue-600 text-white px-4 py-2 rounded">
