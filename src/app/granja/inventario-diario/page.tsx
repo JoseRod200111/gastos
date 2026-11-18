@@ -85,6 +85,7 @@ const hoyISO = () => {
 }
 
 const finDeDiaUTC = (yyyyMMdd: string) => `${yyyyMMdd}T23:59:59.999Z`
+const FECHA_CORTE_NUEVA = '2026-11-16'
 
 const getLastAutoTableY = (doc: jsPDF, fallback: number) => {
   return (
@@ -655,6 +656,9 @@ export default function InventarioDiarioPage() {
     if (!fecha) return
 
     setLoading(true)
+    // No mostrar una tabla teorica antigua si falla la consulta del corte.
+    setUbicaciones([])
+    setEstado({})
 
     try {
       const { data: ubicacionesDataRaw, error: errUbicaciones } = await supabase
@@ -675,20 +679,62 @@ export default function InventarioDiarioPage() {
 
       setUbicaciones(ubicacionesData)
 
-      const { data: movimientosDataRaw, error: errMovimientos } = await supabase
-        .from('granja_movimientos')
-        .select('ubicacion_id, tipo, cantidad, fecha')
-        .lte('fecha', finDeDiaUTC(fecha))
-        .order('fecha', { ascending: true })
+      let teoricos: Record<number, number> = {}
 
-      if (errMovimientos) {
-        console.error('Error cargando movimientos', errMovimientos)
-        alert(`Error cargando movimientos: ${errMovimientos.message}`)
-        return
+      if (fecha >= FECHA_CORTE_NUEVA) {
+        // Inventario oficial desde el corte fisico del 16 de noviembre.
+        // Ejecutarlo en PostgreSQL evita usar 1000 filas antiguas e incompletas.
+        const { data: saldosData, error: errSaldos } = await supabase
+          .rpc('granja_stock_desde_20261116', { p_fecha: fecha })
+
+        if (errSaldos) {
+          console.error('Error consultando saldos del nuevo corte', errSaldos)
+          alert(`No se pudo calcular el teórico desde el 16/11/2026: ${errSaldos.message}. No se usaran los movimientos historicos como reemplazo.`)
+          return
+        }
+
+        const saldos = (saldosData ?? []) as {
+          ubicacion_id: number
+          saldo: number | string | null
+        }[]
+        const saldosMap = new Map<number, number>()
+
+        for (const row of saldos) {
+          const id = Number(row.ubicacion_id)
+          const saldo = Number(row.saldo)
+          if (!Number.isFinite(id) || !Number.isFinite(saldo) || saldosMap.has(id)) {
+            alert('El calculo del teórico devolvio valores invalidos o ubicaciones duplicadas. No se cargaran cifras incorrectas.')
+            return
+          }
+          saldosMap.set(id, saldo)
+        }
+
+        if (saldosMap.size !== ubicacionesData.length ||
+            ubicacionesData.some((ubicacion) => !saldosMap.has(ubicacion.id))) {
+          alert('El calculo del teórico no devolvio todas las ubicaciones activas. No se mostrara un inventario incompleto.')
+          return
+        }
+
+        ubicacionesData.forEach((ubicacion) => {
+          teoricos[ubicacion.id] = saldosMap.get(ubicacion.id) ?? 0
+        })
+      } else {
+        // Los reportes anteriores al nuevo corte siguen siendo historicos.
+        const { data: movimientosDataRaw, error: errMovimientos } = await supabase
+          .from('granja_movimientos')
+          .select('ubicacion_id, tipo, cantidad, fecha')
+          .lte('fecha', finDeDiaUTC(fecha))
+          .order('fecha', { ascending: true })
+
+        if (errMovimientos) {
+          console.error('Error cargando movimientos historicos', errMovimientos)
+          alert(`Error cargando movimientos historicos: ${errMovimientos.message}`)
+          return
+        }
+
+        const movimientos = (movimientosDataRaw ?? []) as GranjaMovimiento[]
+        teoricos = calcularTeorico(ubicacionesData, movimientos)
       }
-
-      const movimientos = (movimientosDataRaw ?? []) as GranjaMovimiento[]
-      const teoricos = calcularTeorico(ubicacionesData, movimientos)
 
       const {
         cerdasPorUbicacion,
@@ -770,11 +816,21 @@ export default function InventarioDiarioPage() {
         if (rowGuardado) {
           const totalManualGuardado = Math.max(toNum(rowGuardado.conteo_manual), 0)
           const cerdasGuardadas = Math.max(toNum(rowGuardado.hembras_manual), 0)
-          const cerdosGuardados = Math.max(toNum(rowGuardado.machos_manual), 0)
-          const lechonesGuardados = Math.max(
+          let cerdosGuardados = Math.max(toNum(rowGuardado.machos_manual), 0)
+          let lechonesGuardados = Math.max(
             totalManualGuardado - cerdasGuardadas - cerdosGuardados,
             0
           )
+
+          // La foto SQL del 16/11 se registro con ambos campos auxiliares
+          // a cero. En tramos TR el conteo corresponde a cerdos normales,
+          // no a lechones. Interpretarlo sin alterar la base protegida.
+          if (fecha >= FECHA_CORTE_NUEVA &&
+              /^TR0*[0-9]+$/i.test(ubicacion.codigo) &&
+              cerdasGuardadas === 0 && cerdosGuardados === 0) {
+            cerdosGuardados = totalManualGuardado
+            lechonesGuardados = 0
+          }
 
           cerdasManual =
             cerdasManualIdsGuardadas.length > 0
@@ -951,6 +1007,7 @@ export default function InventarioDiarioPage() {
   }
 
   const copiarTeoricoComoConteo = () => {
+    if (fecha <= FECHA_CORTE_NUEVA) return
     setEstado((prev) => {
       const copy: Record<number, EstadoUbicacion> = {}
 
@@ -983,6 +1040,7 @@ export default function InventarioDiarioPage() {
   }
 
   const limpiarConteos = () => {
+    if (fecha <= FECHA_CORTE_NUEVA) return
     const confirmar = confirm('¿Limpiar todos los conteos manuales en pantalla?')
     if (!confirmar) return
 
@@ -1074,6 +1132,11 @@ export default function InventarioDiarioPage() {
   const guardarInventario = async () => {
     if (!fecha) {
       alert('Selecciona una fecha.')
+      return
+    }
+
+    if (fecha <= FECHA_CORTE_NUEVA) {
+      alert('El inventario de arranque del 16/11/2026 y los historicos previos son de solo lectura. No se pueden reemplazar.')
       return
     }
 
@@ -1309,6 +1372,7 @@ export default function InventarioDiarioPage() {
                   min="0"
                   className="border rounded px-1 py-1 text-right text-[11px] w-full bg-gray-50"
                   value={data.cerdasManual}
+                  disabled={fecha <= FECHA_CORTE_NUEVA}
                   readOnly={data.cerdaIdsManual.length > 0}
                   onChange={(e) =>
                     actualizarConteo(ubicacion.id, 'cerdasManual', e.target.value)
@@ -1323,6 +1387,7 @@ export default function InventarioDiarioPage() {
                   min="0"
                   className="border rounded px-1 py-1 text-right text-[11px] w-full"
                   value={data.lechonesManual}
+                  disabled={fecha <= FECHA_CORTE_NUEVA}
                   onChange={(e) =>
                     actualizarConteo(ubicacion.id, 'lechonesManual', e.target.value)
                   }
@@ -1336,6 +1401,7 @@ export default function InventarioDiarioPage() {
                   min="0"
                   className="border rounded px-1 py-1 text-right text-[11px] w-full"
                   value={data.cerdosManual}
+                  disabled={fecha <= FECHA_CORTE_NUEVA}
                   onChange={(e) =>
                     actualizarConteo(ubicacion.id, 'cerdosManual', e.target.value)
                   }
@@ -1361,6 +1427,7 @@ export default function InventarioDiarioPage() {
               <select
                 className="border rounded px-1 py-1 text-[11px] w-full"
                 value=""
+                disabled={fecha <= FECHA_CORTE_NUEVA}
                 onChange={(e) => agregarCerdaManual(ubicacion.id, e.target.value)}
               >
                 <option value="">Agregar cerda contada...</option>
@@ -1374,6 +1441,7 @@ export default function InventarioDiarioPage() {
               <button
                 type="button"
                 className="border rounded px-2 py-1 text-[11px] bg-gray-100 hover:bg-gray-200"
+                disabled={fecha <= FECHA_CORTE_NUEVA}
                 onClick={() => {
                   data.cerdaIdsTeoricos.forEach((id) => {
                     agregarCerdaManual(ubicacion.id, String(id))
@@ -1393,6 +1461,7 @@ export default function InventarioDiarioPage() {
                       key={id}
                       type="button"
                       className="border rounded px-1 bg-blue-50 hover:bg-red-50"
+                      disabled={fecha <= FECHA_CORTE_NUEVA}
                       onClick={() => quitarCerdaManual(ubicacion.id, id)}
                       title="Quitar cerda de esta ubicación"
                     >
@@ -1458,7 +1527,7 @@ export default function InventarioDiarioPage() {
         <button
           type="button"
           onClick={copiarTeoricoComoConteo}
-          disabled={loading || ubicaciones.length === 0}
+          disabled={loading || ubicaciones.length === 0 || fecha <= FECHA_CORTE_NUEVA}
           className="bg-gray-200 hover:bg-gray-300 disabled:opacity-60 text-gray-900 px-4 py-2 rounded text-sm"
         >
           Copiar teórico a conteo
@@ -1467,7 +1536,7 @@ export default function InventarioDiarioPage() {
         <button
           type="button"
           onClick={limpiarConteos}
-          disabled={loading || ubicaciones.length === 0}
+          disabled={loading || ubicaciones.length === 0 || fecha <= FECHA_CORTE_NUEVA}
           className="bg-gray-200 hover:bg-gray-300 disabled:opacity-60 text-gray-900 px-4 py-2 rounded text-sm"
         >
           Limpiar conteos
@@ -1485,12 +1554,19 @@ export default function InventarioDiarioPage() {
         <button
           type="button"
           onClick={guardarInventario}
-          disabled={guardando || !fecha}
+          disabled={guardando || !fecha || fecha <= FECHA_CORTE_NUEVA}
+          title={fecha <= FECHA_CORTE_NUEVA ? 'El corte del 16/11 y las fechas anteriores son de solo lectura' : undefined}
           className="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white px-4 py-2 rounded text-sm"
         >
           {guardando ? 'Guardando…' : 'Guardar inventario diario'}
         </button>
       </div>
+
+      {fecha <= FECHA_CORTE_NUEVA && (
+        <p className="text-xs text-amber-800 mb-3">
+          Registro historico protegido: las fechas hasta el 16/11/2026 solo pueden consultarse y exportarse, no modificarse desde esta pantalla.
+        </p>
+      )}
 
       <div className="grid grid-cols-1 md:grid-cols-6 gap-3 mb-4">
         <div className="border rounded bg-white p-3">
