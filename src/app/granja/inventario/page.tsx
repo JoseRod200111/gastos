@@ -156,10 +156,9 @@ const calcularDesglose = (
   stockTeorico: StockMap,
   cerdasPorUbicacion: CerdasMap
 ): DesgloseUbicacion => {
-  // En este módulo el total del inventario representa el conteo editable
-  // de lechones o cerdos normales. Las cerdas registradas se muestran
-  // aparte por arete y NO se suman al total general. Esto evita que
-  // Maternidad/Gestación inflen el reporte al sumar la cerda + sus lechones.
+  // El stock de PostgreSQL incluye tanto las cerdas registradas por
+  // AJUSTE +1 como los lechones. Separarlas sin contarlas dos veces.
+  // El total incluye cerdas + lechones + cerdos normales.
   const total = Math.max(toNum(stockTeorico[ubicacion.id] ?? 0), 0)
   const cerdasRegistradas = Math.max(toNum(cerdasPorUbicacion[ubicacion.id] ?? 0), 0)
   const esZonaProtegida = esMaternidadOGestacion(ubicacion)
@@ -168,9 +167,9 @@ const calcularDesglose = (
     return {
       total,
       cerdasProtegidas: cerdasRegistradas,
-      lechonesEditables: total,
+      lechonesEditables: Math.max(total - cerdasRegistradas, 0),
       cerdosEditables: 0,
-      editableActual: total,
+      editableActual: Math.max(total - cerdasRegistradas, 0),
       tipoEditable: 'LECHONES',
       esZonaProtegida,
     }
@@ -198,8 +197,9 @@ const calcularTotalVisual = (
 
   if (!Number.isFinite(editable)) return desglose.total
 
-  // Igual que en el PDF: el total visual no suma las cerdas registradas.
-  return Math.max(Math.floor(editable), 0)
+  // Campo editable de Maternidad/Gestacion = lechones; las cerdas
+  // registradas cuentan por separado en el total y no se editan aquí.
+  return Math.max(Math.floor(editable), 0) + desglose.cerdasProtegidas
 }
 
 async function fetchLogoDataUrl(): Promise<string | null> {
@@ -664,8 +664,12 @@ export default function GranjaInventarioPage() {
       const mapaCerdas: CerdasMap = {}
       const mapaAretes: CerdasAretesMap = {}
 
+      // El corte del 16/11 empezó sin cerdas activas. Las incorporaciones
+      // de Maternidad 1 corresponden al 18/11, no a las fechas 16 y 17.
+      const mostrarCerdasActivas = fechaCorte < FECHA_CORTE_NUEVA || fechaCorte >= '2026-11-18'
+
       ;((cerdasData ?? []) as CerdaRow[]).forEach((cerda) => {
-        if (!cerda.ubicacion_id) return
+        if (!mostrarCerdasActivas || !cerda.ubicacion_id) return
         if (cerda.estado === 'MUERTA' || cerda.estado === 'BAJA') return
 
         const id = Number(cerda.ubicacion_id)
@@ -836,12 +840,13 @@ export default function GranjaInventarioPage() {
           // cuando existe un corte guardado para la fecha. Por eso el ajuste
           // manual debe guardarse también aquí; si solo se insertaba en
           // granja_movimientos, al recargar el valor volvía al corte anterior.
+          const nuevoTotal = nuevoEntero + desglose.cerdasProtegidas
           inventarioDiarioCambios.push({
             ubicacion_id: ubicacion.id,
-            conteo_manual: nuevoEntero,
-            teorico_al_momento: nuevoEntero,
+            conteo_manual: nuevoTotal,
+            teorico_al_momento: nuevoTotal,
             diferencia: 0,
-            hembras_manual: 0,
+            hembras_manual: desglose.cerdasProtegidas,
             machos_manual: desglose.esZonaProtegida ? 0 : nuevoEntero,
             user_id: userId,
           })
