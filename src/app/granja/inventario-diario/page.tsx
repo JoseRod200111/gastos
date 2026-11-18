@@ -736,12 +736,24 @@ export default function InventarioDiarioPage() {
         teoricos = calcularTeorico(ubicacionesData, movimientos)
       }
 
-      const {
-        cerdasPorUbicacion,
-        aretesPorUbicacion,
-        cerdaIdsPorUbicacion,
-        cerdasActivas,
-      } = await cargarCerdas()
+      const cerdasCargadas = await cargarCerdas()
+      // El corte inicial del 16/11 tenia 0 cerdas activas y no hubo
+      // movimientos de incorporacion el 17. No trasladar las altas del
+      // 18/11 hacia dias anteriores solo porque actualmente estan activas.
+      const mantenerCerdasHistoricasEnCero =
+        fecha >= FECHA_CORTE_NUEVA && fecha < '2026-11-18'
+      const cerdasPorUbicacion = mantenerCerdasHistoricasEnCero
+        ? ({} as CerdasMap)
+        : cerdasCargadas.cerdasPorUbicacion
+      const aretesPorUbicacion = mantenerCerdasHistoricasEnCero
+        ? ({} as AretesMap)
+        : cerdasCargadas.aretesPorUbicacion
+      const cerdaIdsPorUbicacion = mantenerCerdasHistoricasEnCero
+        ? ({} as CerdaIdsMap)
+        : cerdasCargadas.cerdaIdsPorUbicacion
+      const cerdasActivas = mantenerCerdasHistoricasEnCero
+        ? ([] as CerdaRow[])
+        : cerdasCargadas.cerdasActivas
 
       setCerdasDisponibles(cerdasActivas)
 
