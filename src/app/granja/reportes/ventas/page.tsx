@@ -105,12 +105,6 @@ async function fetchLogoDataUrl(): Promise<string | null> {
 const fmtQ = (n: number) => `Q${round2(n).toFixed(2)}`
 const fmtN = (n: number) => `${round2(n).toFixed(2)}`
 
-const safeDate = (iso: string | null | undefined) => {
-  if (!iso) return null
-  const d = new Date(iso)
-  return Number.isNaN(d.getTime()) ? null : d
-}
-
 export default function ReporteVentasGranjaPage() {
   const [ventas, setVentas] = useState<VentaRow[]>([])
   const [loading, setLoading] = useState(false)
