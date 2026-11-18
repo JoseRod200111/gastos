@@ -65,7 +65,8 @@ const absNum = (v: unknown) => Math.abs(toNum(v))
 
 const finDeDiaUTC = (yyyyMMdd: string) => `${yyyyMMdd}T23:59:59.999Z`
 
-const FECHA_BASE_VIVA = '2026-08-06'
+const FECHA_BASE_VIVA = '2026-08-06' // Solo para fechas historicas anteriores al nuevo corte.
+const FECHA_CORTE_NUEVA = '2026-11-16'
 
 const fechaLocalHoy = () => {
   const today = new Date()
@@ -488,6 +489,12 @@ export default function GranjaInventarioPage() {
 
   const cargarDatos = useCallback(async () => {
     setLoading(true)
+    // Evitar dejar un saldo de una fecha anterior si falla el nuevo calculo.
+    setUbicaciones([])
+    setStockTeorico({})
+    setCerdasPorUbicacion({})
+    setCerdasAretesPorUbicacion({})
+    setValoresEditados({})
 
     try {
       const { data: ubicData, error: ubicError } = await supabase
@@ -533,88 +540,115 @@ export default function GranjaInventarioPage() {
         inventarioGuardadoMap.set(Number(row.ubicacion_id), row)
       })
 
-      const hoy = fechaLocalHoy()
-      const fechaEsHoy = fechaCorte === hoy
-      const usarInventarioGuardado = !fechaEsHoy && inventarioGuardadoMap.size > 0
-
-      // Regla importante:
-      // - Días pasados: se muestra la foto guardada en granja_inventario_diario.
-      // - HOY: se muestra vivo, pero NO desde cero histórico, porque antes del corte
-      //   había movimientos viejos/descuadrados. La base viva fija es el corte físico
-      //   del 06/08/2026 y encima se suman los movimientos posteriores.
-      const inventarioBaseVivaMap = new Map<number, InventarioDiarioRow>()
-      const usarBaseViva = fechaEsHoy && fechaCorte > FECHA_BASE_VIVA
-
-      if (usarBaseViva) {
-        const { data: baseRowsData, error: baseRowsError } = await supabase
-          .from('granja_inventario_diario')
-          .select(
-            'ubicacion_id, conteo_manual, teorico_al_momento, diferencia, hembras_manual, machos_manual'
-          )
-          .eq('fecha', FECHA_BASE_VIVA)
-
-        if (baseRowsError) {
-          console.error('Error cargando base viva de inventario', baseRowsError)
-        }
-
-        ;((baseRowsData ?? []) as InventarioDiarioRow[]).forEach((row) => {
-          inventarioBaseVivaMap.set(Number(row.ubicacion_id), row)
-        })
-      }
-
-      let movQuery = supabase
-        .from('granja_movimientos')
-        .select('ubicacion_id, cantidad, tipo, fecha')
-
-      if (usarBaseViva && inventarioBaseVivaMap.size > 0) {
-        movQuery = movQuery
-          .gt('fecha', finDeDiaUTC(FECHA_BASE_VIVA))
-          .lte('fecha', finDeDiaUTC(fechaCorte))
-      } else if (fechaCorte) {
-        movQuery = movQuery.lte('fecha', finDeDiaUTC(fechaCorte))
-      }
-
-      const { data: movData, error: movError } = await movQuery
-
-      if (movError) {
-        console.error('Error cargando movimientos', movError)
-        alert(`Error cargando movimientos: ${movError.message}`)
-        return
-      }
-
-      const mapaMovimientos: StockMap = {}
-
-      ;((movData ?? []) as StockRow[]).forEach((row) => {
-        const id = Number(row.ubicacion_id)
-
-        if (mapaMovimientos[id] === undefined) {
-          mapaMovimientos[id] = 0
-        }
-
-        if (row.tipo === 'AJUSTE') {
-          mapaMovimientos[id] += toNum(row.cantidad)
-        } else if (row.tipo === 'SALIDA_VENTA' || row.tipo === 'SALIDA_MUERTE') {
-          mapaMovimientos[id] -= absNum(row.cantidad)
-        } else {
-          mapaMovimientos[id] += absNum(row.cantidad)
-        }
-      })
-
       const mapa: StockMap = {}
 
-      ubicList.forEach((ubicacion) => {
-        const rowGuardado = inventarioGuardadoMap.get(ubicacion.id)
-        const rowBaseViva = inventarioBaseVivaMap.get(ubicacion.id)
+      if (fechaCorte >= FECHA_CORTE_NUEVA) {
+        // Desde el 16/11/2026 el unico teorico valido es el conteo fisico
+        // del corte + movimientos posteriores, calculado en PostgreSQL.
+        // No combinarlo con la foto del 06/08 ni leer movimientos sin paginar.
+        const { data: saldosData, error: saldosError } = await supabase
+          .rpc('granja_stock_desde_20261116', { p_fecha: fechaCorte })
 
-        if (usarInventarioGuardado && rowGuardado) {
-          mapa[ubicacion.id] = Math.max(toNum(rowGuardado.conteo_manual), 0)
-        } else if (usarBaseViva && inventarioBaseVivaMap.size > 0) {
-          const base = Math.max(toNum(rowBaseViva?.conteo_manual ?? 0), 0)
-          mapa[ubicacion.id] = Math.max(base + (mapaMovimientos[ubicacion.id] ?? 0), 0)
-        } else {
-          mapa[ubicacion.id] = Math.max(mapaMovimientos[ubicacion.id] ?? 0, 0)
+        if (saldosError) {
+          console.error('Error consultando el nuevo corte de granja', saldosError)
+          alert(`No se pudo calcular el inventario desde el 16/11/2026: ${saldosError.message}. No se mostraran saldos historicos como sustituto.`)
+          return
         }
-      })
+
+        const saldos = (saldosData ?? []) as {
+          ubicacion_id: number
+          saldo: number | string | null
+        }[]
+        const saldosPorUbicacion = new Map<number, number>()
+
+        for (const row of saldos) {
+          const id = Number(row.ubicacion_id)
+          const saldo = Number(row.saldo)
+          if (!Number.isFinite(id) || !Number.isFinite(saldo) || saldosPorUbicacion.has(id)) {
+            alert('El resultado del inventario contiene ubicaciones duplicadas o saldos invalidos. No se cargaran cifras incorrectas.')
+            return
+          }
+          saldosPorUbicacion.set(id, saldo)
+        }
+
+        if (saldosPorUbicacion.size !== ubicList.length ||
+            ubicList.some((ubicacion) => !saldosPorUbicacion.has(ubicacion.id))) {
+          alert('La consulta de stock no devolvio todas las ubicaciones activas. No se cargara un inventario incompleto.')
+          return
+        }
+
+        ubicList.forEach((ubicacion) => {
+          mapa[ubicacion.id] = saldosPorUbicacion.get(ubicacion.id) ?? 0
+        })
+      } else {
+        // Las fechas historicas anteriores al 16/11 conservan su lectura.
+        const hoy = fechaLocalHoy()
+        const fechaEsHoy = fechaCorte === hoy
+        const usarInventarioGuardado = !fechaEsHoy && inventarioGuardadoMap.size > 0
+        const inventarioBaseVivaMap = new Map<number, InventarioDiarioRow>()
+        const usarBaseViva = fechaEsHoy && fechaCorte > FECHA_BASE_VIVA
+
+        if (usarBaseViva) {
+          const { data: baseRowsData, error: baseRowsError } = await supabase
+            .from('granja_inventario_diario')
+            .select('ubicacion_id, conteo_manual, teorico_al_momento, diferencia, hembras_manual, machos_manual')
+            .eq('fecha', FECHA_BASE_VIVA)
+
+          if (baseRowsError) {
+            console.error('Error cargando base historica de inventario', baseRowsError)
+          }
+          ;((baseRowsData ?? []) as InventarioDiarioRow[]).forEach((row) => {
+            inventarioBaseVivaMap.set(Number(row.ubicacion_id), row)
+          })
+        }
+
+        let movQuery = supabase
+          .from('granja_movimientos')
+          .select('ubicacion_id, cantidad, tipo, fecha')
+
+        if (usarBaseViva && inventarioBaseVivaMap.size > 0) {
+          movQuery = movQuery
+            .gt('fecha', finDeDiaUTC(FECHA_BASE_VIVA))
+            .lte('fecha', finDeDiaUTC(fechaCorte))
+        } else {
+          movQuery = movQuery.lte('fecha', finDeDiaUTC(fechaCorte))
+        }
+
+        const { data: movData, error: movError } = await movQuery
+        if (movError) {
+          console.error('Error cargando movimientos historicos', movError)
+          alert(`Error cargando movimientos historicos: ${movError.message}`)
+          return
+        }
+
+        const mapaMovimientos: StockMap = {}
+        ;((movData ?? []) as StockRow[]).forEach((row) => {
+          const id = Number(row.ubicacion_id)
+          if (mapaMovimientos[id] === undefined) mapaMovimientos[id] = 0
+
+          if (row.tipo === 'AJUSTE') {
+            mapaMovimientos[id] += toNum(row.cantidad)
+          } else if (row.tipo === 'SALIDA_VENTA' || row.tipo === 'SALIDA_MUERTE') {
+            mapaMovimientos[id] -= absNum(row.cantidad)
+          } else {
+            mapaMovimientos[id] += absNum(row.cantidad)
+          }
+        })
+
+        ubicList.forEach((ubicacion) => {
+          const rowGuardado = inventarioGuardadoMap.get(ubicacion.id)
+          const rowBaseViva = inventarioBaseVivaMap.get(ubicacion.id)
+
+          if (usarInventarioGuardado && rowGuardado) {
+            mapa[ubicacion.id] = Math.max(toNum(rowGuardado.conteo_manual), 0)
+          } else if (usarBaseViva && inventarioBaseVivaMap.size > 0) {
+            const base = Math.max(toNum(rowBaseViva?.conteo_manual ?? 0), 0)
+            mapa[ubicacion.id] = Math.max(base + (mapaMovimientos[ubicacion.id] ?? 0), 0)
+          } else {
+            mapa[ubicacion.id] = Math.max(mapaMovimientos[ubicacion.id] ?? 0, 0)
+          }
+        })
+      }
 
       const { data: cerdasData, error: cerdasError } = await supabase
         .from('granja_cerdas')
@@ -730,6 +764,11 @@ export default function GranjaInventarioPage() {
       return
     }
 
+    if (fechaCorte <= FECHA_CORTE_NUEVA) {
+      alert('Los inventarios historicos y el corte del 16/11/2026 estan protegidos. Selecciona una fecha posterior para registrar ajustes nuevos.')
+      return
+    }
+
     setGuardando(true)
 
     try {
@@ -803,7 +842,7 @@ export default function GranjaInventarioPage() {
             teorico_al_momento: nuevoEntero,
             diferencia: 0,
             hembras_manual: 0,
-            machos_manual: 0,
+            machos_manual: desglose.esZonaProtegida ? 0 : nuevoEntero,
             user_id: userId,
           })
         }
@@ -1003,7 +1042,8 @@ export default function GranjaInventarioPage() {
 
           <button
             onClick={guardarInventario}
-            disabled={guardando || loading}
+            disabled={guardando || loading || fechaCorte <= FECHA_CORTE_NUEVA}
+            title={fechaCorte <= FECHA_CORTE_NUEVA ? 'El corte y los registros previos son de solo lectura' : undefined}
             className="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white px-4 py-2 rounded text-sm"
           >
             {guardando ? 'Guardando…' : 'Guardar inventario'}
@@ -1118,6 +1158,7 @@ export default function GranjaInventarioPage() {
                           min="0"
                           className="border rounded w-[70px] px-2 py-1 text-right"
                           value={valorEditable}
+                          disabled={fechaCorte <= FECHA_CORTE_NUEVA}
                           onChange={(e) => actualizarValor(ubicacion.id, e.target.value)}
                           title={
                             desglose.esZonaProtegida
