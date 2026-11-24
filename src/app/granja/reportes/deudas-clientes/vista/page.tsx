@@ -267,9 +267,7 @@ function VistaDeudasClienteInner() {
       {errorCarga && <div role="alert" className="mb-4 p-3 border border-red-400 text-red-700 bg-red-50 rounded text-sm">{errorCarga}</div>}
       <div className="border rounded p-4 bg-white mb-4">
         <div className="font-semibold mb-3">➕ Registrar abono</div>
-        <p className="mb-3 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded p-2">
-          Etapa 1: se agrupan los MT en el reporte, pero registrar abonos conserva el procedimiento anterior por ID de tramo. La aplicación conjunta y auditable a un MT se implementará en la siguiente etapa.
-        </p>
+       
         <div className="grid md:grid-cols-4 gap-3 text-sm">
           <div className="md:col-span-2">
             <div className="text-xs font-semibold mb-1">Modo de abono (procedimiento actual)</div>
