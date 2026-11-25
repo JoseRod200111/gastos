@@ -354,9 +354,7 @@ function VistaDeudasClienteInner() {
       {errorCarga && <div role="alert" className="mb-4 p-3 border border-red-400 text-red-700 bg-red-50 rounded text-sm">{errorCarga}</div>}
       <div className="border rounded p-4 bg-white mb-4">
         <div className="font-semibold mb-3">➕ Registrar abono</div>
-        <p className="mb-3 text-xs text-indigo-800 bg-indigo-50 border border-indigo-200 rounded p-2">
-          Etapa 2: cada abono se registra de forma atómica y auditable. Puedes aplicar el pago al cliente completo, a una operación MT o a un ID individual. Ningún abono se aplica parcialmente si ocurre un error.
-        </p>
+       
         {historialError && <p role="alert" className="mb-3 text-sm text-red-700 bg-red-50 border border-red-300 p-2 rounded">{historialError}</p>}
         {mensajeAbono && <p role="status" className="mb-3 text-sm text-green-800 bg-green-50 border border-green-300 p-2 rounded">{mensajeAbono}</p>}
         <div className="grid md:grid-cols-4 gap-3 text-sm">
